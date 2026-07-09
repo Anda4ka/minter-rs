@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/minter-core",
+    "crates/minter-desktop/src-tauri",
+]
+default-members = ["crates/minter-desktop/src-tauri"]

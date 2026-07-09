@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MINTER</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Unlock gate -->
+      <section id="view-unlock" class="view unlock-view">
+        <div class="unlock-card">
+          <div class="brand-mark large" aria-hidden="true">
+            <img src="logo.png" width="72" height="72" alt="" />
+          </div>
+          <h1>MINTER</h1>
+          <p class="sub">Operator console · burner wallets only</p>
+          <p class="creator-line">
+            <span class="muted small" data-i18n="creator.by">Created by</span>
+            <a class="creator-link" href="https://x.com/AndarkFomo" target="_blank" rel="noopener noreferrer">X @AndarkFomo</a>
+            <span class="muted">·</span>
+            <a class="creator-link" href="https://t.me/grassfoundationn" target="_blank" rel="noopener noreferrer">Telegram</a>
+          </p>
+          <div class="card warn">
+            <strong>⚠ Burner wallets only</strong>
+            <p>Never import wallets with long-term funds. Private keys stay on this PC in an encrypted vault.</p>
+            <label class="check">
+              <input type="checkbox" id="burner-accept" />
+              I will only use burner wallets
+            </label>
+          </div>
+          <div class="form">
+            <label>Vault password
+              <input type="password" id="unlock-password" placeholder="Password" autocomplete="current-password" />
+            </label>
+            <button id="btn-unlock" class="primary" disabled>Unlock vault</button>
+            <p id="unlock-error" class="error"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Main shell -->
+      <section id="view-main" class="view shell hidden">
+        <aside class="sidebar">
+          <div class="sidebar-brand">
+            <div class="brand-mark" aria-hidden="true">
+              <img src="logo.png" width="40" height="40" alt="" />
+            </div>
+            <div class="brand-text">
+              <span class="brand-name">MINTER</span>
+              <span class="brand-tag">console</span>
+            </div>
+          </div>
+          <nav class="sidebar-nav" id="sidebar-nav">
+            <button type="button" class="nav-item active" data-page="home">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5z"/></svg></span>
+              <span data-i18n="nav.home">Home</span>
+            </button>
+            <button type="button" class="nav-item" data-page="tasks">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 3h10a2 2 0 0 1 2 2v14l-7-3-7 3V5a2 2 0 0 1 2-2zm0 2v11.2l5-2.1 5 2.1V5H7z"/></svg></span>
+              <span data-i18n="nav.tasks">Tasks</span>
+            </button>
+            <button type="button" class="nav-item" data-page="wl">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1.2 10.2A2 2 0 0 1 14.8 21H9.2a2 2 0 0 1-2-1.8L6 9zm4 2v7h2v-7H10zm4 0v7h2v-7h-2z"/></svg></span>
+              <span data-i18n="nav.wl">WL Check</span>
+            </button>
+            <button type="button" class="nav-item" data-page="wallets">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 7a3 3 0 0 1 3-3h12a2 2 0 0 1 2 2v1h-2V6H6a1 1 0 0 0 0 2h14a2 2 0 0 1 2 2v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7zm14 7a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/></svg></span>
+              <span data-i18n="nav.wallets">Wallets</span>
+            </button>
+            <button type="button" class="nav-item" data-page="nfts">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14l-8-3.5L4 19V5zm2 0v11.2l6-2.6 6 2.6V5H6zm2 3h8v2H8V8z"/></svg></span>
+              <span data-i18n="nav.nfts">NFTs</span>
+            </button>
+            <button type="button" class="nav-item" data-page="rpcs">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a5 5 0 0 1 5 5v1h1a3 3 0 0 1 0 6h-1v1a5 5 0 0 1-10 0v-1H6a3 3 0 0 1 0-6h1V7a5 5 0 0 1 5-5zm0 2a3 3 0 0 0-3 3v1h6V7a3 3 0 0 0-3-3zM6 10a1 1 0 0 0 0 2h12a1 1 0 0 0 0-2H6zm3 4v1a3 3 0 0 0 6 0v-1H9z"/></svg></span>
+              <span data-i18n="nav.rpcs">RPCs</span>
+            </button>
+            <button type="button" class="nav-item" data-page="proxies">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 7h10v2H7V7zm-2 4h14v2H5v-2zm3 4h8v2H8v-2zM4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg></span>
+              <span data-i18n="nav.proxies">Proxies</span>
+            </button>
+            <button type="button" class="nav-item" data-page="deploy">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6l-8-4zm0 2.2L18 7v5c0 3.8-2.4 7.2-6 8-3.6-.8-6-4.2-6-8V7l6-2.8zM11 8h2v5h-2V8zm0 6h2v2h-2v-2z"/></svg></span>
+              <span data-i18n="nav.deploy">Deploy</span>
+            </button>
+          </nav>
+          <div class="sidebar-foot">
+            <button type="button" class="nav-item" data-page="settings">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm8.1 1.5.9 1.6-1.6 2.7 1 2.2-1.5.9-2.2-1-2.7 1.6-1.6-.9V20h-2v-2.4l-1.6.9-2.7-1.6-1 2.2-1.5-.9 1-2.2L4 13.1l.9-1.6 2.7.2 1.4-2.5L7.5 7l1.5-.9 2.2 1 .9-2.7H14l.9 2.7 2.2-1L18.5 7l-1.5 2.2 1.4 2.5 2.7-.2z"/></svg></span>
+              <span data-i18n="nav.settings">Settings</span>
+            </button>
+            <div class="creator-block">
+              <div class="muted small" data-i18n="creator.by">Created by</div>
+              <a class="creator-link" href="https://x.com/AndarkFomo" target="_blank" rel="noopener noreferrer" title="X / Twitter">@AndarkFomo</a>
+              <a class="creator-link" href="https://t.me/grassfoundationn" target="_blank" rel="noopener noreferrer" title="Telegram">t.me/grassfoundationn</a>
+            </div>
+            <div id="app-version" class="app-version muted small">v—</div>
+          </div>
+        </aside>
+        <div id="toast-host" class="toast-host" aria-live="polite"></div>
+        <div id="confirm-badge" class="confirm-badge hidden">✓ First confirm</div>
+
+        <div class="main-col">
+          <header class="topbar">
+            <div class="topbar-left">
+              <h1 id="page-title">Home</h1>
+              <div id="status-bar" class="status-bar"></div>
+            </div>
+            <div class="topbar-right">
+              <div class="topbar-tools" aria-hidden="true">
+                <span class="tool-dot" title="Local only"></span>
+              </div>
+              <button type="button" id="lang-chip" class="chip" title="Language / Язык">EN</button>
+              <button type="button" id="mode-chip" class="chip ok" title="Click to toggle Dry Run / Live" data-i18n-title="modeChipTitle">Dry Run</button>
+            </div>
+          </header>
+
+          <div class="content">
+            <!-- HOME -->
+            <div id="page-home" class="page">
+              <div id="hint" class="hint-card"></div>
+              <div class="stat-grid" id="home-stats"></div>
+              <h3 class="section-label" data-i18n="home.quick">Quick actions</h3>
+              <div class="qa-grid">
+                <button type="button" class="qa-card primary-card" data-goto="tasks">
+                  <span class="qa-ico">▣</span>
+                  <span class="qa-title" data-i18n="home.openTasks">Open Tasks / Mint</span>
+                  <span class="qa-desc">Sniper path</span>
+                </button>
+                <button type="button" class="qa-card" data-goto="wl">
+                  <span class="qa-ico">✓</span>
+                  <span class="qa-title" data-i18n="home.wl">WL Check</span>
+                  <span class="qa-desc" data-i18n="home.wlDesc">Which wallets are on list</span>
+                </button>
+                <button type="button" class="qa-card" data-goto="wallets">
+                  <span class="qa-ico">◈</span>
+                  <span class="qa-title" data-i18n="home.wallets">Manage Wallets</span>
+                  <span class="qa-desc">Burners only</span>
+                </button>
+                <button type="button" class="qa-card" data-goto="rpcs">
+                  <span class="qa-ico">⬡</span>
+                  <span class="qa-title" data-i18n="home.rpcs">Check RPCs</span>
+                  <span class="qa-desc">Latency probe</span>
+                </button>
+                <button type="button" class="qa-card" data-goto="settings">
+                  <span class="qa-ico">⚙</span>
+                  <span class="qa-title" data-i18n="nav.settings">Settings</span>
+                  <span class="qa-desc">Keys & gas</span>
+                </button>
+              </div>
+              <div class="panel last-run-panel">
+                <h3 data-i18n="home.lastMint">Last mint run</h3>
+                <pre id="home-last-mint" class="code" data-i18n="home.noMint">No mint run in this session yet.</pre>
+              </div>
+            </div>
+
+            <!-- TASKS (mint + advanced ops) -->
+            <div id="page-tasks" class="page hidden">
+              <div class="page-subhead">
+                <h2 class="page-subhead-title" data-i18n="tasks.mintTitle">Tasks</h2>
+                <span class="badge accent-badge">OpenSea</span>
+                <label class="task-template-label">
+                  <span class="sr-only" data-i18n="tasks.templates">Templates</span>
+                  <select id="task-template" class="task-template-select">
+                    <option value="" data-i18n="tasks.templates">Templates…</option>
+                    <option value="sniper" data-i18n="tasks.tpl.sniper">Sniper standard</option>
+                    <option value="manualGas" data-i18n="tasks.tpl.manualGas">Sniper manual gas</option>
+                    <option value="multi" data-i18n="tasks.tpl.multi">Multi qty ×3</option>
+                  </select>
+                </label>
+                <button type="button" id="btn-create-task" class="primary" data-i18n="tasks.create">Create task</button>
+              </div>
+              <p class="muted" data-i18n="tasks.mintHint">Create a task (wallets, phase, chain, gas). Start → sim → if OK, send tx → wait for on-chain confirm.</p>
+              <div id="task-queue-bar" class="task-queue-bar hidden">
+                <span id="task-queue-label" class="muted"></span>
+                <button type="button" id="btn-clear-queue" class="danger-btn" data-i18n="tasks.clearQueue">Clear queue</button>
+              </div>
+              <div id="task-list" class="task-list">
+                <div class="empty-tasks muted" id="task-list-empty">No tasks yet — create one.</div>
+              </div>
+
+              <div class="group-card">
+                <div class="group-card-head">
+                  <div class="group-card-title">
+                    <span class="group-dot"></span>
+                    <span id="task-group-name">—</span>
+                  </div>
+                  <div class="group-stats">
+                    <div class="gstat">
+                      <span class="gstat-label">Total</span>
+                      <span class="gstat-value" id="task-stat-total">—</span>
+                    </div>
+                    <div class="gstat">
+                      <span class="gstat-label">Success</span>
+                      <span class="gstat-value success" id="task-stat-ok">0</span>
+                    </div>
+                    <div class="gstat">
+                      <span class="gstat-label">Failed</span>
+                      <span class="gstat-value fail" id="task-stat-fail">0</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="panel nest">
+                  <div class="panel-head">
+                    <h3 data-i18n="tasks.progress">Live progress</h3>
+                    <span id="mint-run-stats" class="stat-inline"></span>
+                  </div>
+                  <div id="mint-phase-banner" class="mint-phase-banner mint-phase-idle">
+                    <span class="mint-phase-emoji" id="mint-phase-emoji">⏸️</span>
+                    <span class="mint-phase-text" id="mint-phase-text" data-i18n="tasks.phaseIdle">Ready — Start a task</span>
+                  </div>
+                  <div class="table-wrap vtable-wrap" id="mint-table-wrap">
+                    <table class="data-table" id="mint-table">
+                      <thead>
+                        <tr>
+                          <th data-i18n="col.wallet">Wallet</th>
+                          <th data-i18n="col.status">Status</th>
+                          <th data-i18n="col.detail">Detail</th>
+                          <th>Tx</th>
+                          <th data-i18n="col.error">Error</th>
+                        </tr>
+                      </thead>
+                      <tbody id="mint-tbody"></tbody>
+                    </table>
+                  </div>
+                  <div id="mint-log" class="code mint-log" role="log" aria-live="polite"></div>
+                  <p id="mint-summary" class="muted small"></p>
+                </div>
+              </div>
+
+              <details class="panel collapsible">
+                <summary data-i18n="adv.summary">Auth · Raw mint · Sweep</summary>
+                <div class="settings-section">
+                  <h3 data-i18n="adv.auth">Test Auth (SIWE)</h3>
+                  <label class="check"><input type="checkbox" id="auth-all" /> <span data-i18n="adv.authAll">All wallets</span></label>
+                  <button id="btn-test-auth" class="primary">Run auth test</button>
+                  <pre id="auth-out" class="code"></pre>
+                </div>
+                <div class="settings-section danger-box">
+                  <h3 data-i18n="adv.raw">Raw Contract Mint</h3>
+                  <label>Contract <input type="text" id="raw-contract" placeholder="0x…" /></label>
+                  <div class="row actions">
+                    <button id="btn-raw-discover">Discover functions</button>
+                  </div>
+                  <label>Function
+                    <select id="raw-fn-select"><option value="">— discover or type —</option></select>
+                    <input type="text" id="raw-fn" placeholder="mint(address,uint256)" />
+                  </label>
+                  <label>Params (comma-separated)
+                    <input type="text" id="raw-params" placeholder="0x…,1" />
+                  </label>
+                  <label>Value ETH <input type="text" id="raw-value" value="0" /></label>
+                  <label class="check"><input type="checkbox" id="raw-dry" checked /> Dry run</label>
+                  <label>CONFIRM <input type="text" id="raw-confirm" placeholder="CONFIRM" autocomplete="off" /></label>
+                  <button id="btn-raw-mint" class="danger-btn">Run Raw Mint</button>
+                  <pre id="raw-out" class="code"></pre>
+                </div>
+                <div class="settings-section danger-box">
+                  <h3 data-i18n="adv.sweepEth">Sweep ETH</h3>
+                  <label>Destination <input type="text" id="sweep-eth-to" placeholder="0x…" /></label>
+                  <label class="check"><input type="checkbox" id="sweep-eth-dry" checked /> Dry run</label>
+                  <label>CONFIRM <input type="text" id="sweep-eth-confirm" placeholder="CONFIRM" autocomplete="off" /></label>
+                  <button id="btn-sweep-eth" class="danger-btn">Run Sweep ETH</button>
+                  <pre id="sweep-eth-out" class="code"></pre>
+                </div>
+                <div class="settings-section danger-box">
+                  <h3 data-i18n="adv.sweepNft">Sweep NFTs</h3>
+                  <label>NFT contract <input type="text" id="sweep-nft-contract" placeholder="0x…" /></label>
+                  <label>Destination <input type="text" id="sweep-nft-to" placeholder="0x…" /></label>
+                  <label class="check"><input type="checkbox" id="sweep-nft-dry" checked /> Dry run</label>
+                  <label>CONFIRM <input type="text" id="sweep-nft-confirm" placeholder="CONFIRM" autocomplete="off" /></label>
+                  <button id="btn-sweep-nft" class="danger-btn">Run Sweep NFTs</button>
+                  <pre id="sweep-nft-out" class="code"></pre>
+                </div>
+                <div class="settings-section">
+                  <h3 data-i18n="adv.security">Security</h3>
+                  <div class="row actions">
+                    <button id="btn-security">Security Status</button>
+                    <button id="btn-clear-auth">Clear auth cache</button>
+                  </div>
+                  <pre id="security-out" class="code"></pre>
+                </div>
+              </details>
+
+              <div class="bulk-bar" id="tasks-bulk">
+                <span class="bulk-count">
+                  <span class="bulk-pill" id="tasks-selected-label" data-i18n="tasks.ready">Ready</span>
+                </span>
+                <div class="bulk-actions">
+                  <button type="button" id="btn-warm-auth" data-i18n="tasks.warmAuth">Warm auth</button>
+                  <button type="button" class="danger-btn btn-stop" id="btn-mint-stop" disabled data-i18n="tasks.stop">Stop</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- WL CHECK -->
+            <div id="page-wl" class="page hidden wl-page">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 data-i18n="wl.title">Whitelist check</h2>
+                  <span class="badge accent-badge">OpenSea</span>
+                </div>
+                <p class="muted" data-i18n="wl.hint">Paste collection, pick wallets, get per-wallet stage eligibility (uses proxies).</p>
+                <div class="wl-layout">
+                  <div class="wl-controls">
+                    <label><span data-i18n="wl.slug">Collection slug or OpenSea URL</span>
+                      <input type="text" id="wl-slug" placeholder="bfers" autocomplete="off" />
+                    </label>
+                    <div class="wallet-pick-head">
+                      <span data-i18n="wl.pickWallets">Wallets to check</span>
+                      <label class="check tight"><input type="checkbox" id="wl-wallets-all" checked /> <span data-i18n="tasks.selectAll">Select all</span></label>
+                    </div>
+                    <div id="wl-wallet-list" class="task-wallet-list muted">Unlock vault to load wallets…</div>
+                    <div class="wl-actions">
+                      <button type="button" id="btn-wl-check" class="primary" data-i18n="wl.run">Check WL</button>
+                      <p id="wl-msg" class="msg" style="margin:0"></p>
+                    </div>
+                  </div>
+                  <div class="wl-results-head">
+                    <h3 data-i18n="wl.results">Results</h3>
+                    <span id="wl-run-stats" class="stat-inline muted"></span>
+                  </div>
+                  <div class="table-wrap" id="wl-table-wrap">
+                    <table class="data-table" id="wl-table">
+                      <thead>
+                        <tr>
+                          <th data-i18n="col.wallet">Wallet</th>
+                          <th data-i18n="wl.col.eligible">Eligible (WL)</th>
+                          <th data-i18n="wl.col.notEligible">Not eligible</th>
+                          <th data-i18n="wl.col.proxy">Proxy</th>
+                          <th data-i18n="col.status">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody id="wl-tbody">
+                        <tr><td colspan="5" class="muted" data-i18n="wl.empty">No check yet.</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <details class="panel nest">
+                    <summary data-i18n="wl.detail">Stage detail (raw)</summary>
+                    <pre id="wl-detail" class="code mint-log"></pre>
+                  </details>
+                </div>
+              </div>
+            </div>
+
+            <!-- WALLETS -->
+            <div id="page-wallets" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 data-i18n="nav.wallets">Wallets</h2>
+                  <span class="badge warn-badge" data-i18n="wallets.burners">Burners only</span>
+                </div>
+                <p class="muted burner" data-i18n="wallets.hint">Addresses shown — never private keys.</p>
+                <p id="wallet-count-hint" class="muted small"></p>
+
+                <div class="wallet-toolbar">
+                  <div class="wallet-group-btns">
+                    <span class="muted small" data-i18n="wallets.group">Group</span>
+                    <button type="button" class="btn-group" data-group="A" title="Set group A">A</button>
+                    <button type="button" class="btn-group" data-group="B" title="Set group B">B</button>
+                    <button type="button" class="btn-group" data-group="C" title="Set group C">C</button>
+                    <button type="button" class="btn-group" data-group="" title="Clear group">∅</button>
+                  </div>
+                  <div class="wallet-toolbar-actions">
+                    <button type="button" id="btn-wallets-balances" data-i18n="wallets.checkBal">Check balances</button>
+                    <button type="button" id="btn-wallets-to-task" data-i18n="wallets.toTask">→ New task</button>
+                  </div>
+                </div>
+
+                <div class="table-wrap vtable-wrap wallet-table-align" id="wallet-table-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th style="width:36px"><input type="checkbox" id="wallets-select-all" title="Select all" /></th>
+                        <th style="width:40px">#</th>
+                        <th data-i18n="col.address">Address</th>
+                        <th style="width:48px" data-i18n="wallets.col.group">Grp</th>
+                        <th style="width:120px" data-i18n="wallets.col.proxy">Proxy</th>
+                        <th style="width:100px" data-i18n="wallets.col.balance">Balance</th>
+                      </tr>
+                    </thead>
+                    <tbody id="wallet-tbody"></tbody>
+                  </table>
+                </div>
+                <ul id="wallet-list" class="list hidden"></ul>
+
+                <div id="wallet-dropzone" class="wallet-dropzone">
+                  <p data-i18n="wallets.drop">Drop key files here (multi) or use Browse</p>
+                  <div class="row wallet-import-row">
+                    <input type="password" id="add-key" placeholder="Private key (hidden)" data-i18n-placeholder="wallets.pkPh" />
+                    <button id="btn-add-key" class="primary" data-i18n="wallets.add">Add key</button>
+                  </div>
+                  <div class="row wallet-import-row">
+                    <button id="btn-pick-keys" type="button" data-i18n="wallets.browse">Browse…</button>
+                    <button id="btn-pick-keys-multi" type="button" data-i18n="wallets.browseMulti">Multi-file…</button>
+                    <button id="btn-import" data-i18n="wallets.import">Import path</button>
+                    <input type="text" id="import-path" placeholder="privkeys.txt path" />
+                  </div>
+                </div>
+                <div class="row wallet-import-row">
+                  <input type="text" id="remove-addr" placeholder="0x… to remove" />
+                  <button id="btn-remove-wallet" class="danger-btn" data-i18n="wallets.remove">Remove</button>
+                </div>
+                <p id="wallet-msg" class="msg"></p>
+              </div>
+              <div class="bulk-bar">
+                <span class="bulk-count"><span id="wallet-selected-count">0</span> <span data-i18n="wallets.selected">Selected</span></span>
+                <div class="bulk-actions">
+                  <button type="button" id="btn-wallets-copy" disabled data-i18n="wallets.copy">Copy addresses</button>
+                  <button type="button" class="danger-btn" id="btn-wallets-remove-sel" disabled data-i18n="wallets.delete">Delete</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- NFTS / RESULTS -->
+            <div id="page-nfts" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Results / NFTs</h2>
+                </div>
+                <div class="row actions">
+                  <button type="button" id="btn-open-results" class="primary" data-i18n="nfts.openResults">Open results folder</button>
+                  <button type="button" id="btn-open-logs" data-i18n="nfts.openLogs">Open logs folder</button>
+                </div>
+                <h3 data-i18n="nfts.history">Run history</h3>
+                <div class="table-wrap" id="run-history-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>When</th><th>Slug</th><th>Phase</th><th>OK</th><th>Fail</th><th>ms</th>
+                      </tr>
+                    </thead>
+                    <tbody id="run-history-tbody">
+                      <tr><td colspan="6" class="muted">No runs yet this session.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <h3>Last run wallets</h3>
+                <div class="table-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Address</th><th>Status</th><th>Tx</th><th>Gas</th><th>Error</th>
+                      </tr>
+                    </thead>
+                    <tbody id="nfts-tbody">
+                      <tr><td colspan="5" class="muted">No results yet — run a mint from Tasks.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <pre id="nfts-export" class="code muted">Export paths appear after a mint with export enabled.</pre>
+              </div>
+            </div>
+
+            <!-- RPCS -->
+            <div id="page-rpcs" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>RPCs</h2>
+                </div>
+                <p class="muted">Probe endpoints and measure latency (chainId, block, fees, nonce).</p>
+                <div class="row actions">
+                  <button id="btn-probe" class="primary">Probe RPC</button>
+                  <button id="btn-latency">Measure Latency</button>
+                </div>
+                <ul id="probe-list" class="list"></ul>
+                <pre id="latency-out" class="code"></pre>
+              </div>
+            </div>
+
+            <!-- PROXIES -->
+            <div id="page-proxies" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Proxies</h2>
+                  <span id="proxy-count-hint" class="muted small"></span>
+                </div>
+                <p class="muted">One proxy per line. Saved with Settings → config.json + proxies.txt.</p>
+                <label>Proxy list
+                  <textarea id="set-proxy" rows="12" spellcheck="false" placeholder="host:port:user:pass&#10;socks5://host:port&#10;http://user:pass@host:port"></textarea>
+                </label>
+                <div class="row actions">
+                  <button id="btn-pick-proxies" type="button">Import file…</button>
+                  <button id="btn-save-proxies" class="primary">Save proxies</button>
+                  <button id="btn-proxy-health">Probe health</button>
+                </div>
+                <p id="proxy-msg" class="msg"></p>
+                <pre id="proxy-health-out" class="code"></pre>
+              </div>
+            </div>
+
+            <!-- DEPLOY — honest Coming soon -->
+            <div id="page-deploy" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Deploy</h2>
+                  <span class="badge muted-badge" data-i18n="deploy.soon">Coming soon</span>
+                </div>
+                <p class="muted" data-i18n="deploy.hint">Bundle / contract deploy is not wired yet. Use Tasks for OpenSea mint sniping.</p>
+                <button type="button" class="primary" disabled>Coming soon</button>
+              </div>
+            </div>
+
+            <!-- SETTINGS -->
+            <div id="page-settings" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Settings</h2>
+                </div>
+                <p class="muted">Saved to <code>config.json</code>.</p>
+                <p id="settings-path" class="muted small"></p>
+
+                <details class="settings-acc" open>
+                  <summary>Connection</summary>
+                  <div class="settings-acc-body">
+                    <label>Alchemy API key
+                      <input type="password" id="set-alchemy" placeholder="Leave blank to keep existing" autocomplete="off" />
+                    </label>
+                    <p id="alchemy-hint" class="muted small"></p>
+                    <label class="check"><input type="checkbox" id="set-clear-alchemy" /> Clear Alchemy key on save</label>
+                    <label>Custom RPC URLs (comma-separated)
+                      <input type="text" id="set-rpc-urls" placeholder="https://…,https://…" />
+                    </label>
+                    <label>Ethereum RPC <input type="text" id="set-rpc-eth" placeholder="optional" /></label>
+                    <label>Base RPC <input type="text" id="set-rpc-base" placeholder="optional" /></label>
+                    <label>Polygon RPC <input type="text" id="set-rpc-polygon" placeholder="optional" /></label>
+                  </div>
+                </details>
+
+                <details class="settings-acc">
+                  <summary>Gas &amp; mint</summary>
+                  <div class="settings-acc-body">
+                    <div class="settings-grid">
+                      <label>Gas limit <input type="number" id="set-gas" min="0" step="1000" /></label>
+                      <label>Priority fee (gwei) <input type="text" id="set-prio" placeholder="auto" /></label>
+                      <label>Base fee multiplier <input type="text" id="set-base-mult" /></label>
+                      <label>Gas multiplier <input type="text" id="set-gas-mult" /></label>
+                      <label>Max retries <input type="number" id="set-retries" min="1" max="100" /></label>
+                    </div>
+                    <label class="check"><input type="checkbox" id="set-gql" /> Use GraphQL for PUBLIC_SALE</label>
+                    <label class="check"><input type="checkbox" id="set-export" /> Export results JSON/CSV</label>
+                    <label class="check"><input type="checkbox" id="set-beep" /> Beep on first confirm (system sound)</label>
+                  </div>
+                </details>
+
+                <details class="settings-acc">
+                  <summary>Safety</summary>
+                  <div class="settings-acc-body">
+                    <label class="check"><input type="checkbox" id="set-dry" /> Dry run mode (default)</label>
+                    <label class="check"><input type="checkbox" id="set-skip" /> Skip preflight</label>
+                    <label class="check"><input type="checkbox" id="set-quiet" /> Quiet logs</label>
+                  </div>
+                </details>
+
+                <div class="row actions" style="margin-top:12px">
+                  <button id="btn-sniper">Apply Sniper preset</button>
+                  <button id="btn-save-settings" class="primary">Save settings</button>
+                </div>
+                <p id="settings-msg" class="msg"></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Create mint task modal -->
+    <div id="task-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card task-modal-card">
+        <h3 id="task-modal-title" data-i18n="tasks.create">Create task</h3>
+        <label><span data-i18n="tasks.taskName">Name</span>
+          <input type="text" id="task-name" placeholder="my-drop" autocomplete="off" />
+        </label>
+        <label><span data-i18n="tasks.slug">Collection slug or OpenSea URL</span>
+          <input type="text" id="wizard-slug" placeholder="my-collection" autocomplete="off" />
+        </label>
+        <div class="row actions">
+          <button type="button" id="btn-load-phases" class="primary" data-i18n="tasks.loadPhases">Load phases</button>
+        </div>
+        <label><span data-i18n="tasks.phase">Phase</span>
+          <select id="wizard-phase">
+            <option value="">— auto (recommended) —</option>
+          </select>
+        </label>
+        <p id="phase-hint" class="muted small"></p>
+        <div class="settings-grid">
+          <label><span data-i18n="tasks.qty">Quantity</span>
+            <input type="number" id="wizard-qty" min="1" max="50" value="1" />
+          </label>
+          <label><span data-i18n="tasks.chain">Network</span>
+            <select id="task-chain">
+              <option value="auto">Auto (from collection)</option>
+              <option value="ethereum">Ethereum</option>
+              <option value="base">Base</option>
+              <option value="polygon">Polygon</option>
+              <option value="arbitrum">Arbitrum</option>
+              <option value="optimism">Optimism</option>
+              <option value="bsc">BSC</option>
+              <option value="avalanche">Avalanche</option>
+              <option value="blast">Blast</option>
+              <option value="zora">Zora</option>
+              <option value="apechain">ApeChain</option>
+            </select>
+          </label>
+          <label><span data-i18n="tasks.gasMode">Gas</span>
+            <select id="task-gas-mode">
+              <option value="auto" data-i18n="tasks.gasAuto">Auto (estimate)</option>
+              <option value="manual" data-i18n="tasks.gasManual">Manual</option>
+            </select>
+          </label>
+          <label id="task-gas-limit-wrap" class="hidden"><span data-i18n="tasks.gasLimit">Gas limit</span>
+            <input type="number" id="task-gas-limit" min="21000" step="1000" value="250000" />
+          </label>
+          <label><span data-i18n="tasks.prio">Priority fee (gwei)</span>
+            <input type="text" id="task-prio" placeholder="auto / e.g. 1.5" autocomplete="off" />
+          </label>
+          <label><span data-i18n="tasks.atTime">At time (unix / ISO)</span>
+            <input type="text" id="task-at" placeholder="optional 1700000000 or 2024-01-01T12:00:00Z" autocomplete="off" />
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="task-per-wallet-qty" /> <span data-i18n="tasks.perWalletQty">Per-wallet quantity (default = qty above)</span></label>
+        <div id="task-qty-map-wrap" class="task-qty-map-wrap hidden">
+          <p class="muted small" data-i18n="tasks.perWalletQtyHint">Set qty per checked wallet after selecting wallets (default uses task qty).</p>
+          <div id="task-qty-map" class="task-qty-map"></div>
+        </div>
+        <p class="muted small" data-i18n="tasks.startHint">Start always runs live: sim → send if OK → success only after on-chain confirm.</p>
+        <div class="wallet-pick-head">
+          <span data-i18n="tasks.pickWallets">Wallets</span>
+          <div class="task-group-filter">
+            <button type="button" class="btn-group-filter" data-group-filter="all">All</button>
+            <button type="button" class="btn-group-filter" data-group-filter="A">A</button>
+            <button type="button" class="btn-group-filter" data-group-filter="B">B</button>
+            <button type="button" class="btn-group-filter" data-group-filter="C">C</button>
+            <label class="check tight"><input type="checkbox" id="task-wallets-all" /> <span data-i18n="tasks.selectAll">Select all</span></label>
+          </div>
+        </div>
+        <div id="task-wallet-list" class="task-wallet-list muted">Unlock vault to load wallets…</div>
+        <label class="check"><input type="checkbox" id="task-filter-balance" checked /> <span data-i18n="tasks.filterBalance">On Start: only funded wallets</span></label>
+        <label class="check"><input type="checkbox" id="task-skip-est" /> <span data-i18n="tasks.skipEst">Skip estimate on open (faster, use gas limit)</span></label>
+        <p id="wizard-msg" class="msg"></p>
+        <div class="row actions modal-actions">
+          <button type="button" id="task-modal-cancel" data-i18n="modal.cancel">Cancel</button>
+          <button type="button" id="task-modal-save" class="primary" data-i18n="tasks.save">Save task</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- First-run onboarding -->
+    <div id="onboard-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card onboard-card">
+        <h3 id="onboard-title" style="color: var(--accent)">Welcome</h3>
+        <p id="onboard-body" class="muted"></p>
+        <ol id="onboard-steps" class="modal-list"></ol>
+        <div class="row actions modal-actions">
+          <button type="button" id="onboard-skip">Skip</button>
+          <button type="button" id="onboard-next" class="primary">Next</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm modal (LIVE / CONFIRM / generic) -->
+    <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <h3 id="modal-title">Confirm</h3>
+        <p id="modal-body" class="muted"></p>
+        <ul id="modal-list" class="modal-list"></ul>
+        <label id="modal-confirm-wrap" class="hidden">
+          Type <strong id="modal-confirm-word">CONFIRM</strong>
+          <input type="text" id="modal-confirm-input" autocomplete="off" />
+        </label>
+        <p id="modal-error" class="error"></p>
+        <div class="row actions modal-actions">
+          <button type="button" id="modal-cancel">Cancel</button>
+          <button type="button" id="modal-ok" class="danger-btn">Continue</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

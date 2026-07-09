@@ -1,0 +1,38 @@
+# Build
+/target
+**/src-tauri/target/
+*.pdb
+*.zip
+
+# Secrets & local runtime (never commit)
+.env
+.env.*
+!.env.example
+*.vault
+keys.vault
+wallet_meta.json
+tasks.json
+runs_history.json
+config.json
+auth_cache.bin
+auth_cache.json
+privkeys.txt
+proxies.txt
+results/
+logs/
+debug_*.json
+
+# Public/ is a local runtime folder — only ship examples + docs from it
+Public/**
+!Public/config.example.json
+!Public/proxies.example.txt
+!Public/README.txt
+!Public/ИНСТРУКЦИЯ.md
+
+# local dumps / tooling
+*.png
+!crates/minter-desktop/ui/logo.png
+!crates/minter-desktop/src-tauri/icons/**
+mcps/
+.DS_Store
+Thumbs.db

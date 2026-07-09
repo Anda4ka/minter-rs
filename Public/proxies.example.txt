@@ -1,0 +1,15 @@
+# Пример proxies.txt (скопируйте в proxies.txt рядом с minter.exe)
+# Один прокси на строку. # и пустые строки игнорируются.
+#
+# Форматы:
+#   host:port
+#   host:port:user:pass
+#   user:pass@host:port
+#   http://user:pass@host:port
+#   socks5://host:port
+#
+# Без прокси OpenSea часто даёт HTTP 429 при auth многих кошельков.
+# НЕ публикуйте файл с реальными логинами.
+
+# 1.2.3.4:8080
+# 1.2.3.4:8080:username:password
