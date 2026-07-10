@@ -392,6 +392,10 @@ async function navigate(name) {
     await refreshStatus();
     await loadRawWallets();
   }
+  if (name === "disperse") {
+    await refreshStatus();
+    await loadDisperseWallets();
+  }
 }
 
 function showMain() {
@@ -1693,6 +1697,161 @@ $("btn-raw-mint").addEventListener("click", async () => {
     $("raw-out").textContent = String(e);
   } finally {
     $("btn-raw-mint").disabled = false;
+  }
+});
+
+// —— Disperse (1 wallet → many, fixed amount each) ——
+/** @type {Array<{address:string,index:number}>} */
+let disperseWalletCache = [];
+
+function updateDisperseSummary() {
+  const el = $("disp-summary");
+  if (!el) return;
+  const to = selectedDisperseTo();
+  const amt = parseFloat(($("disp-amount")?.value || "").replace(",", ".")) || 0;
+  if (!to.length || !(amt > 0)) {
+    el.textContent = "";
+    return;
+  }
+  el.textContent = (t("disperse.summary") || "{n} recipient(s) × {amt} ETH = ~{total} ETH (+ gas)")
+    .replace("{n}", String(to.length))
+    .replace("{amt}", String(amt))
+    .replace("{total}", (amt * to.length).toFixed(6));
+}
+
+async function loadDisperseWallets() {
+  const fromSel = $("disp-from");
+  const toBox = $("disp-to-list");
+  if (!fromSel || !toBox) return;
+  try {
+    const list = await invoke("list_wallets");
+    disperseWalletCache = list || [];
+    const prevFrom = fromSel.value;
+    fromSel.innerHTML = `<option value="">${escapeHtml(t("disperse.fromPick") || "— select source —")}</option>`;
+    for (const w of list) {
+      const opt = document.createElement("option");
+      opt.value = w.address;
+      opt.textContent = `${w.index}. ${shortAddr(w.address)}`;
+      fromSel.appendChild(opt);
+    }
+    if (prevFrom && [...fromSel.options].some((o) => o.value === prevFrom)) {
+      fromSel.value = prevFrom;
+    } else if (list.length) {
+      fromSel.value = list[0].address;
+    }
+    renderDisperseToList();
+    updateDisperseSummary();
+  } catch (e) {
+    toBox.textContent = String(e);
+  }
+}
+
+function renderDisperseToList() {
+  const toBox = $("disp-to-list");
+  if (!toBox) return;
+  const list = disperseWalletCache;
+  const from = ($("disp-from")?.value || "").toLowerCase();
+  if (!list.length) {
+    toBox.innerHTML = `<div class="muted" style="padding:8px">${escapeHtml(t("wallets.empty"))}</div>`;
+    return;
+  }
+  const prev = new Set(
+    [...document.querySelectorAll(".disp-to-cb:checked")].map((c) =>
+      String(c.value).toLowerCase()
+    )
+  );
+  const keepPrev = prev.size > 0;
+  toBox.innerHTML = "";
+  for (const w of list) {
+    if (String(w.address).toLowerCase() === from) continue;
+    const row = document.createElement("label");
+    row.className = "task-wallet-row";
+    const checked = keepPrev ? prev.has(String(w.address).toLowerCase()) : true;
+    row.innerHTML = `<input type="checkbox" class="disp-to-cb" value="${escapeHtml(w.address)}" ${
+      checked ? "checked" : ""
+    } />
+      <span>${w.index}. ${escapeHtml(shortAddr(w.address))}</span>`;
+    toBox.appendChild(row);
+  }
+  if ($("disp-to-all")) {
+    const cbs = [...document.querySelectorAll(".disp-to-cb")];
+    $("disp-to-all").checked = cbs.length > 0 && cbs.every((c) => c.checked);
+  }
+  updateDisperseSummary();
+}
+
+function selectedDisperseTo() {
+  return [...document.querySelectorAll(".disp-to-cb:checked")].map((cb) => cb.value);
+}
+
+$("disp-from")?.addEventListener("change", () => {
+  renderDisperseToList();
+});
+
+$("disp-to-all")?.addEventListener("change", (e) => {
+  const on = e.target.checked;
+  document.querySelectorAll(".disp-to-cb").forEach((cb) => {
+    cb.checked = on;
+  });
+  updateDisperseSummary();
+});
+
+$("disp-to-list")?.addEventListener("change", (e) => {
+  if (!e.target?.classList?.contains("disp-to-cb")) return;
+  const cbs = [...document.querySelectorAll(".disp-to-cb")];
+  if ($("disp-to-all") && cbs.length) {
+    $("disp-to-all").checked = cbs.every((c) => c.checked);
+  }
+  updateDisperseSummary();
+});
+
+$("disp-amount")?.addEventListener("input", updateDisperseSummary);
+
+$("btn-disperse")?.addEventListener("click", async () => {
+  const chain = ($("disp-chain")?.value || "").trim();
+  const from = ($("disp-from")?.value || "").trim();
+  const to = selectedDisperseTo();
+  const amountEth = ($("disp-amount")?.value || "").trim();
+  const dry = $("disp-dry")?.checked ?? true;
+  const out = $("disp-out");
+  if (!chain) {
+    if (out) out.textContent = t("disperse.needChain") || "Select network first";
+    return;
+  }
+  if (!from) {
+    if (out) out.textContent = t("disperse.needFrom") || "Select source wallet";
+    return;
+  }
+  if (!to.length) {
+    if (out) out.textContent = t("disperse.needTo") || "Select at least one destination";
+    return;
+  }
+  const amt = parseFloat(amountEth.replace(",", "."));
+  if (!(amt > 0)) {
+    if (out) out.textContent = t("disperse.needAmount") || "Enter amount > 0";
+    return;
+  }
+  if (out) {
+    out.textContent = dry
+      ? `Dry-run disperse: ${from.slice(0, 10)}… → ${to.length} wallet(s) × ${amountEth} ETH…`
+      : `LIVE disperse: ${from.slice(0, 10)}… → ${to.length} wallet(s) × ${amountEth} ETH…`;
+  }
+  if ($("btn-disperse")) $("btn-disperse").disabled = true;
+  try {
+    const rows = await invoke("disperse", {
+      input: {
+        chain,
+        fromAddress: from,
+        toAddresses: to,
+        amountEth,
+        dryRun: dry,
+      },
+    });
+    if (out) out.textContent = formatSweepRows(rows);
+  } catch (e) {
+    if (out) out.textContent = String(e);
+  } finally {
+    if ($("btn-disperse")) $("btn-disperse").disabled = false;
   }
 });
 

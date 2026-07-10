@@ -760,6 +760,34 @@ async fn raw_mint(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisperseInput {
+    chain: String,
+    from_address: String,
+    to_addresses: Vec<String>,
+    amount_eth: String,
+    dry_run: Option<bool>,
+}
+
+#[tauri::command]
+async fn disperse(
+    state: State<'_, Arc<AppState>>,
+    input: DisperseInput,
+) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    let session = state.session.lock().clone();
+    session
+        .disperse(
+            &input.chain,
+            &input.from_address,
+            input.to_addresses,
+            &input.amount_eth,
+            input.dry_run.unwrap_or(true),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn clear_auth_cache(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     state
@@ -1089,6 +1117,7 @@ pub fn run() {
             measure_latency,
             discover_raw_functions,
             raw_mint,
+            disperse,
             clear_auth_cache,
             remove_wallet,
             set_dry_run,

@@ -13,6 +13,7 @@ pub mod mint_ops;
 pub mod opensea;
 pub mod progress;
 pub mod proxy;
+pub mod disperse;
 pub mod raw_mint;
 pub mod rpc;
 pub mod settings;

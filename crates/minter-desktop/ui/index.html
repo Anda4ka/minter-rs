@@ -65,6 +65,10 @@
               <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z"/></svg></span>
               <span data-i18n="nav.raw">Raw Mint</span>
             </button>
+            <button type="button" class="nav-item" data-page="disperse">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2v4l3-3 1.4 1.4L12 8.8 7.6 4.4 9 3l3 3V2zm-8 9h4l-3 3 1.4 1.4L10 12.8 5.6 8.4 4.2 9.8 7 12.6H4v-1.6zm16 0v1.6h-3l2.8 2.8-1.4 1.4L14 12.8l4.4 4.4 1.4-1.4-3-3H20v-1.6zM12 15.2l4.4 4.4L15 21l-3-3-3 3-1.4-1.4L12 15.2z"/></svg></span>
+              <span data-i18n="nav.disperse">Disperse</span>
+            </button>
             <button type="button" class="nav-item" data-page="wl">
               <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1.2 10.2A2 2 0 0 1 14.8 21H9.2a2 2 0 0 1-2-1.8L6 9zm4 2v7h2v-7H10zm4 0v7h2v-7h-2z"/></svg></span>
               <span data-i18n="nav.wl">WL Check</span>
@@ -333,6 +337,55 @@
                   <label class="check"><input type="checkbox" id="raw-dry" checked /> Dry run</label>
                   <button id="btn-raw-mint" class="danger-btn" type="button" data-i18n="raw.run">Run Raw Mint</button>
                   <pre id="raw-out" class="code"></pre>
+                </div>
+              </div>
+            </div>
+
+            <!-- DISPERSE -->
+            <div id="page-disperse" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 data-i18n="disperse.title">Disperse</h2>
+                  <span class="badge warn-badge" data-i18n="disperse.badge">1 → many</span>
+                </div>
+                <p class="muted" data-i18n="disperse.hint">Send a fixed native amount from one vault wallet to many others on the selected chain.</p>
+                <div class="settings-section danger-box">
+                  <label><span data-i18n="disperse.chain">Network</span> <span class="req-star" title="required">*</span>
+                    <select id="disp-chain" required>
+                      <option value="" data-i18n="raw.chainPick">— select network —</option>
+                      <option value="ethereum">Ethereum</option>
+                      <option value="base">Base</option>
+                      <option value="polygon">Polygon</option>
+                      <option value="arbitrum">Arbitrum</option>
+                      <option value="optimism">Optimism</option>
+                      <option value="bsc">BSC</option>
+                      <option value="avalanche">Avalanche</option>
+                      <option value="blast">Blast</option>
+                      <option value="zora">Zora</option>
+                      <option value="apechain">ApeChain</option>
+                      <option value="shape">Shape</option>
+                      <option value="monad">Monad</option>
+                      <option value="megaeth">MegaETH</option>
+                      <option value="robinhood">Robinhood Chain</option>
+                    </select>
+                  </label>
+                  <label><span data-i18n="disperse.from">From wallet</span> <span class="req-star">*</span>
+                    <select id="disp-from">
+                      <option value="" data-i18n="disperse.fromPick">— select source —</option>
+                    </select>
+                  </label>
+                  <div class="wallet-pick-head">
+                    <span data-i18n="disperse.to">To wallets</span>
+                    <label class="check tight"><input type="checkbox" id="disp-to-all" checked /> <span data-i18n="tasks.selectAll">Select all</span></label>
+                  </div>
+                  <div id="disp-to-list" class="task-wallet-list muted">Unlock vault to load wallets…</div>
+                  <label><span data-i18n="disperse.amount">Amount ETH (each)</span> <span class="req-star">*</span>
+                    <input type="text" id="disp-amount" placeholder="0.001" autocomplete="off" />
+                  </label>
+                  <p id="disp-summary" class="muted small"></p>
+                  <label class="check"><input type="checkbox" id="disp-dry" checked /> Dry run</label>
+                  <button id="btn-disperse" class="danger-btn" type="button" data-i18n="disperse.run">Run Disperse</button>
+                  <pre id="disp-out" class="code"></pre>
                 </div>
               </div>
             </div>

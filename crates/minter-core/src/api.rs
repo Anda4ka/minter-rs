@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 use crate::amount;
 use crate::auth_cache::AuthCache;
 use crate::opensea;
+use crate::disperse::{self, DisperseConfig};
 use crate::raw_mint::{self, RawMintConfig};
 use crate::rpc::RpcClient;
 use crate::settings::Settings;
@@ -1235,6 +1236,61 @@ impl Session {
             dry_run,
         };
         let results = raw_mint::run_raw_mint(&selected, &rpc, &config).await;
+        Ok(results.into_iter().map(SweepResultRow::from).collect())
+    }
+
+    /// Disperse native coin from one vault wallet to many destinations (fixed amount each).
+    pub async fn disperse(
+        &self,
+        chain: &str,
+        from_address: &str,
+        to_addresses: Vec<String>,
+        amount_eth: &str,
+        dry_run: bool,
+    ) -> Result<Vec<SweepResultRow>> {
+        if self.signers.is_empty() {
+            bail!("No wallets unlocked");
+        }
+        if chain.trim().is_empty() {
+            bail!("Network required — select a chain for Disperse");
+        }
+        let from_norm = normalize_address(from_address);
+        let from = self
+            .signers
+            .iter()
+            .find(|s| normalize_address(&format!("{:?}", s.address())) == from_norm)
+            .cloned()
+            .context("Source wallet not found in vault")?;
+        let destinations = disperse::parse_destinations(&to_addresses)?;
+        // Remove source from destinations if present
+        let from_addr = from.address();
+        let destinations: Vec<_> = destinations
+            .into_iter()
+            .filter(|d| *d != from_addr)
+            .collect();
+        if destinations.is_empty() {
+            bail!("Select at least one destination wallet (not the source)");
+        }
+        let amount = amount::eth_to_wei(amount_eth.trim()).context("invalid amount ETH")?;
+        if amount.is_zero() {
+            bail!("Amount must be greater than 0");
+        }
+        let rpc = self.rpc_client_for_chain(chain)?;
+        if let Some(expected) = Self::expected_chain_id(chain) {
+            let actual = rpc.chain_id().await.unwrap_or(0);
+            if actual != 0 && actual != expected {
+                bail!(
+                    "RPC chainId {actual} does not match selected network {} (expected {expected})",
+                    chain.trim()
+                );
+            }
+        }
+        let config = DisperseConfig {
+            amount,
+            gas: self.gas_params(),
+            dry_run,
+        };
+        let results = disperse::run_disperse(&from, &destinations, &rpc, &config).await;
         Ok(results.into_iter().map(SweepResultRow::from).collect())
     }
 
