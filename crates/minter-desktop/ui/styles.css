@@ -1157,6 +1157,11 @@ code {
   background: var(--card);
 }
 
+.req-star {
+  color: var(--danger, #ff6b6b);
+  font-weight: 700;
+}
+
 /* —— Tables —— */
 .table-wrap {
   overflow: auto;

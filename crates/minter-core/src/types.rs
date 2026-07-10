@@ -30,6 +30,12 @@ pub fn chain_id_map() -> HashMap<&'static str, u64> {
     m.insert("shape", 360);
     m.insert("ape_chain", 33139);
     m.insert("apechain", 33139);
+    m.insert("monad", 143);
+    m.insert("megaeth", 4326);
+    m.insert("mega_eth", 4326);
+    m.insert("robinhood", 4663);
+    m.insert("robinhood_chain", 4663);
+    m.insert("robinhood-chain", 4663);
     m
 }
 
@@ -47,6 +53,9 @@ pub enum ChainId {
     Blast = 81457,
     Shape = 360,
     ApeChain = 33139,
+    Monad = 143,
+    MegaEth = 4326,
+    Robinhood = 4663,
 }
 
 impl ChainId {
@@ -64,6 +73,9 @@ impl ChainId {
             81457 => Some(Self::Blast),
             360 => Some(Self::Shape),
             33139 => Some(Self::ApeChain),
+            143 => Some(Self::Monad),
+            4326 => Some(Self::MegaEth),
+            4663 => Some(Self::Robinhood),
             _ => None,
         }
     }
@@ -86,6 +98,9 @@ impl ChainId {
             Self::Blast => "blast",
             Self::Shape => "shape",
             Self::ApeChain => "apechain",
+            Self::Monad => "monad",
+            Self::MegaEth => "megaeth",
+            Self::Robinhood => "robinhood",
         }
     }
 
@@ -103,6 +118,9 @@ impl ChainId {
             Self::Blast,
             Self::Shape,
             Self::ApeChain,
+            Self::Monad,
+            Self::MegaEth,
+            Self::Robinhood,
         ]
     }
 }
@@ -125,6 +143,27 @@ mod chain_id_tests {
         assert_eq!(chain_id_map().get("arbitrum_nova"), Some(&42170));
         assert_eq!(chain_id_map().get("nova"), Some(&42170));
         assert!(ChainId::all().contains(&ChainId::ArbitrumNova));
+    }
+
+    #[test]
+    fn megaeth_and_monad() {
+        assert_eq!(ChainId::from_id(4326), Some(ChainId::MegaEth));
+        assert_eq!(ChainId::MegaEth.id(), 4326);
+        assert_eq!(ChainId::MegaEth.name(), "megaeth");
+        assert_eq!(chain_id_map().get("megaeth"), Some(&4326));
+        assert_eq!(ChainId::from_id(143), Some(ChainId::Monad));
+        assert_eq!(ChainId::Monad.id(), 143);
+        assert_eq!(chain_id_map().get("monad"), Some(&143));
+    }
+
+    #[test]
+    fn robinhood_chain() {
+        assert_eq!(ChainId::from_id(4663), Some(ChainId::Robinhood));
+        assert_eq!(ChainId::Robinhood.id(), 4663);
+        assert_eq!(ChainId::Robinhood.name(), "robinhood");
+        assert_eq!(chain_id_map().get("robinhood"), Some(&4663));
+        assert_eq!(chain_id_map().get("robinhood_chain"), Some(&4663));
+        assert!(ChainId::all().contains(&ChainId::Robinhood));
     }
 }
 

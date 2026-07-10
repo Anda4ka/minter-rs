@@ -513,16 +513,6 @@ impl Session {
         self.signers.first().map(|s| s.address())
     }
 
-    fn require_live_confirm(dry_run: bool, confirm: &str) -> Result<()> {
-        if dry_run {
-            return Ok(());
-        }
-        if confirm.trim() != "CONFIRM" {
-            bail!("Live sweep requires typing CONFIRM exactly");
-        }
-        Ok(())
-    }
-
     fn gas_params(&self) -> GasParams {
         GasParams::from_env(&self.env)
     }
@@ -535,18 +525,45 @@ impl Session {
         Ok(RpcClient::new(urls))
     }
 
+    /// RPC client pinned to a named chain (required for Raw Mint).
+    fn rpc_client_for_chain(&self, chain: &str) -> Result<RpcClient> {
+        let chain = chain.trim();
+        if chain.is_empty() {
+            bail!("Network required — select a chain for Raw Mint");
+        }
+        let urls = collect_rpc_urls_for_chain(&self.env, Some(chain), &[]);
+        if urls.is_empty() {
+            bail!(
+                "No RPC for network '{chain}' — set Alchemy or custom RPC in Settings"
+            );
+        }
+        Ok(RpcClient::new(urls))
+    }
+
+    /// Resolve expected chain id from name (if known).
+    fn expected_chain_id(chain: &str) -> Option<u64> {
+        let map = crate::types::chain_id_map();
+        let key = chain.trim().to_lowercase();
+        map.get(key.as_str()).copied().or_else(|| {
+            // try without separators
+            let compact = key.replace(['_', '-'], "");
+            map.iter()
+                .find(|(k, _)| k.replace(['_', '-'], "") == compact)
+                .map(|(_, v)| *v)
+        })
+    }
+
     /// Sweep native ETH from all vault wallets to `destination`.
-    /// Live mode requires `confirm == "CONFIRM"`.
+    /// `confirm` is ignored (kept for API stability; no typed CONFIRM gate).
     pub async fn sweep_eth(
         &self,
         destination: &str,
         dry_run: bool,
-        confirm: &str,
+        _confirm: &str,
     ) -> Result<Vec<SweepResultRow>> {
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
-        Self::require_live_confirm(dry_run, confirm)?;
         let dest: Address = destination
             .trim()
             .parse()
@@ -562,18 +579,17 @@ impl Session {
     }
 
     /// Sweep ERC-721 NFTs from all vault wallets to `destination`.
-    /// Live mode requires `confirm == "CONFIRM"`.
+    /// `confirm` is ignored (kept for API stability; no typed CONFIRM gate).
     pub async fn sweep_nfts(
         &self,
         contract: &str,
         destination: &str,
         dry_run: bool,
-        confirm: &str,
+        _confirm: &str,
     ) -> Result<Vec<SweepResultRow>> {
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
-        Self::require_live_confirm(dry_run, confirm)?;
         let contract: Address = contract
             .trim()
             .parse()
@@ -1115,12 +1131,25 @@ impl Session {
     pub async fn discover_raw_functions(
         &self,
         contract: &str,
+        chain: &str,
     ) -> Result<Vec<DiscoveredFunction>> {
+        if chain.trim().is_empty() {
+            bail!("Network required — select a chain for Raw Mint");
+        }
         let contract: Address = contract
             .trim()
             .parse()
             .context("invalid contract address")?;
-        let rpc = self.rpc_client()?;
+        let rpc = self.rpc_client_for_chain(chain)?;
+        if let Some(expected) = Self::expected_chain_id(chain) {
+            let actual = rpc.chain_id().await.unwrap_or(0);
+            if actual != 0 && actual != expected {
+                bail!(
+                    "RPC chainId {actual} does not match selected network {} (expected {expected})",
+                    chain.trim()
+                );
+            }
+        }
         let found = raw_mint::discover_functions(&rpc, &contract).await?;
         Ok(found
             .into_iter()
@@ -1128,20 +1157,53 @@ impl Session {
             .collect())
     }
 
-    /// Raw contract mint for all vault wallets.
+    /// Raw contract mint for selected (or all) vault wallets.
+    ///
+    /// `wallet_addresses`: if set and non-empty, only those vault wallets; else all unlocked.
     pub async fn raw_mint(
         &self,
+        chain: &str,
         contract: &str,
         function: &str,
         params: Vec<String>,
         value_eth: &str,
         dry_run: bool,
-        confirm: &str,
+        _confirm: &str,
+        wallet_addresses: Option<Vec<String>>,
     ) -> Result<Vec<SweepResultRow>> {
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
-        Self::require_live_confirm(dry_run, confirm)?;
+        if chain.trim().is_empty() {
+            bail!("Network required — select a chain for Raw Mint");
+        }
+        let filter: Option<std::collections::HashSet<String>> =
+            wallet_addresses.and_then(|v| {
+                let set: std::collections::HashSet<String> = v
+                    .into_iter()
+                    .map(|a| normalize_address(&a))
+                    .filter(|a| a.len() > 2)
+                    .collect();
+                if set.is_empty() {
+                    None
+                } else {
+                    Some(set)
+                }
+            });
+        let selected: Vec<Signer> = self
+            .signers
+            .iter()
+            .filter(|s| {
+                filter
+                    .as_ref()
+                    .map(|f| f.contains(&normalize_address(&format!("{:?}", s.address()))))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        if selected.is_empty() {
+            bail!("No matching wallets in vault for the selection");
+        }
         let contract: Address = contract
             .trim()
             .parse()
@@ -1154,7 +1216,16 @@ impl Session {
         } else {
             amount::eth_to_wei(value_eth.trim()).context("invalid ETH value")?
         };
-        let rpc = self.rpc_client()?;
+        let rpc = self.rpc_client_for_chain(chain)?;
+        if let Some(expected) = Self::expected_chain_id(chain) {
+            let actual = rpc.chain_id().await.unwrap_or(0);
+            if actual != 0 && actual != expected {
+                bail!(
+                    "RPC chainId {actual} does not match selected network {} (expected {expected})",
+                    chain.trim()
+                );
+            }
+        }
         let config = RawMintConfig {
             contract,
             function: function.trim().to_string(),
@@ -1163,7 +1234,7 @@ impl Session {
             gas: self.gas_params(),
             dry_run,
         };
-        let results = raw_mint::run_raw_mint(&self.signers, &rpc, &config).await;
+        let results = raw_mint::run_raw_mint(&selected, &rpc, &config).await;
         Ok(results.into_iter().map(SweepResultRow::from).collect())
     }
 
@@ -1459,6 +1530,10 @@ fn chain_id_label(id: u64) -> String {
         81457 => "Blast".into(),
         7777777 => "Zora".into(),
         33139 => "ApeChain".into(),
+        360 => "Shape".into(),
+        143 => "Monad".into(),
+        4326 => "MegaETH".into(),
+        4663 => "Robinhood Chain".into(),
         0 => "Not selected".into(),
         other => format!("chainId {other}"),
     }
@@ -1573,7 +1648,29 @@ fn provider_chain_slugs(
         "bsc" => (None, Some("bsc-mainnet"), None),
         "blast" => (Some("blast-mainnet"), None, Some("blast")),
         "ape_chain" | "apechain" => (None, None, Some("apechain")),
+        "monad" => (Some("monad-mainnet"), None, None),
+        "megaeth" | "mega_eth" => (None, None, None),
+        "robinhood" | "robinhood_chain" | "robinhood-chain" => {
+            (Some("robinhood-mainnet"), None, None)
+        }
+        "shape" => (None, None, None),
         _ => (None, None, None),
+    }
+}
+
+/// Well-known public RPC endpoints when no key/custom URL is configured.
+fn public_rpc_fallback(chain: &str) -> Vec<&'static str> {
+    match chain.to_lowercase().as_str() {
+        "megaeth" | "mega_eth" => vec!["https://mainnet.megaeth.com/rpc"],
+        "monad" => vec!["https://rpc.monad.xyz", "https://rpc1.monad.xyz"],
+        "robinhood" | "robinhood_chain" | "robinhood-chain" => {
+            vec!["https://rpc.mainnet.chain.robinhood.com"]
+        }
+        "shape" => vec!["https://mainnet.shape.network"],
+        "zora" => vec!["https://rpc.zora.energy"],
+        "apechain" | "ape_chain" => vec!["https://rpc.apechain.com/http"],
+        "blast" => vec!["https://rpc.blast.io"],
+        _ => vec![],
     }
 }
 
@@ -1654,6 +1751,11 @@ pub fn collect_rpc_urls_for_chain(
     for url in provider_rpc_urls_for_chain(env, chain) {
         add_unique_url(&mut urls, url);
     }
+    if let Some(c) = chain.filter(|c| !c.is_empty()) {
+        for url in public_rpc_fallback(c) {
+            add_unique_url(&mut urls, url.to_string());
+        }
+    }
     if let Some(url) = env.get("RPC_URL") {
         add_unique_url(&mut urls, url.clone());
     }
@@ -1662,7 +1764,7 @@ pub fn collect_rpc_urls_for_chain(
             add_unique_url(&mut urls, url.to_string());
         }
     }
-    // Always merge generic collect (multi-chain Alchemy etc.) when chain-specific empty
+    // Merge generic collect only when still empty (no chain-specific + no public fallback)
     if urls.is_empty() {
         for u in collect_rpc_urls(env) {
             add_unique_url(&mut urls, u);

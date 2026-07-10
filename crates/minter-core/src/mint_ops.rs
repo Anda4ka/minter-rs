@@ -97,6 +97,12 @@ pub fn explorer_tx_url(chain: &str, tx_hash: &str) -> String {
         "blast" | "81457" => "https://blastscan.io/tx/",
         "zora" | "7777777" => "https://explorer.zora.energy/tx/",
         "apechain" | "33139" => "https://apescan.io/tx/",
+        "shape" | "360" => "https://shapescan.xyz/tx/",
+        "monad" | "143" => "https://monadscan.com/tx/",
+        "megaeth" | "mega_eth" | "4326" => "https://mega.etherscan.io/tx/",
+        "robinhood" | "robinhood_chain" | "robinhood-chain" | "4663" => {
+            "https://robinhoodchain.blockscout.com/tx/"
+        }
         _ => "https://etherscan.io/tx/",
     };
     format!("{base}{h}")

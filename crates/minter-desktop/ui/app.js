@@ -161,6 +161,17 @@ function explorerTxUrlLocal(chain, txHash) {
     "137": "https://polygonscan.com/tx/",
     arbitrum: "https://arbiscan.io/tx/",
     "42161": "https://arbiscan.io/tx/",
+    monad: "https://monadscan.com/tx/",
+    "143": "https://monadscan.com/tx/",
+    megaeth: "https://mega.etherscan.io/tx/",
+    "4326": "https://mega.etherscan.io/tx/",
+    robinhood: "https://robinhoodchain.blockscout.com/tx/",
+    "robinhood_chain": "https://robinhoodchain.blockscout.com/tx/",
+    "4663": "https://robinhoodchain.blockscout.com/tx/",
+    apechain: "https://apescan.io/tx/",
+    "33139": "https://apescan.io/tx/",
+    shape: "https://shapescan.xyz/tx/",
+    "360": "https://shapescan.xyz/tx/",
   };
   return (map[c] || "https://etherscan.io/tx/") + h;
 }
@@ -291,23 +302,6 @@ $("modal-confirm-input")?.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeModal(false);
 });
 
-/** Live action gate for sweep/raw (mint Start does not use this). */
-async function requireLiveConfirm(kind, lines = []) {
-  const word = "CONFIRM";
-  const ok = await openConfirmModal({
-    title: "LIVE action",
-    body: "Real transactions will be broadcast. This cannot be undone.",
-    lines: [
-      ...lines,
-      "Prefer Dry Run until you are sure.",
-      "Type CONFIRM exactly.",
-    ],
-    requireWord: word,
-    okLabel: "Run LIVE",
-  });
-  return ok ? word : null;
-}
-
 function escapeHtml(t) {
   return String(t)
     .replace(/&/g, "&amp;")
@@ -393,6 +387,10 @@ async function navigate(name) {
   if (name === "wl") {
     await refreshStatus();
     await loadWlWallets();
+  }
+  if (name === "raw") {
+    await refreshStatus();
+    await loadRawWallets();
   }
 }
 
@@ -582,15 +580,7 @@ $("mode-chip")?.addEventListener("click", async () => {
   const chip = $("mode-chip");
   const currentlyDry = chip.dataset.dry !== "0";
   if (currentlyDry) {
-    // switching to LIVE
-    const ok = await openConfirmModal({
-      title: "Enable LIVE mode",
-      body: "Dry Run will be OFF. All subsequent mints/sweeps can send real transactions if not re-checked as dry.",
-      lines: ["Burner wallets only.", "You can switch back anytime."],
-      requireWord: "LIVE",
-      okLabel: "Go LIVE",
-    });
-    if (!ok) return;
+    // switching to LIVE — one click, no typed word
     try {
       await invoke("set_dry_run", { dryRun: false });
       if ($("set-dry")) $("set-dry").checked = false;
@@ -1268,17 +1258,10 @@ $("btn-sweep-eth").addEventListener("click", async () => {
     $("sweep-eth-out").textContent = "Destination required";
     return;
   }
-  let confirm = $("sweep-eth-confirm").value.trim();
-  if (!dry) {
-    const word = await requireLiveConfirm("sweep", [`Destination: ${to}`, "All vault wallets → native balance"]);
-    if (!word) return;
-    confirm = word;
-    $("sweep-eth-confirm").value = word;
-  }
   $("sweep-eth-out").textContent = dry ? "Dry-run Sweep ETH…" : "LIVE Sweep ETH…";
   $("btn-sweep-eth").disabled = true;
   try {
-    const rows = await invoke("sweep_eth", { destination: to, dryRun: dry, confirm });
+    const rows = await invoke("sweep_eth", { destination: to, dryRun: dry, confirm: "" });
     $("sweep-eth-out").textContent = formatSweepRows(rows);
   } catch (e) {
     $("sweep-eth-out").textContent = String(e);
@@ -1295,17 +1278,15 @@ $("btn-sweep-nft").addEventListener("click", async () => {
     $("sweep-nft-out").textContent = "Contract + destination required";
     return;
   }
-  let confirm = $("sweep-nft-confirm").value.trim();
-  if (!dry) {
-    const word = await requireLiveConfirm("sweep", [`Contract: ${contract}`, `To: ${to}`]);
-    if (!word) return;
-    confirm = word;
-    $("sweep-nft-confirm").value = word;
-  }
   $("sweep-nft-out").textContent = dry ? "Dry-run Sweep NFTs…" : "LIVE Sweep NFTs…";
   $("btn-sweep-nft").disabled = true;
   try {
-    const rows = await invoke("sweep_nfts", { contract, destination: to, dryRun: dry, confirm });
+    const rows = await invoke("sweep_nfts", {
+      contract,
+      destination: to,
+      dryRun: dry,
+      confirm: "",
+    });
     $("sweep-nft-out").textContent = formatSweepRows(rows);
   } catch (e) {
     $("sweep-nft-out").textContent = String(e);
@@ -1506,8 +1487,126 @@ $("btn-test-auth")?.addEventListener("click", async () => {
   }
 });
 
+function rawSelectedChain() {
+  return ($("raw-chain")?.value || "").trim();
+}
+
+async function loadRawWallets() {
+  const box = $("raw-wallet-list");
+  if (!box) return;
+  try {
+    const list = await invoke("list_wallets");
+    if (!list.length) {
+      box.innerHTML = `<div class="muted" style="padding:8px">${escapeHtml(t("wallets.empty"))}</div>`;
+      return;
+    }
+    const prev = new Set(
+      [...document.querySelectorAll(".raw-wallet-cb:checked")].map((c) =>
+        String(c.value).toLowerCase()
+      )
+    );
+    const keepPrev = prev.size > 0;
+    box.innerHTML = "";
+    for (const w of list) {
+      const row = document.createElement("label");
+      row.className = "task-wallet-row";
+      const checked = keepPrev
+        ? prev.has(String(w.address).toLowerCase())
+        : true;
+      row.innerHTML = `<input type="checkbox" class="raw-wallet-cb" value="${escapeHtml(w.address)}" ${
+        checked ? "checked" : ""
+      } />
+        <span>${w.index}. ${escapeHtml(shortAddr(w.address))}</span>`;
+      box.appendChild(row);
+    }
+    if ($("raw-wallets-all")) {
+      const cbs = [...document.querySelectorAll(".raw-wallet-cb")];
+      $("raw-wallets-all").checked =
+        cbs.length > 0 && cbs.every((c) => c.checked);
+    }
+  } catch (e) {
+    box.textContent = String(e);
+  }
+}
+
+function selectedRawWallets() {
+  return [...document.querySelectorAll(".raw-wallet-cb:checked")].map((cb) => cb.value);
+}
+
+$("raw-wallets-all")?.addEventListener("change", (e) => {
+  const on = e.target.checked;
+  document.querySelectorAll(".raw-wallet-cb").forEach((cb) => {
+    cb.checked = on;
+  });
+});
+
+$("raw-wallet-list")?.addEventListener("change", (e) => {
+  if (!e.target?.classList?.contains("raw-wallet-cb")) return;
+  const cbs = [...document.querySelectorAll(".raw-wallet-cb")];
+  if ($("raw-wallets-all") && cbs.length) {
+    $("raw-wallets-all").checked = cbs.every((c) => c.checked);
+  }
+});
+
+/** Parse ABI arg types from `name(type1,type2)` (no nested tuples depth tracking beyond parens). */
+function rawFnArgTypes(sig) {
+  const s = String(sig || "").trim();
+  const open = s.indexOf("(");
+  const close = s.lastIndexOf(")");
+  if (open < 0 || close <= open) return null;
+  const inner = s.slice(open + 1, close).trim();
+  if (!inner) return [];
+  const types = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of inner) {
+    if (ch === "(") {
+      depth++;
+      cur += ch;
+    } else if (ch === ")") {
+      depth--;
+      cur += ch;
+    } else if (ch === "," && depth === 0) {
+      if (cur.trim()) types.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) types.push(cur.trim());
+  return types;
+}
+
+function updateRawFnHint() {
+  const hint = $("raw-fn-hint");
+  const paramsEl = $("raw-params");
+  if (!hint) return;
+  const types = rawFnArgTypes($("raw-fn")?.value);
+  if (types === null) {
+    hint.textContent = "";
+    return;
+  }
+  if (types.length === 0) {
+    hint.textContent =
+      t("raw.fnHint0") ||
+      "This function has 0 args → leave Params empty (do not put quantity here).";
+    if (paramsEl) paramsEl.placeholder = t("raw.paramsEmpty") || "leave empty";
+  } else {
+    hint.textContent =
+      (t("raw.fnHintN") || "Expected {n} param(s): {types}")
+        .replace("{n}", String(types.length))
+        .replace("{types}", types.join(", "));
+    if (paramsEl) paramsEl.placeholder = types.join(", ");
+  }
+}
+
 $("btn-raw-discover").addEventListener("click", async () => {
+  const chain = rawSelectedChain();
   const contract = $("raw-contract").value.trim();
+  if (!chain) {
+    $("raw-out").textContent = t("raw.needChain") || "Select network first";
+    return;
+  }
   if (!contract) {
     $("raw-out").textContent = "Contract required";
     return;
@@ -1515,7 +1614,7 @@ $("btn-raw-discover").addEventListener("click", async () => {
   $("raw-out").textContent = "Scanning…";
   $("btn-raw-discover").disabled = true;
   try {
-    const fns = await invoke("discover_raw_functions", { contract });
+    const fns = await invoke("discover_raw_functions", { contract, chain });
     const sel = $("raw-fn-select");
     sel.innerHTML = '<option value="">— select —</option>';
     for (const f of fns) {
@@ -1528,6 +1627,7 @@ $("btn-raw-discover").addEventListener("click", async () => {
       $("raw-fn").value = fns[0].signature;
       sel.value = fns[0].signature;
     }
+    updateRawFnHint();
     $("raw-out").textContent = fns.length ? `Found ${fns.length} function(s)` : "No functions discovered";
   } catch (e) {
     $("raw-out").textContent = String(e);
@@ -1538,38 +1638,54 @@ $("btn-raw-discover").addEventListener("click", async () => {
 
 $("raw-fn-select").addEventListener("change", () => {
   if ($("raw-fn-select").value) $("raw-fn").value = $("raw-fn-select").value;
+  updateRawFnHint();
 });
+$("raw-fn")?.addEventListener("input", updateRawFnHint);
+$("raw-fn")?.addEventListener("change", updateRawFnHint);
 
 $("btn-raw-mint").addEventListener("click", async () => {
+  const chain = rawSelectedChain();
   const contract = $("raw-contract").value.trim();
   const fn = $("raw-fn").value.trim();
   const dry = $("raw-dry").checked;
-  let confirm = $("raw-confirm").value.trim();
-  if (!contract || !fn) {
-    $("raw-out").textContent = "Contract + function required";
+  const wallets = selectedRawWallets();
+  if (!chain || !contract || !fn) {
+    $("raw-out").textContent = t("raw.needContractFn") || "Network + contract + function required";
     return;
   }
-  if (!dry) {
-    const word = await requireLiveConfirm("raw", [`Contract: ${contract}`, `Fn: ${fn}`]);
-    if (!word) return;
-    confirm = word;
-    $("raw-confirm").value = word;
+  if (!wallets.length) {
+    $("raw-out").textContent = t("raw.needWallets") || "Select at least one wallet";
+    return;
   }
+  const types = rawFnArgTypes(fn);
   const params = ($("raw-params").value || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  $("raw-out").textContent = dry ? "Dry-run raw mint…" : "LIVE raw mint…";
+  if (types && types.length !== params.length) {
+    $("raw-out").textContent =
+      (t("raw.paramMismatch") ||
+        "Params count mismatch: {fn} expects {exp} arg(s), got {got}. For freemint() leave Params empty.")
+        .replace("{fn}", fn)
+        .replace("{exp}", String(types.length))
+        .replace("{got}", String(params.length));
+    return;
+  }
+  $("raw-out").textContent = dry
+    ? `Dry-run raw mint (${wallets.length} wallet(s))…`
+    : `LIVE raw mint (${wallets.length} wallet(s))…`;
   $("btn-raw-mint").disabled = true;
   try {
     const rows = await invoke("raw_mint", {
       input: {
+        chain,
         contract,
         function: fn,
         params,
         valueEth: $("raw-value").value || "0",
         dryRun: dry,
-        confirm,
+        confirm: "",
+        walletAddresses: wallets,
       },
     });
     $("raw-out").textContent = formatSweepRows(rows);

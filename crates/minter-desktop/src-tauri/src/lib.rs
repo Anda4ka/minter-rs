@@ -716,10 +716,11 @@ async fn measure_latency(
 async fn discover_raw_functions(
     state: State<'_, Arc<AppState>>,
     contract: String,
+    chain: String,
 ) -> Result<Vec<minter_core::DiscoveredFunction>, String> {
     let session = state.session.lock().clone();
     session
-        .discover_raw_functions(&contract)
+        .discover_raw_functions(&contract, &chain)
         .await
         .map_err(|e| e.to_string())
 }
@@ -727,12 +728,15 @@ async fn discover_raw_functions(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawMintInput {
+    chain: String,
     contract: String,
     function: String,
     params: Option<Vec<String>>,
     value_eth: Option<String>,
     dry_run: Option<bool>,
     confirm: Option<String>,
+    /// Selected vault addresses (if empty/absent → all wallets).
+    wallet_addresses: Option<Vec<String>>,
 }
 
 #[tauri::command]
@@ -743,12 +747,14 @@ async fn raw_mint(
     let session = state.session.lock().clone();
     session
         .raw_mint(
+            &input.chain,
             &input.contract,
             &input.function,
             input.params.unwrap_or_default(),
             input.value_eth.as_deref().unwrap_or("0"),
             input.dry_run.unwrap_or(true),
             input.confirm.as_deref().unwrap_or(""),
+            input.wallet_addresses,
         )
         .await
         .map_err(|e| e.to_string())
