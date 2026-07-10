@@ -566,14 +566,21 @@ pub async fn run_sweep_eth(
             }
         };
 
-    let gas_limit = {
-        let dest_code = rpc.get_code(&config.destination).await.unwrap_or_default();
-        if dest_code.is_empty() {
-            21000u64
-        } else {
-            50000u64
-        }
-    };
+    // Unified L2-safe transfer gas (estimate + floor). Sample first non-dest wallet.
+    let sample_from = signers
+        .iter()
+        .map(|s| s.address())
+        .find(|a| *a != config.destination)
+        .unwrap_or(signers[0].address());
+    let gas_limit = crate::gas::resolve_native_transfer_gas(
+        rpc,
+        &sample_from,
+        &config.destination,
+        U256::ZERO, // estimate transfer shape; amount varies per wallet
+        chain_id,
+        config.gas.gas_multiplier,
+    )
+    .await;
     let gas_cost = max_fee * U256::from(gas_limit);
 
     crate::rlog!("\nETH Sweep Summary:");

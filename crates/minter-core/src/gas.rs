@@ -1,6 +1,7 @@
-use alloy_primitives::U256;
+use alloy_primitives::{Address, Bytes, U256};
 use anyhow::{Context, Result, bail};
 
+use crate::rpc::RpcClient;
 use crate::types::{GasMode, GasParams};
 
 pub fn calculate_fees(
@@ -44,6 +45,104 @@ pub fn calculate_fees(
             Ok((mf, pf))
         }
     }
+}
+
+/// L2 / Orbit chains where a bare 21k transfer often fails with "intrinsic gas too low".
+pub fn chain_needs_elevated_gas(chain_id: u64) -> bool {
+    matches!(
+        chain_id,
+        10 | // Optimism
+        8453 | // Base
+        42161 | // Arbitrum One
+        42170 | // Arbitrum Nova
+        81457 | // Blast
+        7777777 | // Zora
+        33139 | // ApeChain
+        360 | // Shape
+        4326 | // MegaETH
+        4663 | // Robinhood Chain
+        143 // Monad
+    )
+}
+
+/// Apply multiplier + floors for a raw estimate.
+pub fn apply_gas_limit(
+    estimated: u64,
+    gas_multiplier: f64,
+    chain_id: u64,
+    min_floor: u64,
+) -> u64 {
+    const MIN_EOA: u64 = 21_000;
+    const L2_FLOOR: u64 = 150_000;
+    const CAP: u64 = 15_000_000;
+
+    let mult = if gas_multiplier > 1.0 {
+        gas_multiplier
+    } else {
+        1.15
+    };
+    let base = estimated.max(MIN_EOA).max(min_floor);
+    let mut limit = ((base as f64) * mult).ceil() as u64;
+    limit = limit.max(base);
+    if chain_needs_elevated_gas(chain_id) {
+        limit = limit.max(L2_FLOOR);
+    }
+    limit.min(CAP)
+}
+
+/// eth_estimateGas for a call (any data) + L2-safe floor.
+pub async fn resolve_call_gas(
+    rpc: &RpcClient,
+    from: &Address,
+    to: &Address,
+    value: U256,
+    data: &Bytes,
+    chain_id: u64,
+    gas_multiplier: f64,
+) -> u64 {
+    const FALLBACK: u64 = 250_000;
+    let estimated = match rpc.estimate_gas(from, to, value, data).await {
+        Ok(g) => {
+            crate::rlog!("  eth_estimateGas = {}", g);
+            g
+        }
+        Err(e) => {
+            crate::rlog!("  eth_estimateGas failed ({e}) — fallback {}", FALLBACK);
+            FALLBACK
+        }
+    };
+    apply_gas_limit(estimated, gas_multiplier, chain_id, 21_000)
+}
+
+/// Empty-data native transfer gas (Disperse / Sweep ETH).
+pub async fn resolve_native_transfer_gas(
+    rpc: &RpcClient,
+    from: &Address,
+    to: &Address,
+    value: U256,
+    chain_id: u64,
+    gas_multiplier: f64,
+) -> u64 {
+    resolve_call_gas(
+        rpc,
+        from,
+        to,
+        value,
+        &Bytes::new(),
+        chain_id,
+        gas_multiplier,
+    )
+    .await
+}
+
+/// Bump gas after "intrinsic gas too low" (capped).
+pub fn bump_gas_after_intrinsic(current: u64) -> u64 {
+    current.saturating_mul(3).max(300_000).min(2_000_000)
+}
+
+pub fn is_intrinsic_gas_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("intrinsic gas too low") || m.contains("gas too low")
 }
 
 #[cfg(test)]
@@ -139,5 +238,26 @@ mod tests {
         assert_eq!(max_retries_from_env(&env), 5);
         env.insert("MAX_RETRIES".into(), "0".into());
         assert_eq!(max_retries_from_env(&env), 20);
+    }
+
+    #[test]
+    fn l2_floor_robinhood() {
+        assert!(chain_needs_elevated_gas(4663));
+        let lim = apply_gas_limit(21_000, 1.15, 4663, 21_000);
+        assert!(lim >= 150_000);
+    }
+
+    #[test]
+    fn eth_mainnet_keeps_estimate_scale() {
+        assert!(!chain_needs_elevated_gas(1));
+        let lim = apply_gas_limit(21_000, 1.15, 1, 21_000);
+        assert!(lim >= 21_000);
+        assert!(lim < 150_000);
+    }
+
+    #[test]
+    fn intrinsic_bump() {
+        assert!(is_intrinsic_gas_error("intrinsic gas too low"));
+        assert_eq!(bump_gas_after_intrinsic(21_000), 300_000);
     }
 }

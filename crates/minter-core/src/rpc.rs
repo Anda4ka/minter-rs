@@ -47,6 +47,7 @@ impl RpcClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        let short = Self::short_url(&url);
         let body = json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -59,32 +60,30 @@ impl RpcClient {
             .json(&body)
             .send()
             .await
-            .with_context(|| format!("RPC request failed via {}", Self::short_url(&url)))?;
+            .with_context(|| format!("RPC {method} request failed via {short}"))?;
         let status = resp.status();
-        let text = resp.text().await.with_context(|| {
-            format!("failed to read RPC response from {}", Self::short_url(&url))
-        })?;
+        let text = resp
+            .text()
+            .await
+            .with_context(|| format!("RPC {method}: failed to read response from {short}"))?;
         if !status.is_success() {
             bail!(
-                "RPC HTTP {} from {}: {}",
-                status,
-                Self::short_url(&url),
+                "RPC {method} HTTP {status} via {short}: {}",
                 &text[..text.len().min(240)]
             );
         }
         let data: serde_json::Value = serde_json::from_str(&text).with_context(|| {
             format!(
-                "failed to parse RPC response from {}: {}",
-                Self::short_url(&url),
+                "RPC {method}: bad JSON from {short}: {}",
                 &text[..text.len().min(240)]
             )
         })?;
         if let Some(error) = data.get("error") {
-            bail!("RPC {} error: {}", method, error);
+            bail!("RPC {method} via {short} error: {error}");
         }
         data.get("result")
             .cloned()
-            .context("no result in RPC response")
+            .with_context(|| format!("RPC {method} via {short}: no result"))
     }
 
     pub async fn get_fastest_provider(&self) -> Result<String> {
@@ -258,35 +257,60 @@ impl RpcClient {
             )
         })?;
         if let Some(error) = data.get("error") {
-            bail!("RPC {} error: {}", method, error);
+            bail!(
+                "RPC {} via {} error: {}",
+                method,
+                Self::short_url(url),
+                error
+            );
         }
-        data.get("result")
-            .cloned()
-            .context("no result in RPC response")
+        data.get("result").cloned().with_context(|| {
+            format!(
+                "RPC {} via {}: no result in response",
+                method,
+                Self::short_url(url)
+            )
+        })
     }
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         let max_urls = self.urls.len().min(3);
+        if max_urls == 0 {
+            bail!("No RPC URLs configured (method {method})");
+        }
+        let mut errors: Vec<String> = Vec::new();
         for (i, url) in self.urls.iter().take(max_urls).enumerate() {
             match tokio::time::timeout(Duration::from_secs(5), self.rpc_call(url, method, params.clone())).await {
                 Ok(Ok(result)) => return Ok(result),
                 Ok(Err(e)) => {
-                    if i < max_urls - 1 {
-                        crate::rlog!("RPC {} failed via {}: {}, trying next...", method, Self::short_url(url), e);
-                    } else {
-                        return Err(e);
+                    let msg = format!("{} via {}: {}", method, Self::short_url(url), e);
+                    crate::rlog!("RPC fail: {}", msg);
+                    errors.push(msg);
+                    if i + 1 >= max_urls {
+                        bail!(
+                            "All RPC {} attempts failed ({} node(s)): {}",
+                            method,
+                            max_urls,
+                            errors.join(" | ")
+                        );
                     }
                 }
                 Err(_) => {
-                    if i < max_urls - 1 {
-                        crate::rlog!("RPC {} timeout via {} (5s), trying next...", method, Self::short_url(url));
-                    } else {
-                        bail!("RPC {} timeout on all {} nodes", method, max_urls);
+                    let msg = format!("{} via {}: timeout 5s", method, Self::short_url(url));
+                    crate::rlog!("RPC fail: {}", msg);
+                    errors.push(msg);
+                    if i + 1 >= max_urls {
+                        bail!(
+                            "All RPC {} attempts failed ({} node(s)): {}",
+                            method,
+                            max_urls,
+                            errors.join(" | ")
+                        );
                     }
                 }
             }
         }
-        bail!("No RPC URLs")
+        bail!("No RPC URLs for method {method}")
     }
 
     pub async fn chain_id(&self) -> Result<u64> {
@@ -483,15 +507,24 @@ impl RpcClient {
                     return Ok(hash);
                 }
                 Ok((url, Err(e))) => {
-                    crate::rlog!("RPC send failed via {}: {}", Self::short_url(&url), e);
-                    last_error = Some(e);
+                    let msg = format!(
+                        "eth_sendRawTransaction via {}: {}",
+                        Self::short_url(&url),
+                        e
+                    );
+                    crate::rlog!("RPC send failed: {}", msg);
+                    last_error = Some(msg);
                 }
-                Err(e) => crate::rlog!("RPC send task failed: {}", e),
+                Err(e) => {
+                    let msg = format!("eth_sendRawTransaction task join: {e}");
+                    crate::rlog!("{}", msg);
+                    last_error = Some(msg);
+                }
             }
         }
         bail!(
-            "All RPC send attempts failed: {}",
-            last_error.map(|e| e.to_string()).unwrap_or_default()
+            "All RPC eth_sendRawTransaction attempts failed: {}",
+            last_error.unwrap_or_else(|| "unknown".into())
         )
     }
 

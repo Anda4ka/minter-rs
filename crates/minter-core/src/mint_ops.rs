@@ -113,6 +113,46 @@ pub fn mint_busy_message() -> &'static str {
     "Mint already running — wait or Stop first"
 }
 
+/// Whether Flashbots is allowed for this chain override / id (mainnet only).
+pub fn flashbots_allowed_for_chain(chain_override: Option<&str>, chain_id: Option<u64>) -> bool {
+    if let Some(id) = chain_id {
+        return id == 1;
+    }
+    match chain_override.map(|c| c.trim().to_lowercase()).as_deref() {
+        Some("ethereum") | Some("mainnet") | Some("eth") | Some("1") => true,
+        _ => false,
+    }
+}
+
+/// Classify Flashbots lifecycle for UI (stable English tokens).
+pub fn flashbots_status_label(status: &str, error: Option<&str>) -> &'static str {
+    let e = error.unwrap_or("").to_lowercase();
+    let st = status.to_uppercase();
+    if st.contains("CONFIRM") || e.contains("confirmed") {
+        return "confirmed";
+    }
+    if e.contains("sim ok") || (st.contains("DRY") && e.contains("callbundle") && !e.contains("fail"))
+    {
+        return "sim_ok";
+    }
+    if e.contains("sim fail") || e.contains("callbundle:") {
+        return "sim_fail";
+    }
+    if e.contains("submit fail") {
+        return "submit_fail";
+    }
+    if e.contains("not included") {
+        return "not_included";
+    }
+    if e.contains("submitted") || e.contains("waiting inclusion") {
+        return "submitted";
+    }
+    if st.contains("FAIL") {
+        return "failed";
+    }
+    "unknown"
+}
+
 /// User-facing chain mismatch hint.
 pub fn chain_mismatch_message(expected: &str, got: &str) -> String {
     format!(
@@ -221,6 +261,47 @@ mod tests {
         assert!(!is_on_chain_confirm_status("DRY_RUN_OK"));
         assert!(!is_on_chain_confirm_status("SIM"));
         assert!(!is_on_chain_confirm_status("FAILED"));
+    }
+
+    #[test]
+    fn flashbots_only_ethereum() {
+        assert!(flashbots_allowed_for_chain(Some("ethereum"), None));
+        assert!(flashbots_allowed_for_chain(None, Some(1)));
+        assert!(!flashbots_allowed_for_chain(Some("auto"), None));
+        assert!(!flashbots_allowed_for_chain(Some("base"), None));
+        assert!(!flashbots_allowed_for_chain(Some("robinhood"), Some(4663)));
+    }
+
+    #[test]
+    fn flashbots_status_labels() {
+        assert_eq!(
+            flashbots_status_label("DRY_RUN_OK", Some("sim OK (callBundle) — not submitted")),
+            "sim_ok"
+        );
+        assert_eq!(
+            flashbots_status_label("SENT", Some("submitted — waiting inclusion")),
+            "submitted"
+        );
+        assert_eq!(
+            flashbots_status_label("SENT", Some("submitted — not included (timeout)")),
+            "not_included"
+        );
+        assert_eq!(
+            flashbots_status_label("CONFIRMED", Some("confirmed")),
+            "confirmed"
+        );
+        assert_eq!(
+            flashbots_status_label("FAILED", Some("submit FAIL: relay down")),
+            "submit_fail"
+        );
+    }
+
+    /// Public mint path must stay default (use_flashbots None/false).
+    #[test]
+    fn public_send_mode_default() {
+        let opts = crate::api::MintOptions::default();
+        assert_eq!(opts.use_flashbots, None);
+        assert!(!opts.use_flashbots.unwrap_or(false));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, Bytes, U256};
 use anyhow::{bail, Context, Result};
 
-use crate::gas;
+use crate::gas::{self, bump_gas_after_intrinsic, is_intrinsic_gas_error};
 use crate::rpc::RpcClient;
 use crate::sign::*;
 use crate::sweep::fmt_eth;
@@ -79,7 +79,7 @@ pub async fn run_disperse(
         .copied()
         .find(|d| *d != from_addr)
         .unwrap_or(destinations[0]);
-    let gas_limit = resolve_native_transfer_gas(
+    let gas_limit = gas::resolve_native_transfer_gas(
         rpc,
         &from_addr,
         &sample_to,
@@ -238,11 +238,8 @@ pub async fn run_disperse(
         // Retry once with bumped gas if RPC rejects intrinsic gas
         if let Err(ref e) = send_result {
             let msg = e.to_lowercase();
-            if msg.contains("intrinsic gas too low") || msg.contains("gas too low") {
-                let bumped = gas_limit
-                    .saturating_mul(3)
-                    .max(300_000)
-                    .min(2_000_000);
+            if is_intrinsic_gas_error(&msg) {
+                let bumped = bump_gas_after_intrinsic(gas_limit);
                 crate::rlog!(
                     "  intrinsic gas too low — retry with gas_limit {} → {}",
                     gas_limit,
@@ -366,69 +363,6 @@ pub fn parse_destinations(raw: &[String]) -> Result<Vec<Address>> {
         bail!("No destination wallets selected");
     }
     Ok(out)
-}
-
-/// L2 / Orbit chains where a bare 21k transfer often fails with "intrinsic gas too low".
-fn chain_needs_elevated_transfer_gas(chain_id: u64) -> bool {
-    matches!(
-        chain_id,
-        10 |           // Optimism
-        8453 |         // Base
-        42161 |        // Arbitrum One
-        42170 |        // Arbitrum Nova
-        81457 |        // Blast
-        7777777 |      // Zora
-        33139 |        // ApeChain
-        360 |          // Shape
-        4326 |         // MegaETH
-        4663 |         // Robinhood Chain
-        143 // Monad (EVM L1 but still safer elevated floor)
-    )
-}
-
-/// eth_estimateGas for empty-data transfer + multiplier + L2 floor.
-async fn resolve_native_transfer_gas(
-    rpc: &RpcClient,
-    from: &Address,
-    to: &Address,
-    value: U256,
-    chain_id: u64,
-    gas_multiplier: f64,
-) -> u64 {
-    const MIN_EOA: u64 = 21_000;
-    // Safe floor for Orbit / OP-stack style chains when estimate is low or fails.
-    const L2_FLOOR: u64 = 150_000;
-    const FALLBACK: u64 = 200_000;
-
-    let mult = if gas_multiplier > 1.0 {
-        gas_multiplier
-    } else {
-        1.15
-    };
-
-    let estimated = match rpc
-        .estimate_gas(from, to, value, &Bytes::new())
-        .await
-    {
-        Ok(g) => {
-            crate::rlog!("  eth_estimateGas(transfer) = {}", g);
-            g.max(MIN_EOA)
-        }
-        Err(e) => {
-            crate::rlog!("  eth_estimateGas failed ({e}) — using fallback {}", FALLBACK);
-            FALLBACK
-        }
-    };
-
-    let mut limit = ((estimated as f64) * mult).ceil() as u64;
-    limit = limit.max(estimated).max(MIN_EOA);
-
-    if chain_needs_elevated_transfer_gas(chain_id) {
-        limit = limit.max(L2_FLOOR);
-    }
-
-    // Cap absurd estimates (still leave headroom for L2)
-    limit.min(2_000_000)
 }
 
 async fn try_send_native(

@@ -396,6 +396,14 @@ async function navigate(name) {
     await refreshStatus();
     await loadDisperseWallets();
   }
+  if (name === "multicall") {
+    await refreshStatus();
+    await loadMulticallWallets();
+    if (!$("mc-calls")?.children?.length) {
+      addMulticallRow();
+      addMulticallRow();
+    }
+  }
 }
 
 function showMain() {
@@ -1177,6 +1185,12 @@ async function loadSettings() {
   $("set-rpc-eth").value = s.rpcUrlEthereum || "";
   $("set-rpc-base").value = s.rpcUrlBase || "";
   $("set-rpc-polygon").value = s.rpcUrlPolygon || "";
+  if ($("set-fb-relay")) {
+    $("set-fb-relay").value = s.flashbotsRelayUrl || "";
+    $("set-fb-relay").placeholder = "https://relay.flashbots.net";
+  }
+  if ($("set-fb-blocks")) $("set-fb-blocks").value = s.flashbotsMaxBlocks || 3;
+  if ($("set-fb-resubmit")) $("set-fb-resubmit").value = s.flashbotsResubmitMs || 1200;
   // proxies live on Proxies page; keep value if element shared
   if ($("set-proxy") && document.getElementById("page-proxies")?.classList.contains("hidden") === false) {
     /* loaded by loadProxiesPage */
@@ -1228,6 +1242,9 @@ $("btn-save-settings").addEventListener("click", async () => {
         beep: $("set-beep").checked,
         exportResults: $("set-export").checked,
         dryRun: $("set-dry").checked,
+        flashbotsRelayUrl: $("set-fb-relay")?.value || "",
+        flashbotsMaxBlocks: Number($("set-fb-blocks")?.value) || 3,
+        flashbotsResubmitMs: Number($("set-fb-resubmit")?.value) || 1200,
       },
     });
     $("settings-msg").textContent = msg || "Saved";
@@ -1249,8 +1266,20 @@ function formatSweepRows(rows) {
   return rows
     .map((r) => {
       const tx = r.txHash || r.tx_hash || "—";
-      const err = r.error ? ` err=${r.error}` : "";
-      return `${String(r.status).padEnd(12)} ${r.address}  tx=${tx}${err}`;
+      const err = r.error ? `  ${r.error}` : "";
+      const st = String(r.status || "");
+      // Surface Flashbots lifecycle tokens clearly
+      let phase = "";
+      const e = String(r.error || "").toLowerCase();
+      if (e.includes("sim ok")) phase = "[sim OK] ";
+      else if (e.includes("sim fail")) phase = "[sim FAIL] ";
+      else if (e.includes("submit fail")) phase = "[submit FAIL] ";
+      else if (e.includes("not included")) phase = "[not included] ";
+      else if (e.includes("submitted") || e.includes("waiting inclusion"))
+        phase = "[submitted] ";
+      else if (e.includes("confirmed") || st.toUpperCase().includes("CONFIRM"))
+        phase = "[confirmed] ";
+      return `${phase}${st.padEnd(12)} ${r.address}  tx=${tx}${err}`;
     })
     .join("\n");
 }
@@ -1647,10 +1676,118 @@ $("raw-fn-select").addEventListener("change", () => {
 $("raw-fn")?.addEventListener("input", updateRawFnHint);
 $("raw-fn")?.addEventListener("change", updateRawFnHint);
 
+function rawPreset() {
+  return ($("raw-preset")?.value || "mintBayPublic").trim();
+}
+
+function updateRawPresetUi() {
+  const p = rawPreset();
+  const manual = $("raw-manual-fn");
+  const rulesBox = $("raw-rules-box");
+  const sim = $("raw-sim-open");
+  if (manual) {
+    manual.classList.toggle("hidden", p === "mintBayPublic");
+  }
+  if (rulesBox) {
+    rulesBox.classList.toggle("hidden", p === "mintBayPublic");
+  }
+  if (sim && p === "mintBayPublic") {
+    sim.checked = false;
+  } else if (sim && (p === "custom" || p === "simpleMintUint") && !sim.dataset.userTouched) {
+    // default sim-open on for empty-rules presets (user can untick)
+  }
+  if (p === "mintBayPublic" && $("raw-fn")) {
+    $("raw-fn").value = "mint(uint256)";
+  }
+  if (p === "simpleMintUint" && $("raw-fn") && !$("raw-fn").value.trim()) {
+    $("raw-fn").value = "mint(uint256)";
+  }
+  // timeout hint: no at_time → suggest 7200
+  const at = ($("raw-at")?.value || "").trim();
+  const to = $("raw-timeout");
+  if (to && !to.dataset.userEdited) {
+    to.value = at ? "300" : "7200";
+  }
+  updateRawFnHint();
+}
+
+$("raw-preset")?.addEventListener("change", updateRawPresetUi);
+$("raw-at")?.addEventListener("input", () => {
+  const to = $("raw-timeout");
+  if (to) delete to.dataset.userEdited;
+  updateRawPresetUi();
+});
+$("raw-timeout")?.addEventListener("input", () => {
+  if ($("raw-timeout")) $("raw-timeout").dataset.userEdited = "1";
+});
+$("raw-sim-open")?.addEventListener("change", () => {
+  if ($("raw-sim-open")) $("raw-sim-open").dataset.userTouched = "1";
+});
+
+/** Parse textarea rules: `sig|op|expected` or `bool:sig|op|expected` */
+function parseRawRules() {
+  const raw = ($("raw-rules")?.value || "").trim();
+  if (!raw) return [];
+  return raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      let decode = "uint256";
+      let rest = line;
+      if (rest.toLowerCase().startsWith("bool:")) {
+        decode = "bool";
+        rest = rest.slice(5).trim();
+      }
+      const parts = rest.split("|").map((s) => s.trim());
+      const functionSig = parts[0] || "";
+      const op = (parts[1] || "eq").toLowerCase();
+      const expected = parts[2] || "0";
+      return { function: functionSig, params: [], decode, op, expected };
+    })
+    .filter((r) => r.function);
+}
+
+function appendRawLog(line) {
+  const el = $("raw-out");
+  if (!el) return;
+  const prev = el.textContent || "";
+  const next = prev && !prev.endsWith("\n") ? prev + "\n" + line : prev + line;
+  el.textContent = next;
+  el.scrollTop = el.scrollHeight;
+}
+
+let rawSniperUnlisten = null;
+
+async function attachRawSniperEvents() {
+  if (rawSniperUnlisten) return;
+  try {
+    const { listen } = window.__TAURI__.event;
+    rawSniperUnlisten = await listen("mint-event", (ev) => {
+      const e = ev?.payload || {};
+      if (e.phase && e.phaseLabel) {
+        appendRawLog(`[${e.phase}] ${e.phaseLabel}`);
+      }
+      if (e.message) appendRawLog(e.message);
+      if (e.address) {
+        appendRawLog(
+          `  ${e.status || ""} ${e.address} ${e.detail || ""} ${e.txHash || ""} ${e.error || ""}`.trim()
+        );
+      }
+    });
+  } catch (_) {
+    /* non-tauri */
+  }
+}
+
 $("btn-raw-mint").addEventListener("click", async () => {
   const chain = rawSelectedChain();
   const contract = $("raw-contract").value.trim();
-  const fn = $("raw-fn").value.trim();
+  const preset = rawPreset();
+  let fn = ($("raw-fn")?.value || "").trim();
+  if (preset === "mintBayPublic" || preset === "simpleMintUint") {
+    fn = fn || "mint(uint256)";
+  }
   const dry = $("raw-dry").checked;
   const wallets = selectedRawWallets();
   if (!chain || !contract || !fn) {
@@ -1662,10 +1799,14 @@ $("btn-raw-mint").addEventListener("click", async () => {
     return;
   }
   const types = rawFnArgTypes(fn);
-  const params = ($("raw-params").value || "")
+  let params = ($("raw-params").value || "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  // mint(uint256) convenience: use qty if params empty
+  if (fn.replace(/\s/g, "") === "mint(uint256)" && !params.length) {
+    params = [String(Math.max(1, parseInt($("raw-qty")?.value || "1", 10) || 1))];
+  }
   if (types && types.length !== params.length) {
     $("raw-out").textContent =
       (t("raw.paramMismatch") ||
@@ -1675,9 +1816,15 @@ $("btn-raw-mint").addEventListener("click", async () => {
         .replace("{got}", String(params.length));
     return;
   }
+  const useFlashbots = !!$("raw-flashbots")?.checked;
+  if (useFlashbots && chain !== "ethereum" && chain !== "mainnet" && chain !== "eth") {
+    $("raw-out").textContent =
+      t("raw.fbEthOnly") || "Flashbots bundle requires Network = Ethereum";
+    return;
+  }
   $("raw-out").textContent = dry
-    ? `Dry-run raw mint (${wallets.length} wallet(s))…`
-    : `LIVE raw mint (${wallets.length} wallet(s))…`;
+    ? `Dry-run raw mint (${wallets.length} wallet(s))${useFlashbots ? " [Flashbots]" : ""}…`
+    : `LIVE raw mint (${wallets.length} wallet(s))${useFlashbots ? " [Flashbots]" : ""}…`;
   $("btn-raw-mint").disabled = true;
   try {
     const rows = await invoke("raw_mint", {
@@ -1690,6 +1837,7 @@ $("btn-raw-mint").addEventListener("click", async () => {
         dryRun: dry,
         confirm: "",
         walletAddresses: wallets,
+        useFlashbots,
       },
     });
     $("raw-out").textContent = formatSweepRows(rows);
@@ -1699,6 +1847,137 @@ $("btn-raw-mint").addEventListener("click", async () => {
     $("btn-raw-mint").disabled = false;
   }
 });
+
+$("btn-raw-sniper")?.addEventListener("click", async () => {
+  const chain = rawSelectedChain();
+  const contract = ($("raw-contract")?.value || "").trim();
+  const preset = rawPreset();
+  let fn = ($("raw-fn")?.value || "").trim();
+  if (preset === "mintBayPublic" || preset === "simpleMintUint") {
+    fn = fn || "mint(uint256)";
+  }
+  const wallets = selectedRawWallets();
+  if (!chain) {
+    $("raw-out").textContent = t("raw.needChain") || "Select network first";
+    return;
+  }
+  if (!contract) {
+    $("raw-out").textContent = t("raw.needContractFn") || "Network + contract + function required";
+    return;
+  }
+  if (preset === "custom" && !fn) {
+    $("raw-out").textContent = t("raw.needContractFn") || "Function required for Custom";
+    return;
+  }
+  if (!wallets.length) {
+    $("raw-out").textContent = t("raw.needWallets") || "Select at least one wallet";
+    return;
+  }
+  const qty = Math.max(1, parseInt($("raw-qty")?.value || "1", 10) || 1);
+  let timeoutSecs = parseInt($("raw-timeout")?.value || "300", 10);
+  if (!Number.isFinite(timeoutSecs) || timeoutSecs < 30) timeoutSecs = 300;
+  const atTime = ($("raw-at")?.value || "").trim() || null;
+  if (!atTime && timeoutSecs < 600) {
+    // soft warn in log only
+  }
+
+  await attachRawSniperEvents();
+  $("raw-out").textContent =
+    (t("raw.sniperRunning") || "Sniper running…") +
+    `\nnetwork=${chain} preset=${preset} qty=${qty} wallets=${wallets.length}\n`;
+  $("btn-raw-sniper").disabled = true;
+  $("btn-raw-mint").disabled = true;
+  if ($("btn-raw-stop")) $("btn-raw-stop").disabled = false;
+
+  // persist last form
+  try {
+    localStorage.setItem(
+      "rawSniperForm",
+      JSON.stringify({
+        chain,
+        contract,
+        preset,
+        qty,
+        atTime,
+        timeoutSecs,
+        valueMode: $("raw-value-mode")?.value,
+        valueEth: $("raw-value")?.value,
+        early: !!$("raw-early")?.checked,
+        simOpen: !!$("raw-sim-open")?.checked,
+        rules: $("raw-rules")?.value || "",
+        fn,
+      })
+    );
+  } catch (_) {}
+
+  try {
+    const rows = await invoke("raw_sniper", {
+      input: {
+        chain,
+        contract,
+        preset,
+        function: fn || "mint(uint256)",
+        params: ($("raw-params")?.value || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        quantity: qty,
+        valueMode: $("raw-value-mode")?.value || "auto",
+        valueEth: $("raw-value")?.value || "0",
+        dryRun: !!$("raw-dry")?.checked,
+        atTime,
+        mintBeforeAtTime: $("raw-early") ? !!$("raw-early").checked : true,
+        timeoutSecs,
+        simOpen: !!$("raw-sim-open")?.checked,
+        rules: parseRawRules(),
+        walletAddresses: wallets,
+        concurrency: 16,
+      },
+    });
+    appendRawLog("\n" + formatSweepRows(rows));
+  } catch (e) {
+    appendRawLog("\nERROR: " + String(e));
+  } finally {
+    $("btn-raw-sniper").disabled = false;
+    $("btn-raw-mint").disabled = false;
+    if ($("btn-raw-stop")) $("btn-raw-stop").disabled = true;
+  }
+});
+
+$("btn-raw-stop")?.addEventListener("click", async () => {
+  try {
+    const msg = await invoke("cancel_mint");
+    appendRawLog(String(msg || "Stopping…"));
+  } catch (e) {
+    appendRawLog(String(e));
+  }
+});
+
+// restore form + preset ui on load
+try {
+  const saved = JSON.parse(localStorage.getItem("rawSniperForm") || "null");
+  if (saved && typeof saved === "object") {
+    if (saved.chain && $("raw-chain")) $("raw-chain").value = saved.chain;
+    if (saved.contract && $("raw-contract")) $("raw-contract").value = saved.contract;
+    if (saved.preset && $("raw-preset")) $("raw-preset").value = saved.preset;
+    if (saved.qty != null && $("raw-qty")) $("raw-qty").value = saved.qty;
+    if (saved.atTime && $("raw-at")) $("raw-at").value = saved.atTime;
+    if (saved.timeoutSecs && $("raw-timeout")) {
+      $("raw-timeout").value = saved.timeoutSecs;
+      $("raw-timeout").dataset.userEdited = "1";
+    }
+    if (saved.valueMode && $("raw-value-mode")) $("raw-value-mode").value = saved.valueMode;
+    if (saved.valueEth != null && $("raw-value")) $("raw-value").value = saved.valueEth;
+    if ($("raw-early") && saved.early != null) $("raw-early").checked = !!saved.early;
+    if ($("raw-sim-open") && saved.simOpen != null) {
+      $("raw-sim-open").checked = !!saved.simOpen;
+      $("raw-sim-open").dataset.userTouched = "1";
+    }
+    if (saved.rules && $("raw-rules")) $("raw-rules").value = saved.rules;
+    if (saved.fn && $("raw-fn")) $("raw-fn").value = saved.fn;
+  }
+} catch (_) {}
+setTimeout(updateRawPresetUi, 0);
 
 // —— Disperse (1 wallet → many, fixed amount each) ——
 /** @type {Array<{address:string,index:number}>} */
@@ -1855,6 +2134,149 @@ $("btn-disperse")?.addEventListener("click", async () => {
   }
 });
 
+// —— Multicall (1 wallet · N calls · Multicall3) ——
+let mcCallSeq = 0;
+
+async function loadMulticallWallets() {
+  const fromSel = $("mc-from");
+  if (!fromSel) return;
+  try {
+    const list = await invoke("list_wallets");
+    const prev = fromSel.value;
+    fromSel.innerHTML = `<option value="">${escapeHtml(t("disperse.fromPick") || "— select —")}</option>`;
+    for (const w of list) {
+      const opt = document.createElement("option");
+      opt.value = w.address;
+      opt.textContent = `${w.index}. ${shortAddr(w.address)}`;
+      fromSel.appendChild(opt);
+    }
+    if (prev && [...fromSel.options].some((o) => o.value === prev)) {
+      fromSel.value = prev;
+    } else if (list.length) {
+      fromSel.value = list[0].address;
+    }
+  } catch (e) {
+    if ($("mc-out")) $("mc-out").textContent = String(e);
+  }
+}
+
+function addMulticallRow(pref = {}) {
+  const box = $("mc-calls");
+  if (!box) return;
+  const id = ++mcCallSeq;
+  const card = document.createElement("div");
+  card.className = "mc-call-card";
+  card.dataset.mcId = String(id);
+  card.innerHTML = `
+    <div class="mc-call-head">
+      <span class="mc-idx">#${box.children.length + 1}</span>
+      <button type="button" class="danger-btn btn-mc-remove" data-i18n="mc.remove">Remove</button>
+    </div>
+    <label><span data-i18n="mc.target">Target</span>
+      <input type="text" class="mc-target" placeholder="0x…" value="${escapeHtml(pref.target || "")}" autocomplete="off" />
+    </label>
+    <label><span data-i18n="mc.function">Function</span>
+      <input type="text" class="mc-fn" placeholder="mint(uint256)" value="${escapeHtml(pref.function || "")}" autocomplete="off" />
+    </label>
+    <label><span data-i18n="mc.params">Params</span>
+      <input type="text" class="mc-params" placeholder="1" value="${escapeHtml(pref.params || "")}" autocomplete="off" />
+    </label>
+    <label><span data-i18n="mc.calldata">Or raw calldata (0x…)</span>
+      <input type="text" class="mc-data" placeholder="0x…" value="${escapeHtml(pref.calldata || "")}" autocomplete="off" />
+    </label>
+    <label><span data-i18n="mc.value">Value ETH</span>
+      <input type="text" class="mc-value" value="${escapeHtml(pref.valueEth || "0")}" />
+    </label>
+    <label class="check"><input type="checkbox" class="mc-allow-fail" ${pref.allowFailure ? "checked" : ""} /> <span data-i18n="mc.allowFail">Allow failure</span></label>
+  `;
+  box.appendChild(card);
+  renumberMcCalls();
+  card.querySelector(".btn-mc-remove")?.addEventListener("click", () => {
+    card.remove();
+    renumberMcCalls();
+  });
+}
+
+function renumberMcCalls() {
+  document.querySelectorAll("#mc-calls .mc-call-card").forEach((card, i) => {
+    const idx = card.querySelector(".mc-idx");
+    if (idx) idx.textContent = `#${i + 1}`;
+  });
+}
+
+function collectMulticallSteps() {
+  const steps = [];
+  document.querySelectorAll("#mc-calls .mc-call-card").forEach((card, i) => {
+    const target = card.querySelector(".mc-target")?.value?.trim() || "";
+    const fn = card.querySelector(".mc-fn")?.value?.trim() || "";
+    const paramsRaw = card.querySelector(".mc-params")?.value || "";
+    const calldata = card.querySelector(".mc-data")?.value?.trim() || "";
+    const valueEth = card.querySelector(".mc-value")?.value?.trim() || "0";
+    const allowFailure = !!card.querySelector(".mc-allow-fail")?.checked;
+    if (!target) return;
+    if (!fn && !calldata) return;
+    const params = paramsRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    steps.push({
+      target,
+      function: fn || null,
+      params: params.length ? params : null,
+      calldata: calldata || null,
+      valueEth,
+      allowFailure,
+      label: `call${i + 1}`,
+    });
+  });
+  return steps;
+}
+
+$("btn-mc-add")?.addEventListener("click", () => addMulticallRow());
+
+$("btn-multicall")?.addEventListener("click", async () => {
+  const chain = ($("mc-chain")?.value || "").trim();
+  const from = ($("mc-from")?.value || "").trim();
+  const dry = $("mc-dry")?.checked ?? true;
+  const steps = collectMulticallSteps();
+  const out = $("mc-out");
+  if (!chain) {
+    if (out) out.textContent = t("mc.needChain") || "Select network";
+    return;
+  }
+  if (!from) {
+    if (out) out.textContent = t("mc.needFrom") || "Select source wallet";
+    return;
+  }
+  if (!steps.length) {
+    if (out) out.textContent = t("mc.needCalls") || "Add at least one call";
+    return;
+  }
+  const helper = ($("mc-helper")?.value || "").trim();
+  if (out) {
+    out.textContent = dry
+      ? `Dry-run multicall: ${steps.length} call(s) from ${shortAddr(from)}…`
+      : `LIVE multicall: ${steps.length} call(s) from ${shortAddr(from)}…`;
+  }
+  if ($("btn-multicall")) $("btn-multicall").disabled = true;
+  try {
+    const rows = await invoke("multicall", {
+      input: {
+        chain,
+        fromAddress: from,
+        steps,
+        dryRun: dry,
+        multicallAddress: helper || null,
+      },
+    });
+    if (out) out.textContent = formatSweepRows(rows);
+  } catch (e) {
+    if (out) out.textContent = String(e);
+  } finally {
+    if ($("btn-multicall")) $("btn-multicall").disabled = false;
+  }
+});
+
 // —— Mint tasks (persist + edit/dup + ready/queue + countdown) ——
 /** @type {import('./task-types').Task[]} */
 let mintTasks = [];
@@ -1939,6 +2361,7 @@ function normalizeTask(raw) {
         ? Math.max(21000, Number(t0.gasLimit) || 250000)
         : null,
     chainOverride: t0.chainOverride || "auto",
+    useFlashbots: !!(t0.useFlashbots || t0.sendMode === "flashbots"),
     phaseStartAt:
       t0.phaseStartAt != null && Number.isFinite(Number(t0.phaseStartAt))
         ? Number(t0.phaseStartAt)
@@ -2049,6 +2472,23 @@ function computeBlockReasons(task) {
   }
   if (lastUiStatus && !lastUiStatus.rpc_ok) {
     reasons.push(t("tasks.block.rpc") || "RPC not configured");
+  }
+  if (task.useFlashbots) {
+    const ch = String(task.chainOverride || "auto").toLowerCase();
+    // auto = collection chain — may not be ETH; force explicit ethereum for FB
+    if (ch === "auto" || ch === "") {
+      reasons.push(
+        t("tasks.block.fbAuto") ||
+          "Flashbots requires Network = Ethereum (not Auto)"
+      );
+    } else if (ch !== "ethereum" && ch !== "mainnet" && ch !== "eth") {
+      reasons.push(
+        (t("tasks.block.fbChain") || "Flashbots only on Ethereum (now: {c})").replace(
+          "{c}",
+          ch
+        )
+      );
+    }
   }
   if (task.status === "running") {
     reasons.push(t("tasks.block.running") || "Already running");
@@ -2206,6 +2646,7 @@ async function openTaskModal(opts = {}) {
         gasLimit: src.gasLimit || 250000,
         phaseIndex: src.phaseIndex,
         chainOverride: src.chainOverride || "auto",
+        useFlashbots: !!src.useFlashbots,
         wallets: [...(src.wallets || [])],
         phaseStartAt: src.phaseStartAt,
         phaseLabel: src.phaseLabel,
@@ -2227,6 +2668,8 @@ async function openTaskModal(opts = {}) {
   if ($("task-gas-mode")) $("task-gas-mode").value = pref.gasMode || "auto";
   if ($("task-gas-limit")) $("task-gas-limit").value = String(pref.gasLimit || 250000);
   if ($("task-chain")) $("task-chain").value = pref.chainOverride || "auto";
+  if ($("task-send-mode"))
+    $("task-send-mode").value = pref.useFlashbots ? "flashbots" : "public";
   if ($("task-filter-balance")) $("task-filter-balance").checked = pref.filterBalance !== false;
   if ($("task-skip-est")) $("task-skip-est").checked = !!pref.skipEstimateOnOpen;
   if ($("task-prio")) $("task-prio").value = pref.priorityFeeGwei || "";
@@ -2485,6 +2928,7 @@ function renderTaskList() {
     const prioLab = task.priorityFeeGwei
       ? `prio ${task.priorityFeeGwei}`
       : "prio auto";
+    const fbLab = task.useFlashbots ? "FB" : "";
     const atLab = task.atTime ? `at ${String(task.atTime).slice(0, 16)}` : "";
     const cd = formatCountdown(task.phaseStartAt);
     const qPos = taskQueue.indexOf(task.id);
@@ -2509,6 +2953,7 @@ function renderTaskList() {
           }">${escapeHtml(cd)}</span>
           <span class="badge muted-badge">${escapeHtml(gasLabel)}</span>
           <span class="badge muted-badge">${escapeHtml(prioLab)}</span>
+          ${fbLab ? `<span class="badge accent-badge" title="Flashbots bundle">${escapeHtml(fbLab)}</span>` : ""}
           ${atLab ? `<span class="badge muted-badge">${escapeHtml(atLab)}</span>` : ""}
         </div>
         <div class="task-card-meta">
@@ -2516,7 +2961,7 @@ function renderTaskList() {
             task.phaseLabel ? ` (${escapeHtml(task.phaseLabel)})` : ""
           } · chain ${escapeHtml(chain)} · qty ${task.quantity}${
             task.walletQuantities ? " · per-wallet qty" : ""
-          }
+          }${task.useFlashbots ? " · Flashbots" : ""}
         </div>
         ${blockLine}
       </div>
@@ -2647,6 +3092,7 @@ $("task-modal-save")?.addEventListener("click", () => {
     gasMode,
     gasLimit,
     chainOverride: $("task-chain").value || "auto",
+    useFlashbots: $("task-send-mode")?.value === "flashbots",
     phaseStartAt,
     phaseLabel,
     filterBalance: $("task-filter-balance")?.checked !== false,
@@ -3398,7 +3844,11 @@ async function startMintTask(taskId, opts = {}) {
   setMintPhaseBanner("prep", `Starting «${task.name}»…`);
   updateTaskGroupStats(0, 0, runWallets.length, task.name);
   scheduleMintTableRender();
-  appendMintLog(`Starting task «${task.name}» LIVE (sim → tx if OK, gas=${gasLabel}, prio=${prio})`);
+  appendMintLog(
+    `Starting task «${task.name}» LIVE (sim → tx if OK, gas=${gasLabel}, prio=${prio}${
+      task.useFlashbots ? ", Flashbots bundle" : ""
+    })`
+  );
   setMintUiRunning(true);
   // User gesture path — unlock WebAudio so first confirm can chime in UI too.
   ensureMintAudio();
@@ -3417,6 +3867,7 @@ async function startMintTask(taskId, opts = {}) {
         atTime: (task.atTime || "").trim() || null,
         walletQuantities: task.walletQuantities || null,
         skipEstimateOnOpen: !!task.skipEstimateOnOpen,
+        useFlashbots: !!task.useFlashbots,
         proxyOverrides:
           Object.keys(proxyOverrides).length > 0 ? proxyOverrides : null,
       },

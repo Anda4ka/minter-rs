@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::api::{collect_rpc_urls_for_chain, parse_collection_slug, MintOptions};
 use crate::auth_cache;
 use crate::export;
+use crate::flashbots::{self, BundleTx, FlashbotsClient, FlashbotsConfig, MAINNET_CHAIN_ID};
 use crate::gas;
 use crate::opensea;
 use crate::progress::{FileTeeReporter, MintEvent, MintReporter, NullReporter};
@@ -515,6 +516,20 @@ pub async fn run_opensea_mint(
     }
 
     let actual_chain_id = rpc.chain_id().await.context("Failed to get chain ID from RPC")?;
+
+    let use_flashbots = opts.use_flashbots.unwrap_or(false);
+    if use_flashbots && actual_chain_id != MAINNET_CHAIN_ID {
+        bail!(
+            "Flashbots bundle only on Ethereum mainnet (chainId 1); RPC chainId is {}",
+            actual_chain_id
+        );
+    }
+    if use_flashbots {
+        log_always(
+            reporter.as_ref(),
+            "Broadcast mode: Flashbots bundle (private, multi-wallet)".to_string(),
+        );
+    }
 
     let chain_map = chain_id_map();
     let expected_chain_id = chain_map
@@ -1504,6 +1519,8 @@ pub async fn run_opensea_mint(
 
     let rpc_clone = rpc.clone();
     let mint_started_at = std::time::Instant::now();
+    let fb_pieces: Arc<std::sync::Mutex<Vec<BundleTx>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let mut handles = tokio::task::JoinSet::new();
 
@@ -1545,6 +1562,9 @@ pub async fn run_opensea_mint(
         let beep_w = beep;
         let first_confirm_w = first_confirm.clone();
         let cancel_w = cancel.clone();
+        let use_flashbots_w = use_flashbots;
+        let fb_pieces_w = fb_pieces.clone();
+        let dry_run_w = dry_run;
         let proxy_url_w = proxies.get(
             wallets
                 .iter()
@@ -1966,7 +1986,8 @@ pub async fn run_opensea_mint(
                     (gas_estimate as f64 * gas_multiplier) as u64
                 };
 
-                if dry_run {
+                // Public dry-run stops before sign. Flashbots dry-run signs for eth_callBundle.
+                if dry_run_w && !use_flashbots_w {
                     let gas_cost_eth = (gas_limit as f64 * max_fee.to::<u128>() as f64) / 1e18;
                     let price_eth = (calldata_value.to::<u128>() as f64) / 1e18;
                     let total_eth = gas_cost_eth + price_eth;
@@ -2038,6 +2059,57 @@ pub async fn run_opensea_mint(
                         );
                     }
                 };
+
+                // Flashbots: collect signed txs; coordinator submits one bundle.
+                if use_flashbots_w {
+                    if let Ok(mut g) = fb_pieces_w.lock() {
+                        g.push(BundleTx {
+                            from: addr,
+                            raw: raw.clone(),
+                            tx_hash: signed_hash,
+                        });
+                    }
+                    if dry_run_w {
+                        report_wallet(
+                            reporter.as_ref(),
+                            &addr,
+                            Some(WalletStatus::DryRunOk),
+                            Some("signed for callBundle".into()),
+                            Some(signed_hash),
+                            None,
+                        );
+                        break (
+                            addr,
+                            MintResult {
+                                address: addr,
+                                tx_hash: Some(signed_hash),
+                                status: WalletStatus::DryRunOk,
+                                gas_used: Some(gas_limit),
+                                block_number: None,
+                                error: Some("__flashbots_dry__".into()),
+                            },
+                        );
+                    }
+                    report_wallet(
+                        reporter.as_ref(),
+                        &addr,
+                        Some(WalletStatus::Sent),
+                        Some("queued for Flashbots bundle".into()),
+                        Some(signed_hash),
+                        None,
+                    );
+                    break (
+                        addr,
+                        MintResult {
+                            address: addr,
+                            tx_hash: Some(signed_hash),
+                            status: WalletStatus::Sent,
+                            gas_used: Some(gas_limit),
+                            block_number: None,
+                            error: Some("__flashbots_pending__".into()),
+                        },
+                    );
+                }
 
                 let send_start = std::time::Instant::now();
                 report_wallet(reporter.as_ref(),
@@ -2284,6 +2356,192 @@ pub async fn run_opensea_mint(
             }
             Err(e) => {
                 log_always(reporter.as_ref(), format!("Task panicked: {}", e));
+            }
+        }
+    }
+
+    // Flashbots coordinator: sim or send bundle, then receipt poll for pending pieces.
+    if use_flashbots {
+        let pieces = fb_pieces.lock().map(|g| g.clone()).unwrap_or_default();
+        if pieces.is_empty() {
+            log_always(
+                reporter.as_ref(),
+                "Flashbots: no signed pieces (all prep/sim failed)".to_string(),
+            );
+        } else {
+            let fb_cfg = FlashbotsConfig::from_env(env);
+            match FlashbotsClient::new(fb_cfg) {
+                Ok(client) => {
+                    let auth = &signers[0];
+                    let current = rpc.block_number().await.unwrap_or(0);
+                    if dry_run {
+                        let target = current.saturating_add(1);
+                        log_always(
+                            reporter.as_ref(),
+                            format!(
+                                "Flashbots eth_callBundle: {} tx(s) @ block {}",
+                                pieces.len(),
+                                target
+                            ),
+                        );
+                        match client.call_bundle(auth, &pieces, target).await {
+                            Ok(res) => {
+                                let errs = flashbots::call_bundle_errors(&res);
+                                log_always(
+                                    reporter.as_ref(),
+                                    format!("callBundle result: {res}"),
+                                );
+                                for (i, p) in pieces.iter().enumerate() {
+                                    if let Some(Some(err)) = errs.get(i) {
+                                        if let Some(r) =
+                                            results.iter_mut().find(|r| r.address == p.from)
+                                        {
+                                            r.status = WalletStatus::Failed;
+                                            r.error = Some(format!("callBundle: {err}"));
+                                        }
+                                    } else if let Some(r) =
+                                        results.iter_mut().find(|r| r.address == p.from)
+                                    {
+                                        r.status = WalletStatus::DryRunOk;
+                                        r.error =
+                                            Some("sim OK (callBundle) — not submitted".into());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log_always(
+                                    reporter.as_ref(),
+                                    format!("callBundle failed: {e}"),
+                                );
+                                for r in results.iter_mut() {
+                                    if r.error.as_deref() == Some("__flashbots_dry__") {
+                                        r.status = WalletStatus::Failed;
+                                        r.error = Some(format!("sim FAIL (callBundle): {e}"));
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        log_always(
+                            reporter.as_ref(),
+                            format!(
+                                "Flashbots eth_sendBundle: {} tx(s) from block {}",
+                                pieces.len(),
+                                current
+                            ),
+                        );
+                        match client
+                            .send_bundle_window(auth, &pieces, current, cancel.clone())
+                            .await
+                        {
+                            Ok(sub) => {
+                                log_always(
+                                    reporter.as_ref(),
+                                    format!(
+                                        "submitted targets={:?} hash={:?}",
+                                        sub.target_blocks, sub.bundle_hash
+                                    ),
+                                );
+                                for r in results.iter_mut() {
+                                    if r.error.as_deref() == Some("__flashbots_pending__") {
+                                        r.error = Some("submitted — waiting inclusion".into());
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log_always(
+                                    reporter.as_ref(),
+                                    format!("sendBundle failed: {e}"),
+                                );
+                                for r in results.iter_mut() {
+                                    if r.error.as_deref() == Some("__flashbots_pending__") {
+                                        r.status = WalletStatus::Failed;
+                                        r.error = Some(format!("submit FAIL: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                        // Receipt poll for pending bundle wallets
+                        for p in &pieces {
+                            if cancelled(&cancel) {
+                                break;
+                            }
+                            let Some(r) = results.iter_mut().find(|r| r.address == p.from) else {
+                                continue;
+                            };
+                            if r.status == WalletStatus::Failed
+                                && r.error
+                                    .as_ref()
+                                    .map(|e| e.starts_with("submit FAIL"))
+                                    .unwrap_or(false)
+                            {
+                                continue;
+                            }
+                            if r.error.as_deref() != Some("__flashbots_pending__")
+                                && r.error.as_deref() != Some("submitted — waiting inclusion")
+                                && r.status != WalletStatus::Sent
+                            {
+                                continue;
+                            }
+                            match rpc.wait_for_receipt(&p.tx_hash, 90).await {
+                                Ok(receipt) => {
+                                    let info = rpc::parse_receipt(&receipt);
+                                    if info.success {
+                                        r.status = WalletStatus::Confirmed;
+                                        r.gas_used = Some(info.gas_used);
+                                        r.block_number = Some(info.block_number);
+                                        r.tx_hash = Some(p.tx_hash);
+                                        r.error = Some("confirmed".into());
+                                        maybe_beep(beep, &first_confirm);
+                                        report_wallet(
+                                            reporter.as_ref(),
+                                            &p.from,
+                                            Some(WalletStatus::Confirmed),
+                                            Some(format!("confirmed block={}", info.block_number)),
+                                            Some(p.tx_hash),
+                                            None,
+                                        );
+                                    } else {
+                                        r.status = WalletStatus::Failed;
+                                        r.error = Some("included but reverted".into());
+                                        r.tx_hash = Some(p.tx_hash);
+                                    }
+                                }
+                                Err(e) => {
+                                    r.status = WalletStatus::Sent;
+                                    r.error = Some(format!(
+                                        "submitted — not included ({e})"
+                                    ));
+                                    r.tx_hash = Some(p.tx_hash);
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log_always(
+                        reporter.as_ref(),
+                        format!("Flashbots client error: {e}"),
+                    );
+                    for r in results.iter_mut() {
+                        if matches!(
+                            r.error.as_deref(),
+                            Some("__flashbots_pending__") | Some("__flashbots_dry__")
+                        ) {
+                            r.status = WalletStatus::Failed;
+                            r.error = Some(format!("flashbots: {e}"));
+                        }
+                    }
+                }
+            }
+        }
+        // Strip internal markers
+        for r in results.iter_mut() {
+            if matches!(
+                r.error.as_deref(),
+                Some("__flashbots_pending__") | Some("__flashbots_dry__")
+            ) {
+                r.error = None;
             }
         }
     }

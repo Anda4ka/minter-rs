@@ -12,8 +12,16 @@ use crate::amount;
 use crate::auth_cache::AuthCache;
 use crate::opensea;
 use crate::disperse::{self, DisperseConfig};
+use crate::flashbots::FlashbotsConfig;
+use crate::multicall::{self, MulticallConfig, MulticallStep, MULTICALL3};
+use crate::progress::MintReporter;
 use crate::raw_mint::{self, RawMintConfig};
+use crate::raw_sniper::{
+    self, CompareOp, DecodeKind, RawSniperConfig, SniperPreset, ValueMode, ViewRule,
+};
 use crate::rpc::RpcClient;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use crate::settings::Settings;
 use crate::sweep::{self, SweepConfig, SweepEthConfig};
 use crate::types::{GasParams, Signer, max_retries_from_env};
@@ -1161,6 +1169,20 @@ impl Session {
     /// Raw contract mint for selected (or all) vault wallets.
     ///
     /// `wallet_addresses`: if set and non-empty, only those vault wallets; else all unlocked.
+    pub fn flashbots_config(&self) -> FlashbotsConfig {
+        let mut c = FlashbotsConfig::from_env(&self.env);
+        if !self.settings.flashbots_relay_url.trim().is_empty() {
+            c.relay_url = self.settings.flashbots_relay_url.trim().to_string();
+        }
+        if self.settings.flashbots_max_blocks > 0 {
+            c.max_blocks = self.settings.flashbots_max_blocks.min(20);
+        }
+        if self.settings.flashbots_resubmit_ms >= 200 {
+            c.resubmit_ms = self.settings.flashbots_resubmit_ms;
+        }
+        c
+    }
+
     pub async fn raw_mint(
         &self,
         chain: &str,
@@ -1171,12 +1193,19 @@ impl Session {
         dry_run: bool,
         _confirm: &str,
         wallet_addresses: Option<Vec<String>>,
+        use_flashbots: bool,
     ) -> Result<Vec<SweepResultRow>> {
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
         if chain.trim().is_empty() {
             bail!("Network required — select a chain for Raw Mint");
+        }
+        if use_flashbots {
+            let c = chain.trim().to_lowercase();
+            if c != "ethereum" && c != "mainnet" && c != "eth" {
+                bail!("Flashbots bundle is only supported on Ethereum mainnet");
+            }
         }
         let filter: Option<std::collections::HashSet<String>> =
             wallet_addresses.and_then(|v| {
@@ -1234,9 +1263,274 @@ impl Session {
             value,
             gas: self.gas_params(),
             dry_run,
+            use_flashbots,
+            flashbots: self.flashbots_config(),
         };
         let results = raw_mint::run_raw_mint(&selected, &rpc, &config).await;
         Ok(results.into_iter().map(SweepResultRow::from).collect())
+    }
+
+    /// Raw sniper: wait for open (MintBay / rules / sim) then parallel mint.
+    pub async fn raw_sniper(
+        &self,
+        input: RawSniperInput,
+        cancel: Arc<AtomicBool>,
+        reporter: Option<Arc<dyn MintReporter>>,
+    ) -> Result<Vec<SweepResultRow>> {
+        if self.signers.is_empty() {
+            bail!("No wallets unlocked");
+        }
+        let chain = input.chain.trim();
+        if chain.is_empty() {
+            bail!("Network required — select a chain for Raw Sniper");
+        }
+        let filter: Option<std::collections::HashSet<String>> =
+            input.wallet_addresses.and_then(|v| {
+                let set: std::collections::HashSet<String> = v
+                    .into_iter()
+                    .map(|a| normalize_address(&a))
+                    .filter(|a| a.len() > 2)
+                    .collect();
+                if set.is_empty() {
+                    None
+                } else {
+                    Some(set)
+                }
+            });
+        let selected: Vec<Signer> = self
+            .signers
+            .iter()
+            .filter(|s| {
+                filter
+                    .as_ref()
+                    .map(|f| f.contains(&normalize_address(&format!("{:?}", s.address()))))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        if selected.is_empty() {
+            bail!("No matching wallets in vault for the selection");
+        }
+        let contract: Address = input
+            .contract
+            .trim()
+            .parse()
+            .context("invalid contract address")?;
+
+        let preset = match input.preset.as_deref().unwrap_or("mintBayPublic") {
+            "simpleMintUint" | "simple" | "mint" => SniperPreset::SimpleMintUint,
+            "custom" => SniperPreset::Custom,
+            _ => SniperPreset::MintBayPublic,
+        };
+        let value_mode = match input.value_mode.as_deref().unwrap_or("auto") {
+            "fixed" => ValueMode::Fixed,
+            _ => ValueMode::Auto,
+        };
+        let fixed_value = {
+            let s = input.value_eth.as_deref().unwrap_or("0").trim();
+            if s.is_empty() || s == "0" {
+                U256::ZERO
+            } else {
+                amount::eth_to_wei(s).context("invalid value ETH")?
+            }
+        };
+        let qty = input.quantity.unwrap_or(1).max(1);
+        let function = match preset {
+            SniperPreset::MintBayPublic | SniperPreset::SimpleMintUint => {
+                input
+                    .function
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("mint(uint256)")
+                    .to_string()
+            }
+            SniperPreset::Custom => {
+                let f = input.function.as_deref().unwrap_or("").trim();
+                if f.is_empty() {
+                    bail!("Function signature required for Custom preset");
+                }
+                f.to_string()
+            }
+        };
+        let at_time = raw_sniper::parse_sniper_at_time(input.at_time.as_deref())?;
+        // Timeout: with at_time default 5 min; without default 120 min unless specified
+        let timeout_secs = input.timeout_secs.unwrap_or(if at_time.is_some() {
+            300
+        } else {
+            7200
+        });
+        let rules: Vec<ViewRule> = input
+            .rules
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| !r.function.trim().is_empty())
+            .map(|r| ViewRule {
+                function: r.function.trim().to_string(),
+                params: r.params.unwrap_or_default(),
+                decode: match r.decode.as_deref().unwrap_or("uint256") {
+                    "bool" => DecodeKind::Bool,
+                    _ => DecodeKind::Uint256,
+                },
+                op: match r.op.as_deref().unwrap_or("eq") {
+                    "ne" | "!=" => CompareOp::Ne,
+                    "gt" | ">" => CompareOp::Gt,
+                    "gte" | ">=" => CompareOp::Gte,
+                    "lt" | "<" => CompareOp::Lt,
+                    "lte" | "<=" => CompareOp::Lte,
+                    _ => CompareOp::Eq,
+                },
+                expected: r.expected.unwrap_or_else(|| "0".into()),
+            })
+            .collect();
+
+        // Sim-open default: off MintBay, on Custom/Simple without rules
+        let sim_open = input.sim_open.unwrap_or(match preset {
+            SniperPreset::MintBayPublic => false,
+            SniperPreset::SimpleMintUint => rules.is_empty(),
+            SniperPreset::Custom => rules.is_empty(),
+        });
+
+        let rpc = self.rpc_client_for_chain(chain)?;
+        if let Some(expected) = Self::expected_chain_id(chain) {
+            let actual = rpc.chain_id().await.unwrap_or(0);
+            if actual != 0 && actual != expected {
+                bail!(
+                    "RPC chainId {actual} does not match selected network {} (expected {expected})",
+                    chain.trim()
+                );
+            }
+        }
+
+        let config = RawSniperConfig {
+            contract,
+            preset,
+            function,
+            params: input.params.unwrap_or_default(),
+            quantity: qty as u64,
+            value_mode,
+            fixed_value,
+            gas: self.gas_params(),
+            dry_run: input.dry_run.unwrap_or(false),
+            at_time,
+            mint_before_at_time: input.mint_before_at_time.unwrap_or(true),
+            timeout_secs,
+            sim_open,
+            rules,
+            concurrency: input.concurrency.unwrap_or(16).max(1) as usize,
+        };
+
+        cancel.store(false, std::sync::atomic::Ordering::SeqCst);
+        let results =
+            raw_sniper::run_raw_sniper(&selected, &rpc, &config, Some(cancel), reporter).await;
+        Ok(results.into_iter().map(SweepResultRow::from).collect())
+    }
+
+    /// One-wallet Multicall3 batch (several calls, one tx).
+    pub async fn multicall(
+        &self,
+        chain: &str,
+        from_address: &str,
+        steps: Vec<MulticallStepInput>,
+        dry_run: bool,
+        multicall_address: Option<String>,
+    ) -> Result<Vec<SweepResultRow>> {
+        if self.signers.is_empty() {
+            bail!("No wallets unlocked");
+        }
+        if chain.trim().is_empty() {
+            bail!("Network required — select a chain for Multicall");
+        }
+        if steps.is_empty() {
+            bail!("Add at least one call");
+        }
+        let from_norm = normalize_address(from_address);
+        let from = self
+            .signers
+            .iter()
+            .find(|s| normalize_address(&format!("{:?}", s.address())) == from_norm)
+            .cloned()
+            .context("Source wallet not found in vault")?;
+
+        let mut built: Vec<MulticallStep> = Vec::new();
+        for (i, s) in steps.into_iter().enumerate() {
+            let target: Address = s
+                .target
+                .trim()
+                .parse()
+                .with_context(|| format!("call #{}: invalid target", i + 1))?;
+            let allow_failure = s.allow_failure.unwrap_or(false);
+            let label = s
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("call{}", i + 1));
+            let value_eth = s.value_eth.as_deref().unwrap_or("0");
+            let step = if let Some(ref data) = s.calldata {
+                if !data.trim().is_empty() {
+                    multicall::step_from_calldata(
+                        target,
+                        data,
+                        value_eth,
+                        allow_failure,
+                        label,
+                    )?
+                } else if let Some(ref fn_sig) = s.function {
+                    multicall::step_from_function(
+                        target,
+                        fn_sig,
+                        &s.params.unwrap_or_default(),
+                        value_eth,
+                        allow_failure,
+                        label,
+                    )?
+                } else {
+                    bail!("call #{}: need function or calldata", i + 1);
+                }
+            } else if let Some(ref fn_sig) = s.function {
+                multicall::step_from_function(
+                    target,
+                    fn_sig,
+                    &s.params.unwrap_or_default(),
+                    value_eth,
+                    allow_failure,
+                    label,
+                )?
+            } else {
+                bail!("call #{}: need function or calldata", i + 1);
+            };
+            built.push(step);
+        }
+
+        let mc_addr = if let Some(ref a) = multicall_address {
+            let t = a.trim();
+            if t.is_empty() {
+                MULTICALL3
+            } else {
+                t.parse().context("invalid multicall address")?
+            }
+        } else {
+            MULTICALL3
+        };
+
+        let rpc = self.rpc_client_for_chain(chain)?;
+        if let Some(expected) = Self::expected_chain_id(chain) {
+            let actual = rpc.chain_id().await.unwrap_or(0);
+            if actual != 0 && actual != expected {
+                bail!(
+                    "RPC chainId {actual} does not match selected network {} (expected {expected})",
+                    chain.trim()
+                );
+            }
+        }
+
+        let config = MulticallConfig {
+            multicall: mc_addr,
+            steps: built,
+            gas: self.gas_params(),
+            dry_run,
+        };
+        let result = multicall::run_multicall(&from, &rpc, &config).await;
+        Ok(vec![SweepResultRow::from(result)])
     }
 
     /// Disperse native coin from one vault wallet to many destinations (fixed amount each).
@@ -1302,6 +1596,53 @@ impl Session {
         cache.clear()?;
         Ok(format!("Cleared auth cache ({n} token(s))"))
     }
+}
+
+/// One call in a Multicall batch (from UI / Tauri).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MulticallStepInput {
+    pub target: String,
+    /// Function sig e.g. `mint(uint256)` (ignored if calldata set).
+    pub function: Option<String>,
+    pub params: Option<Vec<String>>,
+    /// Raw hex calldata `0x…` (overrides function).
+    pub calldata: Option<String>,
+    pub value_eth: Option<String>,
+    pub allow_failure: Option<bool>,
+    pub label: Option<String>,
+}
+
+/// Input for raw contract sniper (desktop / API).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawSniperInput {
+    pub chain: String,
+    pub contract: String,
+    pub preset: Option<String>,
+    pub function: Option<String>,
+    pub params: Option<Vec<String>>,
+    pub quantity: Option<u32>,
+    pub value_mode: Option<String>,
+    pub value_eth: Option<String>,
+    pub dry_run: Option<bool>,
+    pub at_time: Option<String>,
+    pub mint_before_at_time: Option<bool>,
+    pub timeout_secs: Option<u64>,
+    pub sim_open: Option<bool>,
+    pub rules: Option<Vec<ViewRuleInput>>,
+    pub wallet_addresses: Option<Vec<String>>,
+    pub concurrency: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewRuleInput {
+    pub function: String,
+    pub params: Option<Vec<String>>,
+    pub decode: Option<String>,
+    pub op: Option<String>,
+    pub expected: Option<String>,
 }
 
 /// Serializable sweep/mint row for desktop UI.
@@ -1522,6 +1863,8 @@ pub struct MintOptions {
     pub wallet_quantities: Option<std::collections::HashMap<String, u32>>,
     /// If true, skip eth_estimateGas on open (use fixed gas limit) — faster, slightly riskier.
     pub skip_estimate_on_open: Option<bool>,
+    /// When true, fire via Flashbots bundle (Ethereum mainnet only).
+    pub use_flashbots: Option<bool>,
 }
 
 impl Default for MintOptions {
@@ -1543,6 +1886,7 @@ impl Default for MintOptions {
             proxy_overrides: None,
             wallet_quantities: None,
             skip_estimate_on_open: None,
+            use_flashbots: None,
         }
     }
 }

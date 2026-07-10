@@ -28,6 +28,12 @@ pub struct Settings {
     /// Proxies: one per line (host:port:user:pass, socks5://…, http://…).
     /// Field name kept as `proxy_url` for backward-compatible config.json.
     pub proxy_url: String,
+    /// Flashbots relay URL (Ethereum mainnet bundles). Empty → default relay.
+    pub flashbots_relay_url: String,
+    /// How many next blocks to target when sending a bundle.
+    pub flashbots_max_blocks: u64,
+    /// Delay between Flashbots resubmits (ms).
+    pub flashbots_resubmit_ms: u64,
 
     // ── Gas / mint behaviour ─────────────────────────────────────────
     pub gas_limit: u64,
@@ -55,6 +61,9 @@ impl Default for Settings {
             rpc_url_base: String::new(),
             rpc_url_polygon: String::new(),
             proxy_url: String::new(),
+            flashbots_relay_url: String::new(),
+            flashbots_max_blocks: 3,
+            flashbots_resubmit_ms: 1200,
             gas_limit: 250_000,
             use_gql: false,
             priority_fee_gwei: "auto".to_string(),
@@ -163,6 +172,22 @@ impl Settings {
                 }
                 self.proxy_url.push_str(&v);
                 self.proxy_url.push('\n');
+            }
+        }
+        if let Some(v) = take(
+            &self.flashbots_relay_url,
+            &["FLASHBOTS_RELAY_URL", "FLASHBOTS_RELAY"],
+        ) {
+            self.flashbots_relay_url = v;
+        }
+        if !only_if_empty || self.flashbots_max_blocks == Self::default().flashbots_max_blocks {
+            if let Some(n) = env
+                .get("FLASHBOTS_MAX_BLOCKS")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+            {
+                if n > 0 {
+                    self.flashbots_max_blocks = n.min(20);
+                }
             }
         }
 
@@ -462,6 +487,24 @@ impl Settings {
         // First proxy as PROXY_URL for single-proxy helpers; full list lives in proxies.txt
         if let Some(first) = self.proxy_lines().into_iter().next() {
             m.insert("PROXY_URL".to_string(), first);
+        }
+        if !self.flashbots_relay_url.trim().is_empty() {
+            m.insert(
+                "FLASHBOTS_RELAY_URL".to_string(),
+                self.flashbots_relay_url.trim().to_string(),
+            );
+        }
+        if self.flashbots_max_blocks > 0 {
+            m.insert(
+                "FLASHBOTS_MAX_BLOCKS".to_string(),
+                self.flashbots_max_blocks.to_string(),
+            );
+        }
+        if self.flashbots_resubmit_ms >= 200 {
+            m.insert(
+                "FLASHBOTS_RESUBMIT_MS".to_string(),
+                self.flashbots_resubmit_ms.to_string(),
+            );
         }
 
         m.insert("GAS_LIMIT".to_string(), self.gas_limit.to_string());

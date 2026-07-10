@@ -1162,6 +1162,43 @@ code {
   font-weight: 700;
 }
 
+.mc-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0 12px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.mc-call-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: #0a0c12;
+}
+
+.mc-call-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mc-call-head .mc-idx {
+  font-weight: 600;
+  color: var(--accent, #7aa2ff);
+}
+
+.mc-call-card label {
+  margin-bottom: 6px;
+}
+
+.mc-call-card .row.actions {
+  margin-top: 4px;
+}
+
 /* —— Tables —— */
 .table-wrap {
   overflow: auto;

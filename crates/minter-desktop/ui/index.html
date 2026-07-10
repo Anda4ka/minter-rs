@@ -69,6 +69,10 @@
               <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2v4l3-3 1.4 1.4L12 8.8 7.6 4.4 9 3l3 3V2zm-8 9h4l-3 3 1.4 1.4L10 12.8 5.6 8.4 4.2 9.8 7 12.6H4v-1.6zm16 0v1.6h-3l2.8 2.8-1.4 1.4L14 12.8l4.4 4.4 1.4-1.4-3-3H20v-1.6zM12 15.2l4.4 4.4L15 21l-3-3-3 3-1.4-1.4L12 15.2z"/></svg></span>
               <span data-i18n="nav.disperse">Disperse</span>
             </button>
+            <button type="button" class="nav-item" data-page="multicall">
+              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 6h16v2H4V6zm0 5h10v2H4v-2zm0 5h16v2H4v-2zm14-6 4 3-4 3v-6z"/></svg></span>
+              <span data-i18n="nav.multicall">Multicall</span>
+            </button>
             <button type="button" class="nav-item" data-page="wl">
               <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1.2 10.2A2 2 0 0 1 14.8 21H9.2a2 2 0 0 1-2-1.8L6 9zm4 2v7h2v-7H10zm4 0v7h2v-7h-2z"/></svg></span>
               <span data-i18n="nav.wl">WL Check</span>
@@ -88,10 +92,6 @@
             <button type="button" class="nav-item" data-page="proxies">
               <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 7h10v2H7V7zm-2 4h14v2H5v-2zm3 4h8v2H8v-2zM4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg></span>
               <span data-i18n="nav.proxies">Proxies</span>
-            </button>
-            <button type="button" class="nav-item" data-page="deploy">
-              <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6l-8-4zm0 2.2L18 7v5c0 3.8-2.4 7.2-6 8-3.6-.8-6-4.2-6-8V7l6-2.8zM11 8h2v5h-2V8zm0 6h2v2h-2v-2z"/></svg></span>
-              <span data-i18n="nav.deploy">Deploy</span>
             </button>
           </nav>
           <div class="sidebar-foot">
@@ -320,22 +320,64 @@
                   <label><span data-i18n="raw.contract">Contract</span>
                     <input type="text" id="raw-contract" placeholder="0x…" autocomplete="off" />
                   </label>
+                  <label><span data-i18n="raw.preset">Preset</span>
+                    <select id="raw-preset">
+                      <option value="mintBayPublic" data-i18n="raw.presetMintbay">MintBay Public</option>
+                      <option value="simpleMintUint" data-i18n="raw.presetSimple">Simple mint(uint256)</option>
+                      <option value="custom" data-i18n="raw.presetCustom">Custom</option>
+                    </select>
+                  </label>
+                  <label><span data-i18n="raw.qty">Quantity</span>
+                    <input type="number" id="raw-qty" value="1" min="1" max="32" />
+                  </label>
                   <div class="row actions">
                     <button id="btn-raw-discover" type="button" data-i18n="raw.discover">Discover functions</button>
                   </div>
-                  <label><span data-i18n="raw.function">Function</span>
-                    <select id="raw-fn-select"><option value="">— discover or type —</option></select>
-                    <input type="text" id="raw-fn" placeholder="mint(address,uint256)" autocomplete="off" />
+                  <div id="raw-manual-fn">
+                    <label><span data-i18n="raw.function">Function</span>
+                      <select id="raw-fn-select"><option value="">— discover or type —</option></select>
+                      <input type="text" id="raw-fn" placeholder="mint(uint256)" autocomplete="off" />
+                    </label>
+                    <p id="raw-fn-hint" class="muted small"></p>
+                    <label><span data-i18n="raw.params">Params (ABI args only, comma-separated)</span>
+                      <input type="text" id="raw-params" placeholder="empty if freemint() / mint()" autocomplete="off" />
+                    </label>
+                  </div>
+                  <label><span data-i18n="raw.valueMode">Value</span>
+                    <select id="raw-value-mode">
+                      <option value="auto" data-i18n="raw.valueAuto">Auto (MintBay price+fee × qty)</option>
+                      <option value="fixed" data-i18n="raw.valueFixed">Fixed ETH</option>
+                    </select>
                   </label>
-                  <p id="raw-fn-hint" class="muted small"></p>
-                  <label><span data-i18n="raw.params">Params (ABI args only, comma-separated)</span>
-                    <input type="text" id="raw-params" placeholder="empty if freemint() / mint()" autocomplete="off" />
-                  </label>
-                  <label><span data-i18n="raw.value">Value ETH</span>
+                  <label><span data-i18n="raw.value">Value ETH (fixed / override display)</span>
                     <input type="text" id="raw-value" value="0" />
                   </label>
-                  <label class="check"><input type="checkbox" id="raw-dry" checked /> Dry run</label>
-                  <button id="btn-raw-mint" class="danger-btn" type="button" data-i18n="raw.run">Run Raw Mint</button>
+                  <div class="settings-section" style="margin-top:0.75rem;border-top:1px solid var(--border, #333);padding-top:0.75rem">
+                    <h3 class="muted" style="margin:0 0 0.5rem;font-size:0.95rem" data-i18n="raw.sniperTitle">Sniper (wait → mint)</h3>
+                    <p class="muted small" data-i18n="raw.sniperHint">One poller waits for open, then parallel estimate→send. Stop uses the same cancel as OpenSea mint.</p>
+                    <label><span data-i18n="raw.atTime">At time (unix / ISO, optional)</span>
+                      <input type="text" id="raw-at" placeholder="1700000000 or 2026-07-10T17:00:00Z" autocomplete="off" />
+                    </label>
+                    <label><span data-i18n="raw.timeout">Timeout seconds</span>
+                      <input type="number" id="raw-timeout" value="300" min="30" step="30" />
+                    </label>
+                    <p class="muted small" data-i18n="raw.timeoutHint">With at_time: default 300 (5m after T). Without: use 7200+ or rely on Stop.</p>
+                    <label class="check"><input type="checkbox" id="raw-early" checked /> <span data-i18n="raw.early">Mint as soon as open (even before at_time)</span></label>
+                    <label class="check"><input type="checkbox" id="raw-sim-open" /> <span data-i18n="raw.simOpen">Sim-open fallback (estimate OK = open)</span></label>
+                    <div id="raw-rules-box" class="hidden">
+                      <label><span data-i18n="raw.rules">View rules (AND, one per line: sig|op|expected)</span>
+                        <textarea id="raw-rules" rows="3" placeholder="currentPhase()|eq|2&#10;mintingPaused()|eq|false"></textarea>
+                      </label>
+                      <p class="muted small" data-i18n="raw.rulesHint">Example: currentPhase()|eq|2 — decode uint256 by default; use bool: as prefix for bool.</p>
+                    </div>
+                  </div>
+                  <label class="check"><input type="checkbox" id="raw-dry" /> Dry run (sniper defaults live)</label>
+                  <label class="check"><input type="checkbox" id="raw-flashbots" /> <span data-i18n="raw.flashbots">Flashbots bundle</span> <span class="muted small">(instant raw only, Ethereum)</span></label>
+                  <div class="row actions">
+                    <button id="btn-raw-mint" type="button" data-i18n="raw.run">Run once (no wait)</button>
+                    <button id="btn-raw-sniper" class="danger-btn" type="button" data-i18n="raw.sniperRun">Start sniper</button>
+                    <button id="btn-raw-stop" class="btn-stop" type="button" disabled data-i18n="raw.stop">Stop</button>
+                  </div>
                   <pre id="raw-out" class="code"></pre>
                 </div>
               </div>
@@ -386,6 +428,55 @@
                   <label class="check"><input type="checkbox" id="disp-dry" checked /> Dry run</label>
                   <button id="btn-disperse" class="danger-btn" type="button" data-i18n="disperse.run">Run Disperse</button>
                   <pre id="disp-out" class="code"></pre>
+                </div>
+              </div>
+            </div>
+
+            <!-- MULTICALL -->
+            <div id="page-multicall" class="page hidden">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 data-i18n="mc.title">Multicall</h2>
+                  <span class="badge warn-badge" data-i18n="mc.badge">1 wallet · N calls</span>
+                </div>
+                <p class="muted" data-i18n="mc.hint">Batch several contract calls into one transaction from a single vault wallet via Multicall3.</p>
+                <p class="muted small" data-i18n="mc.warn">Warning: target contracts see msg.sender = Multicall3 (not your EOA). Many NFT/OS mints will fail — use Raw / Flashbots for multi-wallet snipes.</p>
+                <div class="settings-section danger-box">
+                  <label><span data-i18n="mc.chain">Network</span> <span class="req-star">*</span>
+                    <select id="mc-chain" required>
+                      <option value="" data-i18n="raw.chainPick">— select network —</option>
+                      <option value="ethereum">Ethereum</option>
+                      <option value="base">Base</option>
+                      <option value="polygon">Polygon</option>
+                      <option value="arbitrum">Arbitrum</option>
+                      <option value="optimism">Optimism</option>
+                      <option value="bsc">BSC</option>
+                      <option value="avalanche">Avalanche</option>
+                      <option value="blast">Blast</option>
+                      <option value="zora">Zora</option>
+                      <option value="apechain">ApeChain</option>
+                      <option value="shape">Shape</option>
+                      <option value="monad">Monad</option>
+                      <option value="megaeth">MegaETH</option>
+                      <option value="robinhood">Robinhood Chain</option>
+                    </select>
+                  </label>
+                  <label><span data-i18n="mc.from">From wallet</span> <span class="req-star">*</span>
+                    <select id="mc-from">
+                      <option value="" data-i18n="disperse.fromPick">— select source —</option>
+                    </select>
+                  </label>
+                  <label class="muted small"><span data-i18n="mc.helper">Multicall3 address</span>
+                    <input type="text" id="mc-helper" placeholder="0xcA11bde05977b3631167028862bE2a173976CA11" autocomplete="off" />
+                  </label>
+                  <div class="wallet-pick-head">
+                    <span data-i18n="mc.calls">Calls</span>
+                    <button type="button" id="btn-mc-add" class="primary" data-i18n="mc.add">+ Add call</button>
+                  </div>
+                  <div id="mc-calls" class="mc-calls"></div>
+                  <label class="check"><input type="checkbox" id="mc-dry" checked /> Dry run</label>
+                  <button id="btn-multicall" class="danger-btn" type="button" data-i18n="mc.run">Run Multicall</button>
+                  <pre id="mc-out" class="code"></pre>
                 </div>
               </div>
             </div>
@@ -587,18 +678,6 @@
               </div>
             </div>
 
-            <!-- DEPLOY — honest Coming soon -->
-            <div id="page-deploy" class="page hidden">
-              <div class="panel">
-                <div class="panel-head">
-                  <h2>Deploy</h2>
-                  <span class="badge muted-badge" data-i18n="deploy.soon">Coming soon</span>
-                </div>
-                <p class="muted" data-i18n="deploy.hint">Bundle / contract deploy is not wired yet. Use Tasks for OpenSea mint sniping.</p>
-                <button type="button" class="primary" disabled>Coming soon</button>
-              </div>
-            </div>
-
             <!-- SETTINGS -->
             <div id="page-settings" class="page hidden">
               <div class="panel">
@@ -622,6 +701,16 @@
                     <label>Ethereum RPC <input type="text" id="set-rpc-eth" placeholder="optional" /></label>
                     <label>Base RPC <input type="text" id="set-rpc-base" placeholder="optional" /></label>
                     <label>Polygon RPC <input type="text" id="set-rpc-polygon" placeholder="optional" /></label>
+                    <label data-i18n-title="settings.fbRelay">Flashbots relay URL
+                      <input type="text" id="set-fb-relay" placeholder="https://relay.flashbots.net" />
+                    </label>
+                    <label>Flashbots max blocks
+                      <input type="number" id="set-fb-blocks" min="1" max="20" value="3" />
+                    </label>
+                    <label>Flashbots resubmit (ms)
+                      <input type="number" id="set-fb-resubmit" min="200" max="10000" step="100" value="1200" />
+                    </label>
+                    <p class="muted small" data-i18n="settings.fbHint">Flashbots: Ethereum only. Statuses: sim OK → submitted → confirmed / not included. Auth = vault wallet #0.</p>
                   </div>
                 </details>
 
@@ -704,6 +793,13 @@
               <option value="robinhood">Robinhood Chain</option>
             </select>
           </label>
+          <label><span data-i18n="tasks.sendMode">Send mode</span>
+            <select id="task-send-mode">
+              <option value="public" data-i18n="tasks.sendPublic">Public mempool</option>
+              <option value="flashbots" data-i18n="tasks.sendFlashbots">Flashbots bundle</option>
+            </select>
+          </label>
+          <p class="muted small" data-i18n="tasks.fbHint">Flashbots: multi-wallet private bundle — Ethereum mainnet only.</p>
           <label><span data-i18n="tasks.gasMode">Gas</span>
             <select id="task-gas-mode">
               <option value="auto" data-i18n="tasks.gasAuto">Auto (estimate)</option>

@@ -263,6 +263,9 @@ struct SettingsDto {
     rpc_url_base: String,
     rpc_url_polygon: String,
     proxy_url: String,
+    flashbots_relay_url: String,
+    flashbots_max_blocks: u64,
+    flashbots_resubmit_ms: u64,
     gas_limit: u64,
     use_gql: bool,
     priority_fee_gwei: String,
@@ -287,6 +290,9 @@ impl SettingsDto {
             rpc_url_base: s.settings.rpc_url_base.clone(),
             rpc_url_polygon: s.settings.rpc_url_polygon.clone(),
             proxy_url: s.settings.proxy_url.clone(),
+            flashbots_relay_url: s.settings.flashbots_relay_url.clone(),
+            flashbots_max_blocks: s.settings.flashbots_max_blocks.max(1),
+            flashbots_resubmit_ms: s.settings.flashbots_resubmit_ms.max(200),
             gas_limit: s.settings.gas_limit,
             use_gql: s.settings.use_gql,
             priority_fee_gwei: s.settings.priority_fee_gwei.clone(),
@@ -332,6 +338,9 @@ struct SaveSettingsInput {
     dry_run: Option<bool>,
     /// If true, clear alchemy key.
     clear_alchemy: Option<bool>,
+    flashbots_relay_url: Option<String>,
+    flashbots_max_blocks: Option<u64>,
+    flashbots_resubmit_ms: Option<u64>,
 }
 
 #[tauri::command]
@@ -399,6 +408,19 @@ fn save_settings(
     if let Some(v) = input.dry_run {
         settings.dry_run = v;
         s.dry_run = v;
+    }
+    if let Some(v) = input.flashbots_relay_url {
+        settings.flashbots_relay_url = v.trim().to_string();
+    }
+    if let Some(v) = input.flashbots_max_blocks {
+        if v > 0 {
+            settings.flashbots_max_blocks = v.min(20);
+        }
+    }
+    if let Some(v) = input.flashbots_resubmit_ms {
+        if v >= 200 {
+            settings.flashbots_resubmit_ms = v.min(10_000);
+        }
     }
 
     s.apply_settings(settings);
@@ -468,6 +490,7 @@ struct RunMintInput {
     /// Per-wallet quantity overrides.
     wallet_quantities: Option<std::collections::HashMap<String, u32>>,
     skip_estimate_on_open: Option<bool>,
+    use_flashbots: Option<bool>,
 }
 
 #[tauri::command]
@@ -527,6 +550,7 @@ async fn run_mint(
         proxy_overrides: input.proxy_overrides,
         wallet_quantities: input.wallet_quantities,
         skip_estimate_on_open: input.skip_estimate_on_open,
+        use_flashbots: input.use_flashbots,
     };
     // Confirm string ignored by core (mint starts without typed CONFIRM).
     let confirm = input.confirm.unwrap_or_default();
@@ -737,6 +761,7 @@ struct RawMintInput {
     confirm: Option<String>,
     /// Selected vault addresses (if empty/absent → all wallets).
     wallet_addresses: Option<Vec<String>>,
+    use_flashbots: Option<bool>,
 }
 
 #[tauri::command]
@@ -755,9 +780,34 @@ async fn raw_mint(
             input.dry_run.unwrap_or(true),
             input.confirm.as_deref().unwrap_or(""),
             input.wallet_addresses,
+            input.use_flashbots.unwrap_or(false),
         )
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn raw_sniper(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    input: minter_core::RawSniperInput,
+) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    if state.mint_running.swap(true, Ordering::SeqCst) {
+        return Err(minter_core::mint_busy_message().into());
+    }
+    let session = state.session.lock().clone();
+    state.mint_first_confirm.store(false, Ordering::SeqCst);
+    let beep = session.settings.beep;
+    let reporter: Arc<dyn MintReporter> = Arc::new(TauriMintReporter {
+        app,
+        first_confirm: state.mint_first_confirm.clone(),
+        beep,
+    });
+    let cancel = state.mint_cancel.clone();
+    cancel.store(false, Ordering::SeqCst);
+    let result = session.raw_sniper(input, cancel, Some(reporter)).await;
+    state.mint_running.store(false, Ordering::SeqCst);
+    result.map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -783,6 +833,34 @@ async fn disperse(
             input.to_addresses,
             &input.amount_eth,
             input.dry_run.unwrap_or(true),
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MulticallInput {
+    chain: String,
+    from_address: String,
+    steps: Vec<minter_core::MulticallStepInput>,
+    dry_run: Option<bool>,
+    multicall_address: Option<String>,
+}
+
+#[tauri::command]
+async fn multicall(
+    state: State<'_, Arc<AppState>>,
+    input: MulticallInput,
+) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    let session = state.session.lock().clone();
+    session
+        .multicall(
+            &input.chain,
+            &input.from_address,
+            input.steps,
+            input.dry_run.unwrap_or(true),
+            input.multicall_address,
         )
         .await
         .map_err(|e| e.to_string())
@@ -1117,7 +1195,9 @@ pub fn run() {
             measure_latency,
             discover_raw_functions,
             raw_mint,
+            raw_sniper,
             disperse,
+            multicall,
             clear_auth_cache,
             remove_wallet,
             set_dry_run,

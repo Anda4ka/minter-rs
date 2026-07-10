@@ -14,7 +14,10 @@ pub mod opensea;
 pub mod progress;
 pub mod proxy;
 pub mod disperse;
+pub mod flashbots;
+pub mod multicall;
 pub mod raw_mint;
+pub mod raw_sniper;
 pub mod rpc;
 pub mod settings;
 pub mod sign;
@@ -24,9 +27,9 @@ pub mod vault;
 
 pub use api::{
     AuthTestRow, DiscoveredFunction, DropPhasesResult, EligibilityResult, LatencyReport,
-    LatencyRpcRow, MintOptions, ProxyHealthRow, ProxyListItem, RpcProbeResult, SecurityStatus,
-    Session, StageRow, SweepResultRow, WalletBalanceRow, WalletEligibilityReport,
-    WalletEligibilityRow, WalletInfo,
+    LatencyRpcRow, MintOptions, MulticallStepInput, ProxyHealthRow, ProxyListItem, RawSniperInput,
+    RpcProbeResult, SecurityStatus, Session, StageRow, SweepResultRow, ViewRuleInput,
+    WalletBalanceRow, WalletEligibilityReport, WalletEligibilityRow, WalletInfo,
 };
 
 /// When true, suppress noisy `println!` in core (desktop sets QUIET=1 by default).
@@ -58,8 +61,12 @@ macro_rules! rlog {
 }
 pub use mint::{run_opensea_mint, MintRunSummary};
 pub use mint_ops::{
-    chain_mismatch_message, expand_wallet_quantities, explorer_tx_url, is_on_chain_confirm_status,
-    mint_busy_message, normalize_addr_key, parse_at_time_unix, reauth_required_message,
+    chain_mismatch_message, expand_wallet_quantities, explorer_tx_url, flashbots_allowed_for_chain,
+    flashbots_status_label, is_on_chain_confirm_status, mint_busy_message, normalize_addr_key,
+    parse_at_time_unix, reauth_required_message,
+};
+pub use raw_sniper::{
+    CompareOp, DecodeKind, RawSniperConfig, SniperPreset, ValueMode, ViewRule,
 };
 pub use progress::{MintEvent, MintReporter, NullReporter};
 pub use settings::Settings;
