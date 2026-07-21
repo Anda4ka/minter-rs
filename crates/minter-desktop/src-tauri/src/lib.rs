@@ -129,6 +129,34 @@ fn unlock(state: State<'_, Arc<AppState>>, password: String) -> Result<usize, St
     s.unlock(&password).map_err(|e| e.to_string())
 }
 
+/// Clear signers + password from RAM (idle lock / manual lock).
+#[tauri::command]
+fn lock_vault(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    if state.mint_running.load(Ordering::SeqCst) {
+        return Err("Cannot lock vault while a mint is running — Stop first".into());
+    }
+    state.session.lock().lock();
+    Ok("Vault locked".into())
+}
+
+/// Pure policy: LIVE confirm required?
+#[tauri::command]
+fn live_confirm_required(state: State<'_, Arc<AppState>>, dry_run: bool) -> bool {
+    let s = state.session.lock();
+    minter_core::live_confirm_required(s.settings.require_live_confirm, dry_run)
+}
+
+/// Pure policy: warn multi-wallet without proxies?
+#[tauri::command]
+fn should_warn_no_proxy(wallet_count: u32, proxy_count: u32) -> bool {
+    minter_core::should_warn_no_proxy(wallet_count as usize, proxy_count as usize)
+}
+
+#[tauri::command]
+fn no_proxy_warn_message(wallet_count: u32) -> String {
+    minter_core::no_proxy_multi_wallet_message(wallet_count as usize)
+}
+
 #[tauri::command]
 fn get_status(state: State<'_, Arc<AppState>>) -> UiStatus {
     let s = state.session.lock();
@@ -223,6 +251,8 @@ fn list_proxies(state: State<'_, Arc<AppState>>) -> Vec<minter_core::ProxyListIt
 #[serde(rename_all = "camelCase")]
 struct WalletBalancesInput {
     wallet_addresses: Option<Vec<String>>,
+    /// Optional chain name (Raw Mint uses selected network).
+    chain: Option<String>,
 }
 
 #[tauri::command]
@@ -231,9 +261,63 @@ async fn wallet_balances(
     input: Option<WalletBalancesInput>,
 ) -> Result<Vec<minter_core::WalletBalanceRow>, String> {
     let session = state.session.lock().clone();
-    let addrs = input.and_then(|i| i.wallet_addresses);
+    let (addrs, chain) = match input {
+        Some(i) => (i.wallet_addresses, i.chain),
+        None => (None, None),
+    };
     session
-        .wallet_balances(addrs)
+        .wallet_balances(addrs, chain.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeNetworksInput {
+    /// Chain names e.g. ethereum, base, polygon. Empty → common set.
+    chains: Option<Vec<String>>,
+    /// Route JSON-RPC through first Settings proxy.
+    via_proxy: Option<bool>,
+}
+
+#[tauri::command]
+async fn probe_networks(
+    state: State<'_, Arc<AppState>>,
+    input: Option<ProbeNetworksInput>,
+) -> Result<Vec<minter_core::NetworkProbeRow>, String> {
+    let session = state.session.lock().clone();
+    let (chains, via_proxy) = match input {
+        Some(i) => (i.chains, i.via_proxy.unwrap_or(false)),
+        None => (None, false),
+    };
+    session
+        .probe_networks(chains, via_proxy)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawProbeInput {
+    chain: String,
+    contract: String,
+    quantity: Option<u32>,
+    preset: Option<String>,
+}
+
+#[tauri::command]
+async fn probe_raw(
+    state: State<'_, Arc<AppState>>,
+    input: RawProbeInput,
+) -> Result<minter_core::RawProbeRow, String> {
+    let session = state.session.lock().clone();
+    session
+        .probe_raw(
+            &input.chain,
+            &input.contract,
+            input.quantity.unwrap_or(1),
+            input.preset.as_deref().unwrap_or("mintBayPublic"),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -277,6 +361,9 @@ struct SettingsDto {
     beep: bool,
     export_results: bool,
     dry_run: bool,
+    require_live_confirm: bool,
+    idle_lock_minutes: u32,
+    fee_refresh_at_fire: String,
     config_path: String,
 }
 
@@ -304,6 +391,13 @@ impl SettingsDto {
             beep: s.settings.beep,
             export_results: s.settings.export_results,
             dry_run: s.dry_run,
+            require_live_confirm: s.settings.require_live_confirm,
+            idle_lock_minutes: s.settings.idle_lock_minutes,
+            fee_refresh_at_fire: if s.settings.fee_refresh_at_fire.trim().is_empty() {
+                "mainnetOnly".into()
+            } else {
+                s.settings.fee_refresh_at_fire.clone()
+            },
             config_path: s.config_path().display().to_string(),
         }
     }
@@ -336,6 +430,9 @@ struct SaveSettingsInput {
     beep: Option<bool>,
     export_results: Option<bool>,
     dry_run: Option<bool>,
+    require_live_confirm: Option<bool>,
+    idle_lock_minutes: Option<u32>,
+    fee_refresh_at_fire: Option<String>,
     /// If true, clear alchemy key.
     clear_alchemy: Option<bool>,
     flashbots_relay_url: Option<String>,
@@ -409,6 +506,20 @@ fn save_settings(
         settings.dry_run = v;
         s.dry_run = v;
     }
+    if let Some(v) = input.require_live_confirm {
+        settings.require_live_confirm = v;
+    }
+    if let Some(v) = input.idle_lock_minutes {
+        settings.idle_lock_minutes = v.min(24 * 60);
+    }
+    if let Some(v) = input.fee_refresh_at_fire {
+        let t = v.trim();
+        settings.fee_refresh_at_fire = if t.is_empty() {
+            "mainnetOnly".into()
+        } else {
+            minter_core::FeeRefreshMode::parse(t).as_str().to_string()
+        };
+    }
     if let Some(v) = input.flashbots_relay_url {
         settings.flashbots_relay_url = v.trim().to_string();
     }
@@ -438,31 +549,56 @@ fn security_status(state: State<'_, Arc<AppState>>) -> minter_core::SecurityStat
     state.session.lock().security_status()
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SweepEthInput {
+    chain: String,
+    destination: String,
+    dry_run: Option<bool>,
+    confirm: Option<String>,
+}
+
 #[tauri::command]
 async fn sweep_eth(
     state: State<'_, Arc<AppState>>,
-    destination: String,
-    dry_run: bool,
-    confirm: String,
+    input: SweepEthInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
     let session = state.session.lock().clone();
     session
-        .sweep_eth(&destination, dry_run, &confirm)
+        .sweep_eth(
+            &input.chain,
+            &input.destination,
+            input.dry_run.unwrap_or(true),
+            input.confirm.as_deref().unwrap_or(""),
+        )
         .await
         .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SweepNftsInput {
+    chain: String,
+    contract: String,
+    destination: String,
+    dry_run: Option<bool>,
+    confirm: Option<String>,
 }
 
 #[tauri::command]
 async fn sweep_nfts(
     state: State<'_, Arc<AppState>>,
-    contract: String,
-    destination: String,
-    dry_run: bool,
-    confirm: String,
+    input: SweepNftsInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
     let session = state.session.lock().clone();
     session
-        .sweep_nfts(&contract, &destination, dry_run, &confirm)
+        .sweep_nfts(
+            &input.chain,
+            &input.contract,
+            &input.destination,
+            input.dry_run.unwrap_or(true),
+            input.confirm.as_deref().unwrap_or(""),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -762,6 +898,10 @@ struct RawMintInput {
     /// Selected vault addresses (if empty/absent → all wallets).
     wallet_addresses: Option<Vec<String>>,
     use_flashbots: Option<bool>,
+    priority_fee_gwei: Option<String>,
+    max_fee_gwei: Option<String>,
+    gas_multiplier: Option<String>,
+    gas_limit: Option<u64>,
 }
 
 #[tauri::command]
@@ -770,6 +910,11 @@ async fn raw_mint(
     input: RawMintInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
     let session = state.session.lock().clone();
+    let gas_mult = input
+        .gas_multiplier
+        .as_deref()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|m| *m > 0.0);
     session
         .raw_mint(
             &input.chain,
@@ -781,6 +926,10 @@ async fn raw_mint(
             input.confirm.as_deref().unwrap_or(""),
             input.wallet_addresses,
             input.use_flashbots.unwrap_or(false),
+            input.priority_fee_gwei.as_deref(),
+            input.max_fee_gwei.as_deref(),
+            gas_mult,
+            input.gas_limit,
         )
         .await
         .map_err(|e| e.to_string())
@@ -1158,6 +1307,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             accept_burner,
             unlock,
+            lock_vault,
+            live_confirm_required,
+            should_warn_no_proxy,
+            no_proxy_warn_message,
             get_status,
             list_wallets,
             add_key,
@@ -1166,6 +1319,7 @@ pub fn run() {
             import_keys_text,
             list_proxies,
             wallet_balances,
+            probe_networks,
             load_wallet_meta,
             save_wallet_meta,
             pick_files,
@@ -1196,6 +1350,7 @@ pub fn run() {
             discover_raw_functions,
             raw_mint,
             raw_sniper,
+            probe_raw,
             disperse,
             multicall,
             clear_auth_cache,

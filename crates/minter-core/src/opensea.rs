@@ -312,10 +312,21 @@ pub async fn siwe_auth(
     chain_id: u64,
     proxy_url: Option<&str>,
 ) -> Result<AuthSession> {
-    const MAX_ATTEMPTS: u32 = 8;
+    siwe_auth_with_retries(address, signer, chain_id, proxy_url, 8).await
+}
+
+/// SIWE auth with a custom retry budget (e.g. WL check uses fewer rounds to avoid UI hangs).
+pub async fn siwe_auth_with_retries(
+    address: &Address,
+    signer: &alloy::signers::local::LocalSigner<k256::ecdsa::SigningKey>,
+    chain_id: u64,
+    proxy_url: Option<&str>,
+    max_attempts: u32,
+) -> Result<AuthSession> {
+    let max_attempts = max_attempts.max(1);
     let mut last_err = None;
 
-    for attempt in 1..=MAX_ATTEMPTS {
+    for attempt in 1..=max_attempts {
         match siwe_auth_once(address, signer, chain_id, proxy_url).await {
             Ok(session) => return Ok(session),
             Err(e) => {
@@ -325,7 +336,7 @@ pub async fn siwe_auth(
                     || msg.contains("Too Many Requests")
                     || msg.contains("503")
                     || msg.to_lowercase().contains("rate limit");
-                if retryable && attempt < MAX_ATTEMPTS {
+                if retryable && attempt < max_attempts {
                     // Prefer server-provided wait from error text, else exponential backoff.
                     let mut wait_secs = 1u64 << (attempt.saturating_sub(1).min(4)); // 1,2,4,8,16
                     if let Some(idx) = msg.find("retry-after") {
@@ -345,7 +356,7 @@ pub async fn siwe_auth(
                         "[{}] rate limited (attempt {}/{}), sleep {}ms",
                         crate::sign::shorten_address(address),
                         attempt,
-                        MAX_ATTEMPTS,
+                        max_attempts,
                         wait.as_millis()
                     );
                     tokio::time::sleep(wait).await;

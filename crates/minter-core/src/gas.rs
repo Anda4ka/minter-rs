@@ -145,6 +145,25 @@ pub fn is_intrinsic_gas_error(msg: &str) -> bool {
     m.contains("intrinsic gas too low") || m.contains("gas too low")
 }
 
+/// Bump a fee by basis points without f64 (e.g. 11500 = ×1.15, 13000 = ×1.30).
+/// If the result would not increase a non-zero fee, add 1 wei so RBF can progress.
+pub fn bump_fee_bps(fee: U256, bps: u64) -> U256 {
+    if bps == 0 {
+        return U256::ZERO;
+    }
+    let bumped = fee.saturating_mul(U256::from(bps)) / U256::from(10_000u64);
+    if !fee.is_zero() && bumped <= fee {
+        fee.saturating_add(U256::from(1u64))
+    } else {
+        bumped
+    }
+}
+
+/// Parse gwei decimal string → wei via integer math (9 fractional digits).
+pub fn gwei_str_to_wei(s: &str) -> anyhow::Result<U256> {
+    crate::amount::decimal_to_units(s.trim(), 9)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +278,35 @@ mod tests {
     fn intrinsic_bump() {
         assert!(is_intrinsic_gas_error("intrinsic gas too low"));
         assert_eq!(bump_gas_after_intrinsic(21_000), 300_000);
+    }
+
+    #[test]
+    fn fee_bps_bump_exact() {
+        let base = U256::from(1_000_000_000u64); // 1 gwei
+        assert_eq!(bump_fee_bps(base, 11_500), U256::from(1_150_000_000u64));
+        assert_eq!(bump_fee_bps(base, 13_000), U256::from(1_300_000_000u64));
+    }
+
+    #[test]
+    fn fee_bps_tiny_still_increases() {
+        let fee = U256::from(1u64);
+        // 1 * 11500 / 10000 = 1 (integer div) → force +1 wei
+        assert_eq!(bump_fee_bps(fee, 11_500), U256::from(2u64));
+    }
+
+    #[test]
+    fn gwei_str_to_wei_exact() {
+        assert_eq!(
+            gwei_str_to_wei("3").unwrap(),
+            U256::from(3_000_000_000u64)
+        );
+        assert_eq!(
+            gwei_str_to_wei("0.1").unwrap(),
+            U256::from(100_000_000u64)
+        );
+        assert_eq!(
+            gwei_str_to_wei("1.5").unwrap(),
+            U256::from(1_500_000_000u64)
+        );
     }
 }

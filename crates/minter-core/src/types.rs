@@ -265,12 +265,10 @@ impl GasParams {
         if let Some(v) = env.get("PRIORITY_FEE_GWEI") {
             let t = v.trim();
             if !t.is_empty() && !t.eq_ignore_ascii_case("auto") {
-                if let Ok(pg) = t.parse::<f64>() {
-                    if pg > 0.0 {
+                if let Ok(wei) = crate::gas::gwei_str_to_wei(t) {
+                    if !wei.is_zero() {
                         params.mode = GasMode::Hybrid;
-                        // gwei → wei; cap cast at u64::MAX gwei equivalent is fine for fees
-                        let wei = (pg * 1e9) as u128;
-                        params.priority_fee = Some(U256::from(wei));
+                        params.priority_fee = Some(wei);
                     }
                 }
             }
@@ -280,10 +278,16 @@ impl GasParams {
     }
 
     /// Override priority fee (gwei). Used for interactive prompt over env defaults.
+    /// Converts via decimal string so common values (e.g. `0.1`, `3`) stay exact.
     pub fn with_priority_gwei(mut self, gwei: f64) -> Self {
-        if gwei > 0.0 {
-            self.mode = GasMode::Hybrid;
-            self.priority_fee = Some(U256::from((gwei * 1e9) as u128));
+        if gwei > 0.0 && gwei.is_finite() {
+            // `Display` for finite f64 is stable enough for fee UI inputs.
+            if let Ok(wei) = crate::gas::gwei_str_to_wei(&format!("{gwei}")) {
+                if !wei.is_zero() {
+                    self.mode = GasMode::Hybrid;
+                    self.priority_fee = Some(wei);
+                }
+            }
         }
         self
     }

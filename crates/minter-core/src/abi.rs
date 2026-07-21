@@ -1,6 +1,7 @@
 use alloy_primitives::{Bytes, U256, keccak256};
 use anyhow::{Context, Result, bail};
 
+/// Well-known mint/claim selectors (verified against keccak first-4).
 pub const KNOWN_MINT_SELECTORS: &[(&[u8], &str)] = &[
     (b"\x40\xc1\x0f\x19", "mint(address,uint256)"),
     (b"\xa0\x71\x2d\x68", "mint(uint256)"),
@@ -11,6 +12,7 @@ pub const KNOWN_MINT_SELECTORS: &[(&[u8], &str)] = &[
     (b"\xd0\x95\xb5\xde", "publicMint(uint256)"),
     (b"\xc3\xfb\xdd\x0f", "claimTo(address,uint256)"),
     (b"\x8e\xf6\x45\x98", "claimTo(address)"),
+    (b"\xef\xef\x39\xa1", "purchase(uint256)"),
 ];
 
 pub fn extract_selectors(bytecode: &[u8]) -> Vec<[u8; 4]> {
@@ -37,13 +39,14 @@ pub async fn lookup_4byte(selector: &[u8; 4]) -> Vec<String> {
         "https://www.4byte.directory/api/v1/signatures/?hex_signature={}",
         hex_sel
     );
-    let client = reqwest::Client::new();
-    let resp = match client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
     {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(_) => return vec![],
     };
@@ -60,9 +63,70 @@ pub async fn lookup_4byte(selector: &[u8; 4]) -> Vec<String> {
                         .and_then(|s| s.as_str())
                         .map(String::from)
                 })
+                // Drop spam / phishing decoys that share selectors with mint*
+                .filter(|s| !s.contains("watch_tg") && !s.contains("invmru"))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Prefer mint/claim/buy style signatures when ranking discover results.
+pub fn is_mint_like_signature(sig: &str) -> bool {
+    let l = sig.to_ascii_lowercase();
+    l.contains("mint")
+        || l.contains("claim")
+        || l.contains("purchase")
+        || l.contains("buy")
+        || l.starts_with("public")
+        || l.contains("allowlist")
+        || l.contains("whitelist")
+}
+
+/// EIP-1167 minimal proxy: `363d3d373d3d3d363d73 <impl20> 5af43d82803e903d91602b57fd5bf3`
+pub fn parse_eip1167_implementation(code: &[u8]) -> Option<alloy_primitives::Address> {
+    const PREFIX: &[u8] = &[0x36, 0x3d, 0x3d, 0x37, 0x3d, 0x3d, 0x3d, 0x36, 0x3d, 0x73];
+    const SUFFIX: &[u8] = &[
+        0x5a, 0xf4, 0x3d, 0x82, 0x80, 0x3e, 0x90, 0x3d, 0x91, 0x60, 0x2b, 0x57, 0xfd, 0x5b, 0xf3,
+    ];
+    if code.len() != PREFIX.len() + 20 + SUFFIX.len() {
+        return None;
+    }
+    if !code.starts_with(PREFIX) || !code.ends_with(SUFFIX) {
+        return None;
+    }
+    let mut raw = [0u8; 20];
+    raw.copy_from_slice(&code[PREFIX.len()..PREFIX.len() + 20]);
+    Some(alloy_primitives::Address::from(raw))
+}
+
+/// EIP-1967 implementation storage slot.
+pub const EIP1967_IMPLEMENTATION_SLOT: [u8; 32] = [
+    0x36, 0x08, 0x94, 0xa1, 0x3b, 0xa1, 0xa3, 0x21, 0x06, 0x67, 0xc8, 0x28, 0x49, 0x2d, 0xb9, 0x8d,
+    0xca, 0x3e, 0x20, 0x76, 0xcc, 0x37, 0x35, 0xa9, 0x20, 0xa3, 0xca, 0x50, 0x5d, 0x38, 0x2b, 0xbc,
+];
+
+#[cfg(test)]
+mod proxy_parse_tests {
+    use super::*;
+    use alloy_primitives::address;
+
+    #[test]
+    fn eip1167_extracts_impl() {
+        // Real Robinhood clone-proxy pattern (45 bytes runtime)
+        let impl_addr = address!("73afda8000a14cee4e681cac50e668da81b670a8");
+        let mut code = vec![0x36, 0x3d, 0x3d, 0x37, 0x3d, 0x3d, 0x3d, 0x36, 0x3d, 0x73];
+        code.extend_from_slice(impl_addr.as_slice());
+        code.extend_from_slice(&[
+            0x5a, 0xf4, 0x3d, 0x82, 0x80, 0x3e, 0x90, 0x3d, 0x91, 0x60, 0x2b, 0x57, 0xfd, 0x5b,
+            0xf3,
+        ]);
+        assert_eq!(parse_eip1167_implementation(&code), Some(impl_addr));
+    }
+
+    #[test]
+    fn eip1167_rejects_full_contract() {
+        assert!(parse_eip1167_implementation(&[0x60, 0x80, 0x60, 0x40]).is_none());
+    }
 }
 
 pub fn parse_function_signature(sig: &str) -> Result<(String, Vec<String>)> {

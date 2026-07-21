@@ -1,7 +1,10 @@
 use alloy_primitives::{Address, U256};
 use anyhow::{Context, Result};
 
-use crate::abi::*;
+use crate::abi::{
+    extract_selectors, is_mint_like_signature, lookup_4byte, parse_eip1167_implementation,
+    build_calldata, EIP1967_IMPLEMENTATION_SLOT, KNOWN_MINT_SELECTORS,
+};
 use crate::flashbots::{self, BundleTx, FlashbotsClient, FlashbotsConfig, MAINNET_CHAIN_ID};
 use crate::gas::{self, apply_gas_limit};
 use crate::rpc::RpcClient;
@@ -21,35 +24,248 @@ pub struct RawMintConfig {
     /// When true, broadcast via Flashbots bundle (Ethereum mainnet only).
     pub use_flashbots: bool,
     pub flashbots: FlashbotsConfig,
+    /// Optional hard gas limit (skips estimate scaling when set).
+    pub gas_limit: Option<u64>,
 }
 
+/// Resolve EIP-1167 / EIP-1967 proxy → implementation address (if any).
+async fn resolve_implementation(
+    rpc: &RpcClient,
+    contract: &Address,
+    bytecode: &[u8],
+) -> Result<Option<(Address, &'static str)>> {
+    if let Some(impl_addr) = parse_eip1167_implementation(bytecode) {
+        if impl_addr != Address::ZERO && &impl_addr != contract {
+            return Ok(Some((impl_addr, "eip1167")));
+        }
+    }
+    // EIP-1967 implementation slot
+    let slot = alloy_primitives::B256::from(EIP1967_IMPLEMENTATION_SLOT);
+    if let Ok(word) = rpc.get_storage_at(contract, slot).await {
+        let bytes = word.as_slice();
+        if bytes.len() == 32 {
+            let mut raw = [0u8; 20];
+            raw.copy_from_slice(&bytes[12..32]);
+            let impl_addr = Address::from(raw);
+            if impl_addr != Address::ZERO && &impl_addr != contract {
+                return Ok(Some((impl_addr, "eip1967")));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Best-effort verified ABI from Blockscout-compatible explorers.
+async fn fetch_explorer_abi_functions(
+    explorer_base: &str,
+    address: &Address,
+) -> Vec<(String, String)> {
+    let url = format!(
+        "{}/api?module=contract&action=getabi&address={:?}",
+        explorer_base.trim_end_matches('/'),
+        address
+    );
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let resp = match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return vec![],
+    };
+    let data: serde_json::Value = match resp.json().await {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+    let result = data.get("result").and_then(|v| v.as_str()).unwrap_or("");
+    if result.is_empty() || result == "Contract source code not verified" {
+        return vec![];
+    }
+    let abi: Vec<serde_json::Value> = match serde_json::from_str(result) {
+        Ok(a) => a,
+        Err(_) => return vec![],
+    };
+    let mut out = Vec::new();
+    for item in abi {
+        if item.get("type").and_then(|t| t.as_str()) != Some("function") {
+            continue;
+        }
+        let name = match item.get("name").and_then(|n| n.as_str()) {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let inputs = item
+            .get("inputs")
+            .and_then(|i| i.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|inp| inp.get("type").and_then(|t| t.as_str()).map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let sig = format!("{name}({})", inputs.join(","));
+        out.push((sig, "explorer".to_string()));
+    }
+    out
+}
+
+fn explorer_api_for_chain(chain: Option<&str>) -> Option<&'static str> {
+    match chain.map(str::to_ascii_lowercase).as_deref() {
+        Some("robinhood" | "robinhood_chain" | "robinhood-chain") => {
+            Some("https://robinhoodchain.blockscout.com")
+        }
+        Some("base") => Some("https://base.blockscout.com"),
+        Some("ethereum" | "mainnet" | "eth") => Some("https://eth.blockscout.com"),
+        Some("optimism" | "op") => Some("https://optimism.blockscout.com"),
+        Some("arbitrum" | "arb") => Some("https://arbitrum.blockscout.com"),
+        Some("polygon" | "matic") => Some("https://polygon.blockscout.com"),
+        Some("zora") => Some("https://explorer.zora.energy"),
+        Some("blast") => Some("https://blast.blockscout.com"),
+        Some("shape") => Some("https://shapescan.xyz"),
+        _ => None,
+    }
+}
+
+/// Discover callable functions on a contract (for Raw Mint UI).
+/// Resolves minimal/EIP-1967 proxies, then combines hardcoded + 4byte + explorer ABI.
 pub async fn discover_functions(
     rpc: &RpcClient,
     contract: &Address,
+) -> Result<Vec<(String, String)>> {
+    discover_functions_on_chain(rpc, contract, None).await
+}
+
+pub async fn discover_functions_on_chain(
+    rpc: &RpcClient,
+    contract: &Address,
+    chain: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
     let bytecode = rpc
         .get_code(contract)
         .await
         .context("failed to get bytecode")?;
     if bytecode.is_empty() {
-        anyhow::bail!("No bytecode at contract address. Is this a valid contract?");
+        anyhow::bail!("No bytecode at contract address. Is this a valid contract on this network?");
     }
-    let selectors = extract_selectors(&bytecode);
-    let mut results = Vec::new();
 
+    let mut code_addr = *contract;
+    let mut code = bytecode.to_vec();
+    let mut proxy_note: Option<&'static str> = None;
+
+    if let Some((impl_addr, kind)) = resolve_implementation(rpc, contract, &code).await? {
+        let impl_code = rpc
+            .get_code(&impl_addr)
+            .await
+            .with_context(|| format!("failed to get implementation bytecode {impl_addr:?}"))?;
+        if impl_code.is_empty() {
+            anyhow::bail!(
+                "Proxy ({kind}) points to {impl_addr:?} but implementation has no code"
+            );
+        }
+        code_addr = impl_addr;
+        code = impl_code.to_vec();
+        proxy_note = Some(kind);
+        crate::rlog!(
+            "Discover: {} proxy {:?} → impl {:?}",
+            kind,
+            contract,
+            impl_addr
+        );
+    }
+
+    let mut results: Vec<(String, String)> = Vec::new();
+    let mut push_unique = |sig: String, source: String| {
+        if !results.iter().any(|(s, _)| s == &sig) {
+            results.push((sig, source));
+        }
+    };
+
+    // 1) Verified explorer ABI (best source when contract is verified)
+    if let Some(base) = explorer_api_for_chain(chain) {
+        for (sig, src) in fetch_explorer_abi_functions(base, &code_addr).await {
+            push_unique(sig, src);
+        }
+        // also try proxy address itself (some explorers verify proxy)
+        if code_addr != *contract {
+            for (sig, src) in fetch_explorer_abi_functions(base, contract).await {
+                push_unique(sig, src);
+            }
+        }
+    }
+
+    // 2) Bytecode selectors → hardcoded mint + 4byte (parallel)
+    let selectors = extract_selectors(&code);
+    let mut pending_4byte: Vec<[u8; 4]> = Vec::new();
     for sel in &selectors {
-        let _hex_sel = hex::encode(sel);
         for (known_sel, sig) in KNOWN_MINT_SELECTORS {
-            if known_sel == sel {
-                results.push((sig.to_string(), "hardcoded".to_string()));
+            if *known_sel == sel.as_slice() {
+                let src = match proxy_note {
+                    Some(_) => "hardcoded@proxy",
+                    None => "hardcoded",
+                };
+                push_unique(sig.to_string(), src.to_string());
             }
         }
-        let remote = lookup_4byte(sel).await;
-        for sig in remote {
-            if !results.iter().any(|(s, _)| s == &sig) {
-                results.push((sig, "4byte".to_string()));
+        // skip 4byte if we already have mint-like from explorer
+        pending_4byte.push(*sel);
+    }
+
+    // Cap remote lookups for speed (large ABIs can have 100+ PUSH4)
+    const MAX_4BYTE: usize = 64;
+    let to_lookup: Vec<[u8; 4]> = pending_4byte.into_iter().take(MAX_4BYTE).collect();
+    let mut set = tokio::task::JoinSet::new();
+    const CONC: usize = 10;
+    let mut idx = 0;
+    while idx < to_lookup.len() || !set.is_empty() {
+        while set.len() < CONC && idx < to_lookup.len() {
+            let sel = to_lookup[idx];
+            idx += 1;
+            set.spawn(async move { lookup_4byte(&sel).await });
+        }
+        if let Some(joined) = set.join_next().await {
+            if let Ok(sigs) = joined {
+                for sig in sigs {
+                    // Prefer mint-like; still keep other decoded names (useful for custom)
+                    let src = match proxy_note {
+                        Some(_) => "4byte@proxy",
+                        None => "4byte",
+                    };
+                    push_unique(sig, src.to_string());
+                }
             }
         }
+    }
+
+    // Rank: mint-like first, then rest (stable by signature)
+    results.sort_by(|a, b| {
+        let am = is_mint_like_signature(&a.0);
+        let bm = is_mint_like_signature(&b.0);
+        match (am, bm) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.0.cmp(&b.0),
+        }
+    });
+
+    if results.is_empty() {
+        if selectors.is_empty() {
+            anyhow::bail!(
+                "No function selectors in bytecode{}. Try pasting the function signature manually (e.g. mint(uint256)).",
+                proxy_note
+                    .map(|k| format!(" (resolved {k} proxy)"))
+                    .unwrap_or_default()
+            );
+        }
+        anyhow::bail!(
+            "Found {} selector(s) in bytecode{} but none matched known mint functions or 4byte.directory. Enter the full signature manually in Function field (e.g. mint(uint256) or customName(uint256,address)).",
+            selectors.len(),
+            proxy_note
+                .map(|k| format!(" via {k} proxy → {code_addr:?}"))
+                .unwrap_or_default()
+        );
     }
 
     Ok(results)
@@ -191,8 +407,12 @@ pub async fn run_raw_mint(
                 continue;
             }
         };
-        // L2-safe limit (same helper as Disperse/Sweep)
-        let gas_limit = apply_gas_limit(gas_estimate, gas_multiplier, chain_id, 21_000);
+        // L2-safe limit (same helper as Disperse/Sweep), or hard override from UI
+        let gas_limit = if let Some(gl) = config.gas_limit.filter(|&g| g >= 21_000) {
+            gl
+        } else {
+            apply_gas_limit(gas_estimate, gas_multiplier, chain_id, 21_000)
+        };
 
         if config.dry_run && !config.use_flashbots {
             crate::rlog!("  DRY RUN OK");

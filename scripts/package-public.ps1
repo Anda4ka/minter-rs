@@ -1,66 +1,200 @@
-# Build minter-desktop release and stage a desktop-only Public package + zip.
+# Build minter-desktop release and copy exe into Public/.
 # Usage (from repo root):
 #   powershell -ExecutionPolicy Bypass -File scripts/package-public.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts/package-public.ps1 -MakeZip
+#   powershell -ExecutionPolicy Bypass -File scripts/package-public.ps1 -SkipBuild -MakeZip
+#
+# -MakeZip packs ONLY the allowlist (see Public/SHIP_MANIFEST.txt).
+# Live secrets in Public/ (keys.vault, config.json, …) are never included.
+
+param(
+    [switch]$MakeZip,
+    [switch]$SkipBuild
+)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
-Write-Host "==> cargo build -p minter-desktop --release"
-cargo build -p minter-desktop --release
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-$ExeCandidates = @(
-    (Join-Path $Root "target\release\minter-desktop.exe"),
-    (Join-Path $Root "crates\minter-desktop\src-tauri\target\release\minter-desktop.exe")
-)
-$Exe = $ExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $Exe) {
-    Write-Error "minter-desktop.exe not found after build"
-    exit 1
-}
-
 $Out = Join-Path $Root "Public"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
-Copy-Item -Force $Exe (Join-Path $Out "minter-desktop.exe")
+if (-not $SkipBuild) {
+    Write-Host "==> cargo build -p minter-desktop --release"
+    cargo build -p minter-desktop --release
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$LegacyCli = Join-Path $Out "minter.exe"
-if (Test-Path $LegacyCli) {
-    Remove-Item -Force $LegacyCli
-    Write-Host "Removed legacy minter.exe from Public/"
-}
+    $ExeCandidates = @(
+        (Join-Path $Root "target\release\minter-desktop.exe"),
+        (Join-Path $Root "crates\minter-desktop\src-tauri\target\release\minter-desktop.exe")
+    )
+    $Exe = $ExeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $Exe) {
+        Write-Error "minter-desktop.exe not found after build"
+        exit 1
+    }
 
-# Expect example docs in Public/ (ASCII + any locale-named MD)
-$expected = @("config.example.json", "proxies.example.txt", "README.txt")
-foreach ($f in $expected) {
-    $src = Join-Path $Out $f
-    if (-not (Test-Path $src)) {
-        Write-Warning "Missing $f in Public/ - add manually"
+    $Dest = Join-Path $Out "minter-desktop.exe"
+    Copy-Item -Force $Exe $Dest
+
+    $LegacyCli = Join-Path $Out "minter.exe"
+    if (Test-Path $LegacyCli) {
+        Remove-Item -Force $LegacyCli
+        Write-Host "Removed legacy minter.exe from Public/"
+    }
+
+    Write-Host ""
+    Write-Host "OK: release build complete"
+    Write-Host "  built: $Exe"
+    Write-Host "  copy:  $Dest"
+    Write-Host ""
+} else {
+    Write-Host "==> SkipBuild: using existing Public\minter-desktop.exe"
+    if (-not (Test-Path (Join-Path $Out "minter-desktop.exe"))) {
+        Write-Error "Public\minter-desktop.exe missing; run without -SkipBuild first"
+        exit 1
     }
 }
-Get-ChildItem -Path $Out -Filter "*.md" -ErrorAction SilentlyContinue | ForEach-Object {
-    Write-Host "  doc: $($_.Name)"
+
+# ── Safe ship allowlist ──────────────────────────────────────────────────────
+$Allowlist = @(
+    "minter-desktop.exe",
+    "config.example.json",
+    "proxies.example.txt",
+    "ИНСТРУКЦИЯ.md",
+    "README.txt",
+    "SHIP_MANIFEST.txt"
+)
+
+$SecretNames = @(
+    "keys.vault",
+    "config.json",
+    "auth_cache.bin",
+    "tasks.json",
+    "wallet_meta.json",
+    "runs_history.json",
+    "proxies.txt"
+)
+$SecretDirs = @("results", "logs")
+
+function Get-ShipAllowlist {
+    param([string]$PublicDir)
+    $manifest = Join-Path $PublicDir "SHIP_MANIFEST.txt"
+    if (Test-Path $manifest) {
+        $lines = Get-Content -LiteralPath $manifest -Encoding UTF8 |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith("#") }
+        if ($lines.Count -gt 0) { return @($lines) }
+    }
+    return $Allowlist
 }
 
-# Zip Public package
-$Ver = "0.1.0"
-$CargoToml = Join-Path $Root "crates\minter-desktop\src-tauri\Cargo.toml"
-if (Test-Path $CargoToml) {
-    $m = Select-String -Path $CargoToml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
-    if ($m) { $Ver = $m.Matches.Groups[1].Value }
-}
-$ZipName = "minter-desktop-$Ver-windows.zip"
-$ZipPath = Join-Path $Root $ZipName
-if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
-Compress-Archive -Path (Join-Path $Out "*") -DestinationPath $ZipPath -Force
+if ($MakeZip) {
+    Write-Host "==> Making safe share zip (allowlist only)"
+    $shipList = Get-ShipAllowlist -PublicDir $Out
+    Write-Host "Allowlist:"
+    foreach ($n in $shipList) { Write-Host "  + $n" }
 
-Write-Host ""
-Write-Host "OK: Public/ staged with minter-desktop.exe"
-Write-Host "  exe: $Exe"
-Write-Host "  out: $Out"
-Write-Host "  zip: $ZipPath"
-Write-Host ""
-Write-Host "NSIS installer (optional, requires tauri-cli):"
-Write-Host "  cargo tauri build --bundles nsis"
-Write-Host "  (cwd: crates/minter-desktop)"
+    # Report excluded secrets present in Public (never packed)
+    Write-Host "Excluded secrets (present but never packed):"
+    $excludedAny = $false
+    foreach ($n in $SecretNames) {
+        $p = Join-Path $Out $n
+        if (Test-Path -LiteralPath $p) {
+            Write-Host "  - $n"
+            $excludedAny = $true
+        }
+    }
+    foreach ($d in $SecretDirs) {
+        $p = Join-Path $Out $d
+        if (Test-Path -LiteralPath $p) {
+            Write-Host "  - $d\"
+            $excludedAny = $true
+        }
+    }
+    if (-not $excludedAny) {
+        Write-Host "  (none present)"
+    }
+
+    $staging = Join-Path $env:TEMP ("minter-ship-" + [guid]::NewGuid().ToString("n"))
+    New-Item -ItemType Directory -Force -Path $staging | Out-Null
+    try {
+        $packed = @()
+        foreach ($name in $shipList) {
+            $src = Join-Path $Out $name
+            if (-not (Test-Path -LiteralPath $src)) {
+                Write-Host "WARN: allowlist file missing, skip: $name"
+                continue
+            }
+            # Hard guard: never pack known secret basenames even if mislisted
+            $base = [System.IO.Path]::GetFileName($name)
+            if ($SecretNames -contains $base) {
+                Write-Host "REFUSE secret on allowlist: $base"
+                continue
+            }
+            Copy-Item -LiteralPath $src -Destination (Join-Path $staging $base) -Force
+            $packed += $base
+        }
+        if ($packed.Count -eq 0) {
+            Write-Error "No allowlist files to pack"
+            exit 1
+        }
+
+        $zipName = "minter-desktop-0.1.0-windows.zip"
+        $zipPath = Join-Path $Out $zipName
+        if (Test-Path -LiteralPath $zipPath) { Remove-Item -Force -LiteralPath $zipPath }
+
+        # UTF-8 entry names (Compress-Archive can mangle non-ASCII on some PS versions)
+        Add-Type -AssemblyName System.IO.Compression
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        if (Test-Path -LiteralPath $zipPath) { Remove-Item -Force -LiteralPath $zipPath }
+        $zaWrite = [System.IO.Compression.ZipFile]::Open(
+            $zipPath,
+            [System.IO.Compression.ZipArchiveMode]::Create
+        )
+        try {
+            foreach ($m in $packed) {
+                $srcFile = Join-Path $staging $m
+                [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $zaWrite,
+                    $srcFile,
+                    $m,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                ) | Out-Null
+            }
+        } finally {
+            $zaWrite.Dispose()
+        }
+        Write-Host ""
+        Write-Host "OK: safe zip"
+        Write-Host "  path: $zipPath"
+        Write-Host "  members:"
+        foreach ($m in $packed) { Write-Host "    $m" }
+
+        # Verify zip members ⊆ allowlist and no secrets
+        $za = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+        try {
+            foreach ($entry in $za.Entries) {
+                $en = $entry.FullName.Replace("\", "/").TrimEnd("/")
+                $leaf = [System.IO.Path]::GetFileName($en)
+                if ($SecretNames -contains $leaf) {
+                    Write-Error "ZIP CONTAINS SECRET: $leaf"
+                    exit 1
+                }
+                if ($en -match '^(results|logs)(/|$)') {
+                    Write-Error "ZIP CONTAINS SECRET DIR ENTRY: $en"
+                    exit 1
+                }
+                if ($leaf -and ($packed -notcontains $leaf)) {
+                    Write-Error "ZIP unexpected member: $en"
+                    exit 1
+                }
+            }
+        } finally {
+            $za.Dispose()
+        }
+        Write-Host "  verify: no secrets in zip"
+    } finally {
+        Remove-Item -Recurse -Force -LiteralPath $staging -ErrorAction SilentlyContinue
+    }
+}

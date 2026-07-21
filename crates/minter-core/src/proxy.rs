@@ -5,7 +5,8 @@ pub struct ProxyManager {
     proxies: Vec<String>,
 }
 
-fn short_proxy(url: &str) -> String {
+/// Short label for logs/UI (hides credentials when possible).
+pub fn short_proxy(url: &str) -> String {
     if let Some(at) = url.find('@') {
         let _scheme_end = url.find("://").map(|i| i + 3).unwrap_or(0);
         let host_part = &url[at + 1..];
@@ -84,10 +85,7 @@ impl ProxyManager {
             .lines()
             .map(|l| l.trim())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .filter_map(|l| match parse_proxy(l) {
-                Ok(p) => Some(p),
-                Err(_) => None,
-            })
+            .filter_map(|l| parse_proxy(l).ok())
             .collect();
         Self { proxies }
     }

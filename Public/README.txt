@@ -18,21 +18,40 @@ Quick start:
   2. Double-click minter-desktop.exe
   3. Accept burner warning, set vault password, Unlock
   4. Wallets → import burners
-  5. Settings → Alchemy or RPC → Save
-  6. RPCs → Probe (must be OK)
+     (optional) pick Network + Check balances
+  5. Settings → Alchemy API key (private endpoints only) or RPC → Save
+  6. RPCs → Ping networks (each chain should show its own chainId)
   7. (Optional) Proxies → save list
   8. Tasks → Create task → Start
-     → LIVE immediately (no typing CONFIRM)
+     → LIVE (type LIVE by default)
+     → Mission Control HUD appears bottom-right
      → sim → if OK send tx → wait for on-chain CONFIRMED
+  9. Raw Mint (sidebar) → multi-wallet contract mint
+     → Simple mint = mint(uint256) × N wallets
+     → Discover resolves EIP-1167/1967 proxies
+     → Full steps: ИНСТРУКЦИЯ.md § Raw Mint
 
 Success = CONFIRMED in a block (SENT alone is not success).
 Phase open uses wall-clock time (not waiting for next chain block).
+
+Notes (2026-07):
+  - Private Alchemy only (no Alchemy /public URLs)
+  - Per-chain RPC (L2 never falls back to eth-mainnet silently)
+  - Wallet balances by network (incl. Robinhood)
+  - Mission Control overlay on OpenSea LIVE
+  - Raw Discover: proxy implementation + 4byte + explorer ABI
+  - Sticky per-wallet proxy · L2 gas floors · type-LIVE gate
+  - RBF multi-hash receipts · safe share zip allowlist
 
 After first run the app may create next to the exe:
   keys.vault, config.json, tasks.json, wallet_meta.json,
   runs_history.json, proxies.txt, auth_cache.bin, results/, logs/
 
 Never redistribute vault, real config, proxies, or your results/logs.
+
+Developers (rebuild into this folder from repo root):
+  powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
+  (target\ is build cache only — not needed to run this exe)
 
 Creator: https://x.com/AndarkFomo  ·  https://t.me/grassfoundationn
 

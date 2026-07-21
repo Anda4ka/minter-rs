@@ -21,15 +21,22 @@ impl Clone for RpcClient {
 
 impl RpcClient {
     pub fn new(urls: Vec<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("failed to create HTTP client");
-        Self {
+        Self::new_with_proxy(urls, None).expect("failed to create HTTP client")
+    }
+
+    /// Build RPC client; optional HTTP/SOCKS proxy for all JSON-RPC calls.
+    pub fn new_with_proxy(urls: Vec<String>, proxy_url: Option<&str>) -> Result<Self> {
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
+        if let Some(p) = proxy_url.map(str::trim).filter(|s| !s.is_empty()) {
+            let proxy = reqwest::Proxy::all(p).with_context(|| format!("invalid RPC proxy {p}"))?;
+            builder = builder.proxy(proxy);
+        }
+        let client = builder.build().context("build RPC HTTP client")?;
+        Ok(Self {
             client,
             urls,
             next_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
-        }
+        })
     }
 
     fn short_url(url: &str) -> String {
@@ -401,15 +408,21 @@ impl RpcClient {
     }
 
     pub async fn eth_call(&self, from: &Address, to: &Address, data: &Bytes) -> Result<Bytes> {
+        // Omit `from` when zero — some RPC providers reject or mishandle from=0x0.
+        let tx = if *from == Address::ZERO {
+            json!({
+                "to": format!("{:?}", to),
+                "data": format!("0x{}", hex::encode(data)),
+            })
+        } else {
+            json!({
+                "from": format!("{:?}", from),
+                "to": format!("{:?}", to),
+                "data": format!("0x{}", hex::encode(data)),
+            })
+        };
         let result = self
-            .call(
-                "eth_call",
-                json!([{
-            "from": format!("{:?}", from),
-            "to": format!("{:?}", to),
-            "data": format!("0x{}", hex::encode(data)),
-        }, "latest"]),
-            )
+            .call("eth_call", json!([tx, "latest"]))
             .await?;
         let hex_str = result.as_str().context("eth_call result not a string")?;
         Ok(Bytes::from(
@@ -425,6 +438,23 @@ impl RpcClient {
         Ok(Bytes::from(
             hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str)).context("invalid hex")?,
         ))
+    }
+
+    /// `eth_getStorageAt` — used for EIP-1967 proxy implementation resolution.
+    pub async fn get_storage_at(&self, address: &Address, slot: B256) -> Result<B256> {
+        let result = self
+            .call(
+                "eth_getStorageAt",
+                json!([format!("{:?}", address), format!("{:?}", slot), "latest"]),
+            )
+            .await?;
+        let hex_str = result.as_str().context("storage result not a string")?;
+        let raw = hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str))
+            .context("invalid storage hex")?;
+        if raw.len() != 32 {
+            bail!("storage slot expected 32 bytes, got {}", raw.len());
+        }
+        Ok(B256::from_slice(&raw))
     }
 
     pub async fn fee_history(&self) -> Result<(U256, U256)> {
@@ -564,27 +594,58 @@ impl RpcClient {
         hash: &B256,
         timeout_secs: u64,
     ) -> Result<serde_json::Value> {
+        self.wait_for_any_receipt(std::slice::from_ref(hash), timeout_secs)
+            .await
+            .map(|(_, receipt)| receipt)
+    }
+
+    /// Poll until **any** of `hashes` has a receipt (RBF: original or replacement).
+    /// Returns `(mined_hash, receipt)`.
+    ///
+    /// Uses wall `started` for warn timing (not remaining-until-deadline).
+    pub async fn wait_for_any_receipt(
+        &self,
+        hashes: &[B256],
+        timeout_secs: u64,
+    ) -> Result<(B256, serde_json::Value)> {
+        if hashes.is_empty() {
+            bail!("no tx hashes to wait for");
+        }
         let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
+        let started = std::time::Instant::now();
         let mut poll_interval = Duration::from_millis(100);
         let mut warned = false;
         while std::time::Instant::now() < deadline {
-            if let Some(receipt) = self.transaction_receipt(hash).await? {
-                return Ok(receipt);
-            }
-            let elapsed = deadline.duration_since(std::time::Instant::now());
-            if !warned && elapsed < Duration::from_secs(timeout_secs.saturating_sub(10)) {
-                let waited = timeout_secs * 1000 - elapsed.as_millis() as u64;
-                if waited > 10000 {
-                    crate::rlog!("[WARN] tx {} pending {}s", hex::encode(hash.as_slice())[..8].to_string(), (waited / 1000));
-                    warned = true;
+            for hash in hashes {
+                if let Some(receipt) = self.transaction_receipt(hash).await? {
+                    return Ok((*hash, receipt));
                 }
             }
+            let waited = started.elapsed();
+            if !warned && waited >= Duration::from_secs(10) {
+                let short = hex::encode(hashes[0].as_slice());
+                let short = &short[..short.len().min(8)];
+                crate::rlog!(
+                    "[WARN] tx {} (+{} alts) pending {}s",
+                    short,
+                    hashes.len().saturating_sub(1),
+                    waited.as_secs()
+                );
+                warned = true;
+            }
             tokio::time::sleep(poll_interval).await;
+            // Exponential backoff up to 1s between polls.
             if poll_interval < Duration::from_secs(1) {
-                poll_interval = Duration::from_millis(poll_interval.as_millis() as u64 * 2);
+                let next_ms = (poll_interval.as_millis() as u64).max(1).saturating_mul(2);
+                poll_interval = Duration::from_millis(next_ms.min(1_000));
             }
         }
-        bail!("Receipt timeout for tx {:?}", hash)
+        bail!(
+            "Receipt timeout after {}s for {} candidate tx hash(es), first={:?}",
+            timeout_secs,
+            hashes.len(),
+            hashes.first()
+        )
     }
 
     pub async fn race_send(&self, raw: &Bytes) -> Result<B256> {

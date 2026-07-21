@@ -50,6 +50,23 @@ pub struct Settings {
     // ── Safety ───────────────────────────────────────────────────────
     /// Default dry-run preference (UI may override per run).
     pub dry_run: bool,
+    /// Tasks LIVE Start requires explicit operator confirm (type LIVE). Default on for new installs.
+    #[serde(default = "default_true")]
+    pub require_live_confirm: bool,
+    /// Auto-lock vault after N minutes idle (0 = off). Default 30.
+    #[serde(default = "default_idle_lock_minutes")]
+    pub idle_lock_minutes: u32,
+    /// Raw sniper fee refresh at fire: mainnetOnly | always | never.
+    #[serde(default)]
+    pub fee_refresh_at_fire: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_idle_lock_minutes() -> u32 {
+    30
 }
 
 impl Default for Settings {
@@ -75,6 +92,9 @@ impl Default for Settings {
             beep: true,
             export_results: true,
             dry_run: true,
+            require_live_confirm: true,
+            idle_lock_minutes: 30,
+            fee_refresh_at_fire: "mainnetOnly".to_string(),
         }
     }
 }
@@ -265,6 +285,8 @@ impl Settings {
         self.skip_preflight = true;
         self.beep = true;
         self.export_results = true;
+        // Power-user sniper path: skip LIVE type-confirm for speed.
+        self.require_live_confirm = false;
     }
 
     /// Non-empty proxy lines (comments `#…` stripped).
@@ -542,7 +564,27 @@ impl Settings {
             "DRY_RUN".to_string(),
             if self.dry_run { "1" } else { "0" }.to_string(),
         );
+        m.insert(
+            "REQUIRE_LIVE_CONFIRM".to_string(),
+            if self.require_live_confirm { "1" } else { "0" }.to_string(),
+        );
+        m.insert(
+            "IDLE_LOCK_MINUTES".to_string(),
+            self.idle_lock_minutes.to_string(),
+        );
+        m.insert(
+            "FEE_REFRESH_AT_FIRE".to_string(),
+            if self.fee_refresh_at_fire.trim().is_empty() {
+                "mainnetOnly".to_string()
+            } else {
+                self.fee_refresh_at_fire.trim().to_string()
+            },
+        );
         m
+    }
+
+    pub fn fee_refresh_mode(&self) -> crate::safety_policy::FeeRefreshMode {
+        crate::safety_policy::FeeRefreshMode::parse(&self.fee_refresh_at_fire)
     }
 
     /// True if any RPC source is configured.

@@ -116,3 +116,147 @@ fn csv_escape(s: &str) -> String {
 pub fn path_display(p: &Path) -> String {
     p.display().to_string()
 }
+
+// ── WL eligibility export (os.py-style: per-phase files + CSV) ───────────────
+
+/// One CSV row: wallet eligible for a **non-public** WL stage.
+#[derive(Debug, Clone)]
+pub struct WlCsvRow {
+    pub address: String,
+    pub stage: String,
+    pub max_mint: String,
+}
+
+/// Paths written by [`write_wl_eligibility_export`].
+#[derive(Debug, Clone)]
+pub struct WlExportPaths {
+    pub dir: PathBuf,
+    pub csv: PathBuf,
+    pub not_eligible: PathBuf,
+    /// Stage key → path (e.g. `SIGNED_PRESALE#0.txt`)
+    pub stage_files: Vec<(String, PathBuf)>,
+}
+
+/// Sanitize OpenSea stage type+index for a Windows-safe filename stem.
+pub fn wl_stage_file_key(stage_type: &str, stage_index: Option<i64>) -> String {
+    let raw = match stage_index {
+        Some(i) => format!("{stage_type}#{i}"),
+        None => stage_type.to_string(),
+    };
+    raw.chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect()
+}
+
+/// Write WL check results:
+/// - `eligibility.csv` — address,stage,max_mint (WL eligible only, **no PUBLIC_SALE**)
+/// - one `{STAGE}.txt` per WL phase (addresses)
+/// - `not_eligible.txt` — wallets with no WL-eligible phase (public-only / none / errors)
+/// `stage_wallets`: stage_key → addresses (e.g. SIGNED_PRESALE#0).
+pub fn write_wl_eligibility_export(
+    slug: &str,
+    csv_rows: &[WlCsvRow],
+    stage_wallets: &[(String, Vec<String>)],
+    not_eligible: &[String],
+) -> Result<WlExportPaths> {
+    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let dir = results_dir().join(format!("wl_{}_{}", safe_slug(slug), ts));
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+
+    let csv_path = dir.join("eligibility.csv");
+    let mut csv = String::from("address,stage,max_mint\n");
+    for r in csv_rows {
+        csv.push_str(&format!(
+            "{},{},{}\n",
+            csv_escape(&r.address),
+            csv_escape(&r.stage),
+            csv_escape(&r.max_mint),
+        ));
+    }
+    std::fs::write(&csv_path, csv).with_context(|| format!("write {}", csv_path.display()))?;
+
+    let mut stage_files = Vec::new();
+    for (key, addrs) in stage_wallets {
+        if addrs.is_empty() {
+            continue;
+        }
+        let path = dir.join(format!("{key}.txt"));
+        let mut body = String::new();
+        for a in addrs {
+            body.push_str(a.trim());
+            body.push('\n');
+        }
+        std::fs::write(&path, body).with_context(|| format!("write {}", path.display()))?;
+        stage_files.push((key.clone(), path));
+    }
+
+    let not_path = dir.join("not_eligible.txt");
+    let mut not_body = String::new();
+    for a in not_eligible {
+        not_body.push_str(a.trim());
+        not_body.push('\n');
+    }
+    std::fs::write(&not_path, not_body)
+        .with_context(|| format!("write {}", not_path.display()))?;
+
+    Ok(WlExportPaths {
+        dir,
+        csv: csv_path,
+        not_eligible: not_path,
+        stage_files,
+    })
+}
+
+#[cfg(test)]
+mod wl_export_tests {
+    use super::*;
+
+    #[test]
+    fn stage_file_key_safe() {
+        assert_eq!(
+            wl_stage_file_key("SIGNED_PRESALE", Some(0)),
+            "SIGNED_PRESALE#0"
+        );
+        assert!(!wl_stage_file_key("A:B", Some(1)).contains(':'));
+    }
+
+    #[test]
+    fn write_wl_export_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "minter_wl_export_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // redirect by writing into a unique slug that lands under results/ — use write + cwd
+        // Instead call write with temp: monkey by using absolute via chdir is bad.
+        // Unit-test pure key + CSV content via write into results under unique slug then cleanup.
+        let slug = format!("testexport{}", std::process::id());
+        let rows = vec![WlCsvRow {
+            address: "0xabc".into(),
+            stage: "SIGNED_PRESALE#0".into(),
+            max_mint: "2".into(),
+        }];
+        let stages = vec![("SIGNED_PRESALE#0".into(), vec!["0xabc".into()])];
+        let not_elig = vec!["0xdef".into()];
+        let out = write_wl_eligibility_export(&slug, &rows, &stages, &not_elig).unwrap();
+        assert!(out.csv.exists());
+        let csv = std::fs::read_to_string(&out.csv).unwrap();
+        assert!(csv.contains("address,stage,max_mint"));
+        assert!(csv.contains("0xabc"));
+        assert!(csv.contains("SIGNED_PRESALE#0"));
+        assert!(!csv.to_lowercase().contains("public_sale"));
+        let stage_txt = std::fs::read_to_string(&out.stage_files[0].1).unwrap();
+        assert!(stage_txt.contains("0xabc"));
+        let ne = std::fs::read_to_string(&out.not_eligible).unwrap();
+        assert!(ne.contains("0xdef"));
+        let _ = std::fs::remove_dir_all(&out.dir);
+        let _ = dir; // silence
+    }
+}

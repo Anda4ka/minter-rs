@@ -5,6 +5,7 @@ use pbkdf2::pbkdf2_hmac;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::types::{VAULT_IV_LEN, VAULT_KDF_ITERATIONS, VAULT_SALT_LEN};
 
@@ -21,13 +22,20 @@ const TOKEN_TTL_SECS: i64 = 3000;
 
 pub struct AuthCache {
     tokens: HashMap<String, CachedToken>,
-    path: std::path::PathBuf,
+    path: PathBuf,
     password: Option<String>,
+    /// True when in-memory tokens differ from last successful disk flush.
+    dirty: bool,
 }
 
 impl AuthCache {
     pub fn load(password: Option<&str>) -> Self {
-        let path = std::path::PathBuf::from(CACHE_FILE);
+        Self::load_at(PathBuf::from(CACHE_FILE), password)
+    }
+
+    /// Load from an explicit path (tests / alternate data dirs).
+    pub fn load_at(path: impl Into<PathBuf>, password: Option<&str>) -> Self {
+        let path = path.into();
         let tokens = if let Some(pw) = password {
             if path.exists() {
                 match std::fs::read(&path) {
@@ -44,7 +52,12 @@ impl AuthCache {
             tokens,
             path,
             password: password.map(|s| s.to_string()),
+            dirty: false,
         }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn get(&self, address: &str, chain_id: u64) -> Option<&str> {
@@ -57,6 +70,8 @@ impl AuthCache {
         Some(&cached.access_token)
     }
 
+    /// Insert/update token in memory only. Call [`flush`] once after a batch of saves
+    /// so PBKDF2 + encrypt runs at most once (not per wallet).
     pub fn save(&mut self, address: &str, chain_id: u64, access_token: &str) {
         let key = format!("{}:{}", address.to_lowercase(), chain_id);
         let now = chrono::Utc::now().timestamp();
@@ -69,11 +84,35 @@ impl AuthCache {
                 expires_at: now + TOKEN_TTL_SECS,
             },
         );
-        if let Some(pw) = &self.password {
-            let json = serde_json::to_vec(&self.tokens).unwrap_or_default();
-            let blob = Self::encrypt_tokens(&json, pw);
-            let _ = std::fs::write(&self.path, &blob);
+        self.dirty = true;
+    }
+
+    /// Persist encrypted cache to disk if dirty and a password is set.
+    /// Returns `true` if a disk write was performed.
+    pub fn flush(&mut self) -> Result<bool> {
+        if !self.dirty {
+            return Ok(false);
         }
+        let Some(pw) = &self.password else {
+            // No password → memory-only cache; mark clean so we don't retry forever.
+            self.dirty = false;
+            return Ok(false);
+        };
+        let json = serde_json::to_vec(&self.tokens).context("serialize auth cache")?;
+        let blob = Self::encrypt_tokens(&json, pw);
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        std::fs::write(&self.path, &blob)
+            .with_context(|| format!("write auth cache {}", self.path.display()))?;
+        self.dirty = false;
+        Ok(true)
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
     }
 
     pub fn len(&self) -> usize {
@@ -87,6 +126,7 @@ impl AuthCache {
     /// Drop all cached SIWE tokens (memory + encrypted file).
     pub fn clear(&mut self) -> Result<()> {
         self.tokens.clear();
+        self.dirty = false;
         if self.path.exists() {
             std::fs::remove_file(&self.path)
                 .with_context(|| format!("remove auth cache {}", self.path.display()))?;
@@ -133,5 +173,62 @@ impl AuthCache {
             .decrypt(nonce, ciphertext)
             .map_err(|e| anyhow::anyhow!("auth cache decrypt failed: {}", e))?;
         Ok(serde_json::from_slice(&plaintext).unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_cache_path(label: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "minter_auth_cache_{}_{}_{}",
+            std::process::id(),
+            n,
+            label
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("auth_cache.bin")
+    }
+
+    #[test]
+    fn save_is_memory_only_until_flush() {
+        let path = unique_cache_path("mem");
+        let pw = "test_pw_auth";
+        let mut cache = AuthCache::load_at(&path, Some(pw));
+        cache.save("0xAbc", 1, "token_a");
+        cache.save("0xDef", 1, "token_b");
+        assert!(cache.is_dirty());
+        assert!(!path.exists(), "disk write must wait for flush");
+        assert!(cache.flush().unwrap());
+        assert!(!cache.is_dirty());
+        assert!(path.exists());
+        // second flush is no-op
+        assert!(!cache.flush().unwrap());
+
+        let loaded = AuthCache::load_at(&path, Some(pw));
+        assert_eq!(loaded.get("0xabc", 1), Some("token_a"));
+        assert_eq!(loaded.get("0xdef", 1), Some("token_b"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn multi_save_one_flush_roundtrip() {
+        let path = unique_cache_path("batch");
+        let pw = "batch_pw";
+        let mut cache = AuthCache::load_at(&path, Some(pw));
+        for i in 0..5 {
+            cache.save(&format!("0x{i:040x}"), 8453, &format!("tok{i}"));
+        }
+        assert_eq!(cache.len(), 5);
+        cache.flush().unwrap();
+        let loaded = AuthCache::load_at(&path, Some(pw));
+        assert_eq!(loaded.len(), 5);
+        assert_eq!(loaded.get(&format!("0x{:040x}", 3), 8453), Some("tok3"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

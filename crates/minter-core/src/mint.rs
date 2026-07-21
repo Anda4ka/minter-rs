@@ -148,9 +148,59 @@ struct WalletAuth {
     auth_ok: bool,
     nonce: u64,
     prefetched_tx: Option<(alloy_primitives::Address, U256, Bytes)>,
+    /// Proxy assigned at auth time (signer index). Must not be re-derived from
+    /// `wallets` order — cache vs join reorders the vec.
+    proxy_url: Option<String>,
 }
 
 const DEFAULT_SEADROP_ADDRESS: &str = "0x00005EA00Ac477B1030CE78506496e8C2dE24bf5";
+
+/// Decode OpenSea / local mint `data` hex. Fail-fast on empty or invalid.
+pub(crate) fn parse_tx_calldata_hex(data_hex: &str) -> anyhow::Result<Bytes> {
+    let raw = data_hex.trim();
+    if raw.is_empty() || raw == "0x" || raw == "0X" {
+        bail!("empty calldata");
+    }
+    let hex_body = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")).unwrap_or(raw);
+    if hex_body.is_empty() {
+        bail!("empty calldata");
+    }
+    let bytes = hex::decode(hex_body).context("invalid calldata hex")?;
+    if bytes.is_empty() {
+        bail!("empty calldata");
+    }
+    Ok(Bytes::from(bytes))
+}
+
+/// Wall-clock fire lag in ms: `now_ms − start_ts*1000`, floored at 0.
+pub(crate) fn fire_lag_ms_from_clock(start_ts: i64, now_ms: i64) -> u64 {
+    let open_ms = start_ts.saturating_mul(1000);
+    now_ms.saturating_sub(open_ms).max(0) as u64
+}
+
+/// Resolve gas limit for OpenSea mint: estimate path uses L2 floors; fixed path
+/// clamps up on elevated chains when operator fixed is below floor.
+///
+/// When `is_fixed` is true, `estimated_or_fixed` is a hard fixed limit (still L2-clamped).
+pub(crate) fn resolve_mint_gas_limit(
+    estimated_or_fixed: u64,
+    gas_multiplier: f64,
+    chain_id: u64,
+    is_fixed: bool,
+) -> u64 {
+    if is_fixed {
+        let mut limit = estimated_or_fixed.max(21_000);
+        if gas::chain_needs_elevated_gas(chain_id) {
+            const L2_FLOOR: u64 = 150_000;
+            if limit < L2_FLOOR {
+                limit = L2_FLOOR;
+            }
+        }
+        limit.min(15_000_000)
+    } else {
+        gas::apply_gas_limit(estimated_or_fixed, gas_multiplier, chain_id, 21_000)
+    }
+}
 
 async fn fetch_and_parse_gql(
     reporter: &dyn MintReporter,
@@ -228,9 +278,12 @@ async fn fetch_and_parse_gql(
         );
     }
     let data_hex = tx_data.get("data").and_then(|v| v.as_str()).unwrap_or("");
-    let cd = Bytes::from(
-        hex::decode(data_hex.strip_prefix("0x").unwrap_or(data_hex)).unwrap_or_default(),
-    );
+    let cd = parse_tx_calldata_hex(data_hex).with_context(|| {
+        format!(
+            "[{}] OpenSea GQL tx data",
+            sign::shorten_address(addr)
+        )
+    })?;
 
     mint_log(reporter, quiet,
         format!(
@@ -551,13 +604,7 @@ pub async fn run_opensea_mint(
         .get("AUTH_CONCURRENCY")
         .and_then(|v| v.trim().parse().ok())
         .filter(|&n| n > 0)
-        .unwrap_or_else(|| {
-            if proxies.is_empty() {
-                2
-            } else {
-                proxies.len().clamp(2, 6)
-            }
-        });
+        .unwrap_or_else(|| crate::safety_policy::default_auth_concurrency(proxies.len()));
     report_phase(
         reporter.as_ref(),
         "auth",
@@ -574,7 +621,12 @@ pub async fn run_opensea_mint(
             actual_chain_id, auth_concurrency
         ),
     );
-    if proxies.is_empty() && signers.len() > 3 {
+    if crate::safety_policy::should_warn_no_proxy(signers.len(), proxies.len()) {
+        log_always(
+            reporter.as_ref(),
+            crate::safety_policy::no_proxy_multi_wallet_message(signers.len()),
+        );
+    } else if proxies.is_empty() && signers.len() > 1 {
         log_always(
             reporter.as_ref(),
             "Tip: without proxies OpenSea rate-limits direct IP. Add proxies or AUTH_CONCURRENCY=1",
@@ -585,6 +637,9 @@ pub async fn run_opensea_mint(
     let mut wallets: Vec<WalletAuth> = Vec::new();
     let mut auth_handles = Vec::new();
     let auth_sem = Arc::new(tokio::sync::Semaphore::new(auth_concurrency));
+    // After first 429: serialize remaining auth (don't keep N-way hammering one IP).
+    let force_serial = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let serial_mutex = Arc::new(tokio::sync::Mutex::new(()));
 
     for (i, signer) in signers.iter().enumerate() {
         let addr = signer.address();
@@ -615,6 +670,7 @@ pub async fn run_opensea_mint(
                         auth_ok: true,
                         nonce: 0,
                         prefetched_tx: None,
+                        proxy_url,
                     });
                     continue;
                 }
@@ -628,17 +684,27 @@ pub async fn run_opensea_mint(
         }
 
         let sem = auth_sem.clone();
+        let force_serial = force_serial.clone();
+        let serial_mutex = serial_mutex.clone();
         let stagger_ms = (i as u64 % auth_concurrency as u64) * 200;
         let rep = reporter.clone();
+        let proxy_url_task = proxy_url.clone();
         auth_handles.push(tokio::spawn(async move {
+            let proxy_url = proxy_url_task;
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
                 Err(_) => {
-                    return (addr, signer, None, false, None);
+                    return (addr, signer, None, false, None, proxy_url);
                 }
             };
+            // After any 429, remaining auths go one-at-a-time.
+            let _serial_guard = if force_serial.load(std::sync::atomic::Ordering::SeqCst) {
+                Some(serial_mutex.lock().await)
+            } else {
+                None
+            };
             // Stagger start within the concurrency window.
-            if stagger_ms > 0 {
+            if stagger_ms > 0 && !force_serial.load(std::sync::atomic::Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_millis(stagger_ms)).await;
             }
 
@@ -651,9 +717,21 @@ pub async fn run_opensea_mint(
                         rep.as_ref(),
                         format!("[{}] {:?} OK ({}ms) via {}", i + 1, addr, elapsed, proxy_short),
                     );
-                    (addr, signer, Some(session), true, None)
+                    (addr, signer, Some(session), true, None, proxy_url)
                 }
                 Err(e) => {
+                    let err_s = format!("{e}");
+                    if crate::safety_policy::is_rate_limit_error(&err_s) {
+                        force_serial.store(true, std::sync::atomic::Ordering::SeqCst);
+                        log_always(
+                            rep.as_ref(),
+                            format!(
+                                "[{}] rate limit — {}",
+                                sign::shorten_address(&addr),
+                                crate::safety_policy::rate_limit_actionable_message()
+                            ),
+                        );
+                    }
                     let msg = format!(
                         "[{}] {:?} FAILED ({}ms) via {}: {}",
                         i + 1,
@@ -663,7 +741,7 @@ pub async fn run_opensea_mint(
                         e
                     );
                     log_always(rep.as_ref(), msg.clone());
-                    (addr, signer, None, false, Some(msg))
+                    (addr, signer, None, false, Some(msg), proxy_url)
                 }
             }
         }));
@@ -671,7 +749,7 @@ pub async fn run_opensea_mint(
 
     for handle in auth_handles {
         match handle.await {
-            Ok((addr, signer, session, auth_ok, _err)) => {
+            Ok((addr, signer, session, auth_ok, _err, proxy_url)) => {
                 if auth_ok {
                     if let Some(ref sess) = session {
                         let addr_str = format!("{:?}", addr);
@@ -685,10 +763,19 @@ pub async fn run_opensea_mint(
                     auth_ok,
                     nonce: 0,
                     prefetched_tx: None,
+                    proxy_url,
                 });
             }
             Err(e) => log_always(reporter.as_ref(), format!("Auth task failed: {}", e)),
         }
+    }
+
+    // One disk encrypt (PBKDF2) for the whole auth batch — not per wallet.
+    if let Err(e) = auth_cache.flush() {
+        log_always(
+            reporter.as_ref(),
+            format!("WARN: auth cache flush failed: {e}"),
+        );
     }
 
     let auth_ok_count = wallets.iter().filter(|w| w.auth_ok).count();
@@ -1029,24 +1116,22 @@ pub async fn run_opensea_mint(
     let seadrop_address = env.get("SEADROP_ADDRESS").cloned();
     let fee_recipient = env.get("FEE_RECIPIENT").cloned();
 
+    // Explicit schedule must parse cleanly — never silently fall back to phase start.
     let stage_start_ts: Option<i64> = if let Some(ref at_str) = at_time {
-        match chrono::DateTime::parse_from_rfc3339(at_str) {
-            Ok(dt) => {
-                let ts = dt.timestamp();
-                log_always(reporter.as_ref(), format!("Scheduled mint at {} (timestamp={})", at_str, ts));
+        match crate::mint_ops::parse_at_time_unix(at_str) {
+            Ok(Some(ts)) => {
+                log_always(
+                    reporter.as_ref(),
+                    format!("Scheduled mint at unix {ts} (from at_time={at_str})"),
+                );
                 Some(ts)
             }
-            Err(_) => {
-                match at_str.parse::<i64>() {
-                    Ok(ts) => {
-                        log_always(reporter.as_ref(), format!("Scheduled mint at timestamp {}", ts));
-                        Some(ts)
-                    }
-                    Err(_) => {
-                        log_always(reporter.as_ref(), format!("Invalid --at format: '{}'. Use ISO 8601 or unix timestamp", at_str));
-                        stage.start_time.map(|t| t as i64)
-                    }
-                }
+            Ok(None) => {
+                // Empty string after trim — treat as unset.
+                stage.start_time.map(|t| t as i64)
+            }
+            Err(e) => {
+                bail!("{e}. Use unix seconds/ms or ISO 8601 / RFC3339.");
             }
         }
     } else {
@@ -1070,8 +1155,12 @@ pub async fn run_opensea_mint(
         }
         s
     };
-    for (i, w) in wallets.iter().enumerate() {
-        let px = proxies.short(i);
+    for w in wallets.iter() {
+        let px = w
+            .proxy_url
+            .as_deref()
+            .map(crate::proxy::short_proxy)
+            .unwrap_or_else(|| "direct".to_string());
         if w.auth_ok {
             report_wallet(
                 reporter.as_ref(),
@@ -1458,7 +1547,7 @@ pub async fn run_opensea_mint(
             tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
         }
 
-        let fire_lag_ms = ((chrono::Utc::now().timestamp() - start_ts).max(0) as u64) * 1000;
+        let fire_lag_ms = fire_lag_ms_from_clock(start_ts, chrono::Utc::now().timestamp_millis());
         log_always(
             reporter.as_ref(),
             format!(
@@ -1565,13 +1654,8 @@ pub async fn run_opensea_mint(
         let use_flashbots_w = use_flashbots;
         let fb_pieces_w = fb_pieces.clone();
         let dry_run_w = dry_run;
-        let proxy_url_w = proxies.get(
-            wallets
-                .iter()
-                .position(|x| x.address == addr)
-                .unwrap_or(0),
-        )
-        .map(|s| s.to_string());
+        // Bound at auth time (signer index) — never re-derive from wallets order.
+        let proxy_url_w = w.proxy_url.clone();
 
         handles.spawn(async move {
             let mut attempt = 0u32;
@@ -1648,42 +1732,58 @@ pub async fn run_opensea_mint(
                     } else if stage_type_owned == "PUBLIC_SALE" && !use_gql_owned {
                         let local_start = std::time::Instant::now();
                         let addr_str = format!("{:?}", addr);
-                        match opensea::build_public_mint_tx(
-                            &nft_contract_owned,
-                            quantity_owned,
-                            calldata_value / U256::from(quantity_owned.max(1)),
-                            seadrop_address_owned.as_deref(),
-                            fee_recipient_owned.as_deref(),
-                            Some(&addr_str),
-                        ) {
-                            Ok(tx_data) => {
-                                let local_ms = local_start.elapsed().as_millis();
-                                let to_a: alloy_primitives::Address = tx_data
-                                    .get("to")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(DEFAULT_SEADROP_ADDRESS)
-                                    .parse()
-                                    .unwrap_or_else(|_| DEFAULT_SEADROP_ADDRESS.parse().unwrap_or_default());
-                                let val = tx_data
-                                    .get("value")
-                                    .and_then(|v| v.as_str())
-                                    .and_then(parse_hex_u256)
-                                    .unwrap_or(calldata_value);
-                                let data_hex = tx_data.get("data").and_then(|v| v.as_str()).unwrap_or("");
-                                let cd = Bytes::from(
-                                    hex::decode(data_hex.strip_prefix("0x").unwrap_or(data_hex))
-                                        .unwrap_or_default(),
-                                );
-                                log_always(reporter.as_ref(), format!("[{}] LOCAL BUILD OK {}ms to={:?} value={} data={} bytes",
-                                    sign::shorten_address(&addr),
-                                    local_ms,
-                                    to_a,
-                                    val,
-                                    cd.len()));
-                                (to_a, val, cd)
-                            }
+                        let local_built: Result<(alloy_primitives::Address, U256, Bytes), String> =
+                            match opensea::build_public_mint_tx(
+                                &nft_contract_owned,
+                                quantity_owned,
+                                calldata_value / U256::from(quantity_owned.max(1)),
+                                seadrop_address_owned.as_deref(),
+                                fee_recipient_owned.as_deref(),
+                                Some(&addr_str),
+                            ) {
+                                Ok(tx_data) => {
+                                    let local_ms = local_start.elapsed().as_millis();
+                                    let to_a: alloy_primitives::Address = tx_data
+                                        .get("to")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(DEFAULT_SEADROP_ADDRESS)
+                                        .parse()
+                                        .unwrap_or_else(|_| {
+                                            DEFAULT_SEADROP_ADDRESS.parse().unwrap_or_default()
+                                        });
+                                    let val = tx_data
+                                        .get("value")
+                                        .and_then(|v| v.as_str())
+                                        .and_then(parse_hex_u256)
+                                        .unwrap_or(calldata_value);
+                                    let data_hex =
+                                        tx_data.get("data").and_then(|v| v.as_str()).unwrap_or("");
+                                    match parse_tx_calldata_hex(data_hex) {
+                                        Ok(cd) => {
+                                            log_always(
+                                                reporter.as_ref(),
+                                                format!(
+                                                    "[{}] LOCAL BUILD OK {}ms to={:?} value={} data={} bytes",
+                                                    sign::shorten_address(&addr),
+                                                    local_ms,
+                                                    to_a,
+                                                    val,
+                                                    cd.len()
+                                                ),
+                                            );
+                                            Ok((to_a, val, cd))
+                                        }
+                                        Err(e) => Err(format!("invalid calldata: {e}")),
+                                    }
+                                }
+                                Err(e) => Err(e.to_string()),
+                            };
+                        match local_built {
+                            Ok(triple) => triple,
                             Err(e) => {
-                                mint_log(reporter.as_ref(), quiet_w,
+                                mint_log(
+                                    reporter.as_ref(),
+                                    quiet_w,
                                     format!(
                                         "[{}] LOCAL BUILD FAILED: {}, falling back to GQL",
                                         sign::shorten_address(&addr),
@@ -1703,8 +1803,7 @@ pub async fn run_opensea_mint(
                                         },
                                     );
                                 }
-                                // UI surfaces re-auth on 401 via message (see mint_ops::reauth_required_message)
-                match fetch_calldata_reauth(
+                                match fetch_calldata_reauth(
                                     reporter.as_ref(),
                                     &mut session,
                                     &signer,
@@ -1807,12 +1906,26 @@ pub async fn run_opensea_mint(
                     };
 
                 let gas_limit = if skip_preflight_w || skip_estimate_on_open {
-                    let fixed = fixed_gas_limit_owned.unwrap_or(250_000);
+                    let fixed_raw = fixed_gas_limit_owned.unwrap_or(250_000);
+                    let fixed = resolve_mint_gas_limit(fixed_raw, gas_multiplier, chain_id, true);
                     let label = if skip_preflight_w {
                         "SKIP_PREFLIGHT"
                     } else {
                         "SKIP_ESTIMATE_ON_OPEN"
                     };
+                    if fixed != fixed_raw {
+                        mint_log(
+                            reporter.as_ref(),
+                            quiet_w,
+                            format!(
+                                "[{}] {} gas_limit {} → {} (L2 floor)",
+                                sign::shorten_address(&addr),
+                                label,
+                                fixed_raw,
+                                fixed
+                            ),
+                        );
+                    }
                     report_wallet(reporter.as_ref(),
                         &addr,
                         Some(WalletStatus::Sim),
@@ -1829,8 +1942,21 @@ pub async fn run_opensea_mint(
                         ),
                     );
                     fixed
-                } else if let Some(fixed) = fixed_gas_limit_owned {
+                } else if let Some(fixed_raw) = fixed_gas_limit_owned {
                     // Manual gas: still require preflight OK before any send (Start → sim → tx).
+                    let fixed = resolve_mint_gas_limit(fixed_raw, gas_multiplier, chain_id, true);
+                    if fixed != fixed_raw {
+                        mint_log(
+                            reporter.as_ref(),
+                            quiet_w,
+                            format!(
+                                "[{}] fixed gas {} → {} (L2 floor)",
+                                sign::shorten_address(&addr),
+                                fixed_raw,
+                                fixed
+                            ),
+                        );
+                    }
                     report_wallet(reporter.as_ref(),
                         &addr,
                         Some(WalletStatus::Sim),
@@ -1983,7 +2109,20 @@ pub async fn run_opensea_mint(
                                 }
                             }
                         };
-                    (gas_estimate as f64 * gas_multiplier) as u64
+                    let limit =
+                        resolve_mint_gas_limit(gas_estimate, gas_multiplier, chain_id, false);
+                    mint_log(
+                        reporter.as_ref(),
+                        quiet_w,
+                        format!(
+                            "[{}] gas_limit={} (est={} mult={})",
+                            sign::shorten_address(&addr),
+                            limit,
+                            gas_estimate,
+                            gas_multiplier
+                        ),
+                    );
+                    limit
                 };
 
                 // Public dry-run stops before sign. Flashbots dry-run signs for eth_callBundle.
@@ -2165,12 +2304,10 @@ pub async fn run_opensea_mint(
                             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                             continue;
                         } else if is_underpriced(&err_str) {
-                            // Same calldata next attempt; only gas bumps.
+                            // Same calldata next attempt; only gas bumps (×1.15).
                             cached_tx = Some((tx.to, tx.value, tx.data.clone()));
-                            let bump = 1.15f64;
-                            max_fee = U256::from((max_fee.to::<u128>() as f64 * bump) as u128);
-                            max_priority_fee =
-                                U256::from((max_priority_fee.to::<u128>() as f64 * bump) as u128);
+                            max_fee = gas::bump_fee_bps(max_fee, 11_500);
+                            max_priority_fee = gas::bump_fee_bps(max_priority_fee, 11_500);
                             continue;
                         } else {
                             report_wallet(reporter.as_ref(),
@@ -2200,25 +2337,32 @@ pub async fn run_opensea_mint(
                     mint_started_at.elapsed().as_millis(),
                     sign::shorten_hash(&tx_hash)));
 
-                let mut current_hash = tx_hash;
+                // Track original + every RBF hash; receipt on any candidate is success.
+                let mut candidate_hashes: Vec<B256> = vec![tx_hash];
+                let mut mined_hash = tx_hash;
                 let mut rbf_count = 0u32;
                 const MAX_RBF: u32 = 3;
                 const RBF_WAIT_SECS: u64 = 15;
-                const RBF_BUMP: f64 = 1.3;
+                // RBF bump ×1.30 in basis points.
+                const RBF_BUMP_BPS: u64 = 13_000;
 
                 let receipt_result = loop {
                     let wait = if rbf_count < MAX_RBF { RBF_WAIT_SECS } else { 75 };
-                    match rpc.wait_for_receipt(&current_hash, wait).await {
-                        Ok(r) => break Ok(r),
+                    match rpc.wait_for_any_receipt(&candidate_hashes, wait).await {
+                        Ok((h, r)) => {
+                            mined_hash = h;
+                            break Ok(r);
+                        }
                         Err(_) if rbf_count < MAX_RBF => {
                             rbf_count += 1;
-                            max_fee = U256::from((max_fee.to::<u128>() as f64 * RBF_BUMP) as u128);
-                            max_priority_fee = U256::from((max_priority_fee.to::<u128>() as f64 * RBF_BUMP) as u128);
-                            log_always(reporter.as_ref(), format!("[{}] RBF #{} ({}s pending) gas->{} gwei",
+                            max_fee = gas::bump_fee_bps(max_fee, RBF_BUMP_BPS);
+                            max_priority_fee = gas::bump_fee_bps(max_priority_fee, RBF_BUMP_BPS);
+                            log_always(reporter.as_ref(), format!("[{}] RBF #{} ({}s pending) gas->{} gwei candidates={}",
                                 sign::shorten_address(&addr),
                                 rbf_count,
                                 rbf_count * RBF_WAIT_SECS as u32,
-                                max_fee / U256::from(1_000_000_000u64)));
+                                max_fee / U256::from(1_000_000_000u64),
+                                candidate_hashes.len()));
                             let rbf_tx = sign::BuiltTx {
                                 chain_id,
                                 nonce,
@@ -2231,8 +2375,16 @@ pub async fn run_opensea_mint(
                             };
                             if let Ok((rbf_raw, rbf_hash)) = sign::sign_transaction(&signer, &rbf_tx) {
                                 match rpc.race_send(&rbf_raw).await {
-                                    Ok(_) => current_hash = rbf_hash,
-                                    Err(ref e) if is_already_known(&format!("{}", e)) => current_hash = rbf_hash,
+                                    Ok(_) => {
+                                        if !candidate_hashes.contains(&rbf_hash) {
+                                            candidate_hashes.push(rbf_hash);
+                                        }
+                                    }
+                                    Err(ref e) if is_already_known(&format!("{}", e)) => {
+                                        if !candidate_hashes.contains(&rbf_hash) {
+                                            candidate_hashes.push(rbf_hash);
+                                        }
+                                    }
                                     Err(_) => {}
                                 }
                             }
@@ -2253,7 +2405,7 @@ pub async fn run_opensea_mint(
                                     mint_started_at.elapsed().as_millis(),
                                     info.gas_used,
                                     info.block_number,
-                                    sign::shorten_hash(&current_hash)
+                                    sign::shorten_hash(&mined_hash)
                                 ),
                             );
                             maybe_beep(beep_w, &first_confirm_w);
@@ -2261,15 +2413,15 @@ pub async fn run_opensea_mint(
                                 &addr,
                                 Some(WalletStatus::Confirmed),
                                 Some(format!("gas={} blk={}", info.gas_used, info.block_number)),
-                                Some(current_hash),
+                                Some(mined_hash),
                                 None,
                             );
                             break (
                                 addr,
                                 MintResult {
                                     address: addr,
-                                    // After RBF the mined tx is current_hash, not the original.
-                                    tx_hash: Some(current_hash),
+                                    // Mined hash may be original or any RBF replacement.
+                                    tx_hash: Some(mined_hash),
                                     status: WalletStatus::Confirmed,
                                     gas_used: Some(info.gas_used),
                                     block_number: Some(info.block_number),
@@ -2282,19 +2434,19 @@ pub async fn run_opensea_mint(
                                 mint_started_at.elapsed().as_millis(),
                                 info.gas_used,
                                 info.block_number,
-                                sign::shorten_hash(&current_hash)));
+                                sign::shorten_hash(&mined_hash)));
                             report_wallet(reporter.as_ref(),
                                 &addr,
                                 Some(WalletStatus::Failed),
                                 Some(format!("reverted blk={}", info.block_number)),
-                                Some(current_hash),
+                                Some(mined_hash),
                                 Some("reverted".into()),
                             );
                             break (
                                 addr,
                                 MintResult {
                                     address: addr,
-                                    tx_hash: Some(current_hash),
+                                    tx_hash: Some(mined_hash),
                                     status: WalletStatus::Failed,
                                     gas_used: Some(info.gas_used),
                                     block_number: Some(info.block_number),
@@ -2309,14 +2461,14 @@ pub async fn run_opensea_mint(
                             &addr,
                             Some(WalletStatus::Sent),
                             Some("receipt timeout".into()),
-                            Some(current_hash),
+                            Some(mined_hash),
                             Some(err.clone()),
                         );
                         break (
                             addr,
                             MintResult {
                                 address: addr,
-                                tx_hash: Some(current_hash),
+                                tx_hash: Some(mined_hash),
                                 status: WalletStatus::Sent,
                                 gas_used: None,
                                 block_number: None,
@@ -2654,7 +2806,72 @@ pub async fn run_opensea_mint(
 
 #[cfg(test)]
 mod tests {
-    use super::classify_mint_error;
+    use super::{
+        classify_mint_error, fire_lag_ms_from_clock, parse_tx_calldata_hex, resolve_mint_gas_limit,
+    };
+
+    #[test]
+    fn fire_lag_uses_millis_not_seconds() {
+        // open at t=1000s, now = 1000s + 250ms
+        assert_eq!(fire_lag_ms_from_clock(1000, 1_000_250), 250);
+        // exactly on open
+        assert_eq!(fire_lag_ms_from_clock(1000, 1_000_000), 0);
+        // slightly early → 0
+        assert_eq!(fire_lag_ms_from_clock(1000, 999_900), 0);
+        // 1.5s late
+        assert_eq!(fire_lag_ms_from_clock(1000, 1_001_500), 1500);
+    }
+
+    #[test]
+    fn parse_at_time_invalid_is_err_not_silent() {
+        // Core schedule path uses the same helper — invalid must error.
+        assert!(crate::mint_ops::parse_at_time_unix("not-a-time").is_err());
+        assert!(crate::mint_ops::parse_at_time_unix("2020-13-40T99:99:99Z").is_err());
+        assert_eq!(
+            crate::mint_ops::parse_at_time_unix("1700000000").unwrap(),
+            Some(1_700_000_000)
+        );
+    }
+
+    #[test]
+    fn parse_calldata_rejects_empty() {
+        assert!(parse_tx_calldata_hex("").is_err());
+        assert!(parse_tx_calldata_hex("0x").is_err());
+        assert!(parse_tx_calldata_hex("   ").is_err());
+    }
+
+    #[test]
+    fn parse_calldata_rejects_invalid_hex() {
+        assert!(parse_tx_calldata_hex("0xzz").is_err());
+        assert!(parse_tx_calldata_hex("not-hex").is_err());
+    }
+
+    #[test]
+    fn parse_calldata_ok_selector() {
+        let b = parse_tx_calldata_hex("0xa0712d68").unwrap();
+        assert_eq!(b.as_ref(), &[0xa0, 0x71, 0x2d, 0x68]);
+        let b2 = parse_tx_calldata_hex("a0712d68").unwrap();
+        assert_eq!(b.as_ref(), b2.as_ref());
+    }
+
+    #[test]
+    fn mint_gas_estimate_applies_l2_floor() {
+        // Base (8453): raw 21k estimate must floor to >= 150k
+        let lim = resolve_mint_gas_limit(21_000, 1.15, 8453, false);
+        assert!(lim >= 150_000, "lim={lim}");
+        // Ethereum mainnet: no 150k floor
+        let eth = resolve_mint_gas_limit(21_000, 1.15, 1, false);
+        assert!(eth >= 21_000);
+        assert!(eth < 150_000);
+    }
+
+    #[test]
+    fn mint_gas_fixed_clamps_l2_floor() {
+        let lim = resolve_mint_gas_limit(50_000, 1.0, 8453, true);
+        assert_eq!(lim, 150_000);
+        let eth = resolve_mint_gas_limit(50_000, 1.0, 1, true);
+        assert_eq!(eth, 50_000);
+    }
 
     #[test]
     fn generic_execution_reverted_is_retryable() {
