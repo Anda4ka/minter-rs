@@ -212,14 +212,30 @@ async fn resolve_mint_value(rpc: &RpcClient, config: &RawSniperConfig) -> (U256,
             if matches!(config.preset, SniperPreset::MintBayPublic) {
                 match fetch_mintbay_status(rpc, &config.contract).await {
                     Ok(st) => {
-                        let v = st.mint_value(config.quantity);
-                        (
-                            v,
-                            format!(
-                                "MintBay auto {} wei (phaseType={} minted={}/{})",
-                                v, st.current_phase_type, st.total_minted, st.max_supply
-                            ),
-                        )
+                        // The view fallback in `fetch_mintbay_status` cannot read the
+                        // price fields (both stay zero). Sending an auto value that is
+                        // only the collector fee would underpay and revert, so prefer
+                        // the user's fixed fallback when the price is unknown.
+                        let price_known =
+                            !st.public_mint_price.is_zero() || !st.phase_mint_price.is_zero();
+                        if !price_known && !config.fixed_value.is_zero() {
+                            (
+                                config.fixed_value,
+                                format!(
+                                    "MintBay auto: price unavailable (view fallback) — using fixed {} wei",
+                                    config.fixed_value
+                                ),
+                            )
+                        } else {
+                            let v = st.mint_value(config.quantity);
+                            (
+                                v,
+                                format!(
+                                    "MintBay auto {} wei (phaseType={} minted={}/{})",
+                                    v, st.current_phase_type, st.total_minted, st.max_supply
+                                ),
+                            )
+                        }
                     }
                     Err(e) => (
                         config.fixed_value,

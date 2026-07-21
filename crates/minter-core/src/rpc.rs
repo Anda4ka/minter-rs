@@ -80,13 +80,13 @@ impl RpcClient {
         if !status.is_success() {
             bail!(
                 "RPC {method} HTTP {status} via {short}: {}",
-                &text[..text.len().min(240)]
+                crate::safe_truncate(&text, 240)
             );
         }
         let data: serde_json::Value = serde_json::from_str(&text).with_context(|| {
             format!(
                 "RPC {method}: bad JSON from {short}: {}",
-                &text[..text.len().min(240)]
+                crate::safe_truncate(&text, 240)
             )
         })?;
         if let Some(error) = data.get("error") {
@@ -257,14 +257,14 @@ impl RpcClient {
                 "RPC HTTP {} from {}: {}",
                 status,
                 Self::short_url(url),
-                &text[..text.len().min(240)]
+                crate::safe_truncate(&text, 240)
             );
         }
         let data: serde_json::Value = serde_json::from_str(&text).with_context(|| {
             format!(
                 "failed to parse RPC response from {}: {}",
                 Self::short_url(url),
-                &text[..text.len().min(240)]
+                crate::safe_truncate(&text, 240)
             )
         })?;
         if let Some(error) = data.get("error") {
