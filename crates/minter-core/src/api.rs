@@ -1718,7 +1718,9 @@ impl Session {
                         st.public_mint_price.saturating_add(st.collector_fee)
                     };
                     let phase_start = {
-                        let s = st.phase_start.to::<u128>();
+                        // Saturating: `to::<u128>()` panics on huge words from
+                        // arbitrary contracts.
+                        let s = u128::try_from(st.phase_start).unwrap_or(u128::MAX);
                         if s > 0 && s < (i64::MAX as u128) {
                             Some(s as i64)
                         } else {
@@ -3161,8 +3163,12 @@ pub fn collect_rpc_urls(env: &HashMap<String, String>) -> Vec<String> {
 }
 
 fn short_url(url: &str) -> String {
-    if url.len() > 42 {
-        format!("{}...{}", &url[..30], &url[url.len() - 8..])
+    // Char-based (not byte slicing): non-ASCII URLs must not panic.
+    let chars: Vec<char> = url.chars().collect();
+    if chars.len() > 42 {
+        let head: String = chars[..30].iter().collect();
+        let tail: String = chars[chars.len() - 8..].iter().collect();
+        format!("{}...{}", head, tail)
     } else {
         url.to_string()
     }

@@ -7,11 +7,11 @@ pub const KNOWN_MINT_SELECTORS: &[(&[u8], &str)] = &[
     (b"\xa0\x71\x2d\x68", "mint(uint256)"),
     (b"\x6a\x62\x78\x42", "mint(address)"),
     (b"\x12\x49\xc5\x8b", "mint()"),
-    (b"\xb6\xb0\xe5\x1c", "claim(uint256)"),
-    (b"\x4e\x71\xd1\xad", "claim()"),
-    (b"\xd0\x95\xb5\xde", "publicMint(uint256)"),
-    (b"\xc3\xfb\xdd\x0f", "claimTo(address,uint256)"),
-    (b"\x8e\xf6\x45\x98", "claimTo(address)"),
+    (b"\x37\x96\x07\xf5", "claim(uint256)"),
+    (b"\x4e\x71\xd9\x2d", "claim()"),
+    (b"\x2d\xb1\x15\x44", "publicMint(uint256)"),
+    (b"\x12\x04\xfe\x0c", "claimTo(address,uint256)"),
+    (b"\xa2\x62\xf5\xf8", "claimTo(address)"),
     (b"\xef\xef\x39\xa1", "purchase(uint256)"),
 ];
 
@@ -443,6 +443,23 @@ mod tests {
     fn selector_known() {
         let sel = function_selector("transfer(address,uint256)");
         assert_eq!(sel, [0xa9, 0x05, 0x9c, 0xbb]);
+    }
+
+    /// Every hardcoded selector must equal keccak256(signature)[..4].
+    /// (An earlier revision shipped wrong bytes for claim/publicMint/claimTo,
+    /// which mislabeled discovered functions and skipped real ones.)
+    #[test]
+    fn known_mint_selectors_match_keccak() {
+        for (sel, sig) in KNOWN_MINT_SELECTORS {
+            let expected = function_selector(sig);
+            assert_eq!(
+                *sel,
+                expected.as_slice(),
+                "selector table entry for {sig} is wrong: table={} keccak={}",
+                hex::encode(sel),
+                hex::encode(expected)
+            );
+        }
     }
 
     #[test]

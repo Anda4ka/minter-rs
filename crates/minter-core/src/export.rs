@@ -156,6 +156,7 @@ pub fn wl_stage_file_key(stage_type: &str, stage_index: Option<i64>) -> String {
 /// - `eligibility.csv` — address,stage,max_mint (WL eligible only, **no PUBLIC_SALE**)
 /// - one `{STAGE}.txt` per WL phase (addresses)
 /// - `not_eligible.txt` — wallets with no WL-eligible phase (public-only / none / errors)
+///
 /// `stage_wallets`: stage_key → addresses (e.g. SIGNED_PRESALE#0).
 pub fn write_wl_eligibility_export(
     slug: &str,

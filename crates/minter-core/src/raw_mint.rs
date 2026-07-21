@@ -225,16 +225,14 @@ pub async fn discover_functions_on_chain(
             idx += 1;
             set.spawn(async move { lookup_4byte(&sel).await });
         }
-        if let Some(joined) = set.join_next().await {
-            if let Ok(sigs) = joined {
-                for sig in sigs {
-                    // Prefer mint-like; still keep other decoded names (useful for custom)
-                    let src = match proxy_note {
-                        Some(_) => "4byte@proxy",
-                        None => "4byte",
-                    };
-                    push_unique(sig, src.to_string());
-                }
+        if let Some(Ok(sigs)) = set.join_next().await {
+            for sig in sigs {
+                // Prefer mint-like; still keep other decoded names (useful for custom)
+                let src = match proxy_note {
+                    Some(_) => "4byte@proxy",
+                    None => "4byte",
+                };
+                push_unique(sig, src.to_string());
             }
         }
     }

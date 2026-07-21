@@ -116,6 +116,18 @@ fn word_bool(data: &[u8], index: usize) -> Result<bool> {
     Ok(!word_u256(data, index)?.is_zero())
 }
 
+/// Saturating U256 → i64 (untrusted contract words must never panic).
+pub(crate) fn u256_to_i64_sat(v: U256) -> i64 {
+    u64::try_from(v)
+        .map(|n| n.min(i64::MAX as u64) as i64)
+        .unwrap_or(i64::MAX)
+}
+
+/// Saturating U256 → u8 (phase type words from arbitrary contracts).
+fn u256_to_u8_sat(v: U256) -> u8 {
+    u64::try_from(v).map(|n| n.min(u8::MAX as u64) as u8).unwrap_or(u8::MAX)
+}
+
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -267,8 +279,8 @@ impl MintBayStatus {
         if !self.max_supply.is_zero() && self.total_minted >= self.max_supply {
             return false;
         }
-        let start = self.phase_start.to::<u128>() as i64;
-        let end = self.phase_end.to::<u128>() as i64;
+        let start = u256_to_i64_sat(self.phase_start);
+        let end = u256_to_i64_sat(self.phase_end);
         if start > 0 && wall_now < start {
             return false;
         }
@@ -301,7 +313,7 @@ pub async fn fetch_mintbay_status(rpc: &RpcClient, contract: &Address) -> Result
             collector_fee: word_u256(&raw, 4)?,
             resolved_phase_id: word_u256(&raw, 5)?,
             minting_paused: word_bool(&raw, 7)?,
-            current_phase_type: word_u256(&raw, 8)?.to::<u8>(),
+            current_phase_type: u256_to_u8_sat(word_u256(&raw, 8)?),
             phase_start: word_u256(&raw, 10)?,
             phase_end: word_u256(&raw, 11)?,
             phase_mint_price: word_u256(&raw, 12)?,
@@ -351,7 +363,7 @@ async fn fetch_mintbay_status_fallback(
         collector_fee: view_u256(rpc, contract, "f103eaaf").await,
         resolved_phase_id: view_u256(rpc, contract, "40c5b34e").await,
         minting_paused: !view_u256(rpc, contract, "e1a283d6").await.is_zero(),
-        current_phase_type: view_u256(rpc, contract, "055ad42e").await.to::<u8>(),
+        current_phase_type: u256_to_u8_sat(view_u256(rpc, contract, "055ad42e").await),
         phase_start: U256::ZERO,
         phase_end: U256::ZERO,
         phase_mint_price: U256::ZERO,

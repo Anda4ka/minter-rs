@@ -40,8 +40,12 @@ impl RpcClient {
     }
 
     fn short_url(url: &str) -> String {
-        if url.len() > 42 {
-            format!("{}...{}", &url[..30], &url[url.len() - 8..])
+        // Char-based (not byte slicing): non-ASCII URLs must not panic.
+        let chars: Vec<char> = url.chars().collect();
+        if chars.len() > 42 {
+            let head: String = chars[..30].iter().collect();
+            let tail: String = chars[chars.len() - 8..].iter().collect();
+            format!("{}...{}", head, tail)
         } else {
             url.to_string()
         }
@@ -617,8 +621,14 @@ impl RpcClient {
         let mut warned = false;
         while std::time::Instant::now() < deadline {
             for hash in hashes {
-                if let Some(receipt) = self.transaction_receipt(hash).await? {
-                    return Ok((*hash, receipt));
+                // Transient full-RPC failures must not abort the wait: the tx may
+                // still confirm. Log and keep polling until the deadline.
+                match self.transaction_receipt(hash).await {
+                    Ok(Some(receipt)) => return Ok((*hash, receipt)),
+                    Ok(None) => {}
+                    Err(e) => {
+                        crate::rlog!("receipt poll error (will retry): {}", e);
+                    }
                 }
             }
             let waited = started.elapsed();

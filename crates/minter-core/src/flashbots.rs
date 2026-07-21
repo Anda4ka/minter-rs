@@ -104,10 +104,15 @@ impl FlashbotsClient {
     }
 
     /// Sign Flashbots auth header for a JSON body string.
+    ///
+    /// The relay expects `signMessage(id(body))` semantics: EIP-191 personal-sign
+    /// over the UTF-8 bytes of the **hex string** `0x<keccak256(body)>` — not over
+    /// the raw 32 hash bytes (that variant is rejected as signature mismatch).
     pub fn sign_auth_header(auth: &Signer, body: &str) -> Result<String> {
         let id = keccak256(body.as_bytes());
+        let id_hex = format!("0x{}", hex::encode(id));
         let sig = auth
-            .sign_message_sync(id.as_slice())
+            .sign_message_sync(id_hex.as_bytes())
             .context("flashbots auth sign")?;
         let addr = auth.address();
         let sig_hex = format!("0x{}", hex::encode(sig.as_bytes()));
@@ -301,5 +306,29 @@ mod tests {
         assert!(parts[0].starts_with("0x"));
         assert!(parts[1].starts_with("0x"));
         assert!(parts[1].len() > 10);
+    }
+
+    /// Signature must recover to the auth address for the **hex-string** message
+    /// (`0x<keccak(body)>` as UTF-8), matching ethers `signMessage(id(body))`.
+    #[test]
+    fn auth_header_signs_hex_string_of_body_hash() {
+        let key_bytes = [9u8; 32];
+        let signer = alloy::signers::local::LocalSigner::from_bytes(&key_bytes.into())
+            .expect("signer");
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"eth_sendBundle","params":[]}"#;
+        let h = FlashbotsClient::sign_auth_header(&signer, body).expect("sign");
+        let (addr_s, sig_s) = h.split_once(':').expect("format");
+        let sig_bytes = hex::decode(sig_s.trim_start_matches("0x")).expect("sig hex");
+        let sig = alloy::signers::Signature::try_from(sig_bytes.as_slice()).expect("sig parse");
+        let id_hex = format!("0x{}", hex::encode(keccak256(body.as_bytes())));
+        let recovered = sig
+            .recover_address_from_msg(id_hex.as_bytes())
+            .expect("recover");
+        assert_eq!(format!("{:?}", recovered), addr_s);
+        // Raw 32-byte hash message must NOT recover to the same address.
+        let raw_recovered = sig
+            .recover_address_from_msg(keccak256(body.as_bytes()).as_slice())
+            .expect("recover raw");
+        assert_ne!(format!("{:?}", raw_recovered), addr_s);
     }
 }

@@ -7,14 +7,19 @@ pub struct ProxyManager {
 
 /// Short label for logs/UI (hides credentials when possible).
 pub fn short_proxy(url: &str) -> String {
-    if let Some(at) = url.find('@') {
-        let _scheme_end = url.find("://").map(|i| i + 3).unwrap_or(0);
-        let host_part = &url[at + 1..];
-        if host_part.len() > 30 {
-            format!("{}...{}", &host_part[..14], &host_part[host_part.len() - 8..])
+    // Char-based shortening: byte slicing panics on non-ASCII input.
+    fn shorten(s: &str) -> String {
+        let chars: Vec<char> = s.chars().collect();
+        if chars.len() > 30 {
+            let head: String = chars[..14].iter().collect();
+            let tail: String = chars[chars.len() - 8..].iter().collect();
+            format!("{}...{}", head, tail)
         } else {
-            host_part.to_string()
+            s.to_string()
         }
+    }
+    if let Some(at) = url.find('@') {
+        shorten(&url[at + 1..])
     } else {
         let stripped = url
             .strip_prefix("http://")
@@ -22,11 +27,7 @@ pub fn short_proxy(url: &str) -> String {
             .or_else(|| url.strip_prefix("socks5://"))
             .or_else(|| url.strip_prefix("socks4://"))
             .unwrap_or(url);
-        if stripped.len() > 30 {
-            format!("{}...{}", &stripped[..14], &stripped[stripped.len() - 8..])
-        } else {
-            stripped.to_string()
-        }
+        shorten(stripped)
     }
 }
 

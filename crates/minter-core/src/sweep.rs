@@ -279,7 +279,10 @@ pub async fn run_sweep(
             continue;
         }
 
-        let count = balance.to::<u128>() as u64;
+        // Saturating conversion: a broken/malicious contract can return a huge
+        // balanceOf which would panic `to::<u128>()`. Cap enumeration too.
+        const MAX_ENUMERATE: u64 = 10_000;
+        let count = u64::try_from(balance).unwrap_or(u64::MAX).min(MAX_ENUMERATE);
         crate::rlog!("  Owns {} NFT(s)", count);
 
         let mut token_ids: Vec<U256> = Vec::new();
@@ -545,6 +548,10 @@ pub async fn run_sweep_eth(
     rpc: &RpcClient,
     config: &SweepEthConfig,
 ) -> Vec<MintResult> {
+    if signers.is_empty() {
+        crate::rlog!("Sweep ETH: no wallets selected");
+        return vec![];
+    }
     let chain_id = match rpc.chain_id().await {
         Ok(id) => id,
         Err(e) => {
