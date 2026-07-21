@@ -306,7 +306,40 @@ pub async fn run_raw_mint(
                 return vec![];
             }
         };
-    let chain_id = rpc.chain_id().await.unwrap_or(1);
+    // Do not silently sign for mainnet if the configured RPC cannot report its
+    // network. A fallback chain id can create transactions that are rejected or,
+    // worse, interpreted on an unintended network.
+    let chain_id = match rpc.chain_id().await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => {
+            let error = "RPC returned invalid chain id 0".to_string();
+            return signers
+                .iter()
+                .map(|s| MintResult {
+                    address: s.address(),
+                    tx_hash: None,
+                    status: WalletStatus::Failed,
+                    gas_used: None,
+                    block_number: None,
+                    error: Some(error.clone()),
+                })
+                .collect();
+        }
+        Err(e) => {
+            let error = format!("chain id: {e}");
+            return signers
+                .iter()
+                .map(|s| MintResult {
+                    address: s.address(),
+                    tx_hash: None,
+                    status: WalletStatus::Failed,
+                    gas_used: None,
+                    block_number: None,
+                    error: Some(error.clone()),
+                })
+                .collect();
+        }
+    };
 
     if config.use_flashbots && chain_id != MAINNET_CHAIN_ID {
         crate::rlog!(

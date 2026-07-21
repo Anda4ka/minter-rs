@@ -917,7 +917,10 @@ impl Session {
             return 1;
         }
         let rpc = RpcClient::new(urls);
-        rpc.chain_id().await.unwrap_or(1)
+        // Do not silently authenticate/sign with mainnet's chain id when the
+        // configured RPC is unavailable. Callers will surface the invalid id
+        // through the auth/RPC request instead of masking the outage.
+        rpc.chain_id().await.unwrap_or(0)
     }
 
     /// Warm OpenSea SIWE auth into cache for selected (or all) wallets.

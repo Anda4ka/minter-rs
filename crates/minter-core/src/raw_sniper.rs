@@ -395,7 +395,13 @@ pub async fn run_raw_sniper(
         Err(e) => return fail_all(signers, format!("calldata: {e}")),
     };
 
-    let chain_id = rpc.chain_id().await.unwrap_or(1);
+    // Never default to mainnet when chain discovery fails: signing with the wrong
+    // chain id can produce unusable transactions and hides an RPC outage.
+    let chain_id = match rpc.chain_id().await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => return fail_all(signers, "RPC returned invalid chain id 0"),
+        Err(e) => return fail_all(signers, format!("chain id: {e}")),
+    };
     let (base_fee, network_priority) = rpc
         .fee_history()
         .await
