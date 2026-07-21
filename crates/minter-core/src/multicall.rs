@@ -285,7 +285,7 @@ pub async fn run_multicall(
             }
         };
 
-    print!("  Simulating multicall (msg.sender=Multicall3)...");
+    crate::rprint!("  Simulating multicall (msg.sender=Multicall3)...");
     let gas_limit = resolve_call_gas(
         rpc,
         &addr,
@@ -386,7 +386,7 @@ pub async fn run_multicall(
         }
     };
 
-    print!("  Sending...");
+    crate::rprint!("  Sending...");
     let tx_hash = match rpc.race_send(&raw).await {
         Ok(h) => {
             crate::rlog!(" OK {}", shorten_hash(&h));
@@ -405,7 +405,7 @@ pub async fn run_multicall(
         }
     };
 
-    print!("  Receipt...");
+    crate::rprint!("  Receipt...");
     match rpc.wait_for_receipt(&tx_hash, 120).await {
         Ok(receipt) => {
             let info = crate::rpc::parse_receipt(&receipt);

@@ -393,6 +393,14 @@ impl Settings {
         {
             let mut file = std::fs::File::create(&tmp_path)
                 .with_context(|| format!("create temp {}", tmp_path.display()))?;
+            // config.json holds secrets (e.g. Alchemy API key) in plaintext, so
+            // restrict it to the owner on unix — same posture as the key vault.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .context("set config temp permissions")?;
+            }
             file.write_all(data)
                 .context("write config temp")?;
             file.sync_all().context("fsync config temp")?;
