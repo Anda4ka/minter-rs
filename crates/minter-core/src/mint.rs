@@ -856,7 +856,10 @@ pub async fn run_opensea_mint(
         .filter(|(_, s)| opensea::available_mint_quantity(&info, s).unwrap_or(0) > 0)
         .min_by_key(|(_, s)| {
             let is_public = s.stage_type == "PUBLIC_SALE";
-            let has_started = s.start_time.map(|t| t as i64).unwrap_or(0) <= 0;
+            // Started = start_time <= wall clock now (missing start_time counts as started).
+            // Comparing against 0 marked every real (past) timestamp as "not started".
+            let now = chrono::Utc::now().timestamp();
+            let has_started = s.start_time.map(|t| t as i64 <= now).unwrap_or(true);
             (is_public as usize, !has_started as usize, s.stage_index.unwrap_or(0))
         })
         .map(|(i, _)| i)

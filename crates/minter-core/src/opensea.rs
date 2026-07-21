@@ -405,7 +405,7 @@ async fn siwe_auth_once(
         bail!(
             "Nonce failed: HTTP {} {}",
             nonce_status,
-            &text[..text.len().min(300)]
+            crate::truncate_str(&text, 300)
         );
     }
     let nonce_data: serde_json::Value = nonce_resp.json().await?;
@@ -470,13 +470,13 @@ async fn siwe_auth_once(
                 "Verify failed: HTTP {} Too Many Requests retry-after={} {}",
                 verify_status,
                 if ra > 0 { ra } else { 1 },
-                &text[..text.len().min(200)]
+                crate::truncate_str(&text, 200)
             );
         }
         bail!(
             "Verify failed: HTTP {} {}",
             verify_status,
-            &text[..text.len().min(500)]
+            crate::truncate_str(&text, 500)
         );
     }
 
@@ -958,13 +958,13 @@ pub async fn fetch_mint_calldata(
             bail!(
                 "Mint action failed: OpenSea persisted query hash expired and inline fallback failed: HTTP {} {}",
                 fallback_status,
-                &fallback_text[..fallback_text.len().min(500)]
+                crate::truncate_str(&fallback_text, 500)
             );
         }
         bail!(
             "Mint action failed: HTTP {} {}",
             status,
-            &text[..text.len().min(500)]
+            crate::truncate_str(&text, 500)
         );
     }
 
@@ -1098,7 +1098,9 @@ pub fn available_mint_quantity(collection_info: &CollectionInfo, stage: &StageIn
     } else {
         0
     };
-    Some(max.saturating_sub(minted) as u32)
+    // Clamp (not truncate) into u32: huge "unlimited" limits from OpenSea must not
+    // wrap through `as u32` into a small/arbitrary quantity.
+    Some(max.saturating_sub(minted).min(u32::MAX as i64) as u32)
 }
 
 fn encode_address_arg(address: &str) -> Result<[u8; 32]> {

@@ -2392,6 +2392,71 @@ fn export_wl_report(
 }
 
 #[cfg(test)]
+mod recommended_phase_tests {
+    use super::*;
+
+    fn stage(stage_type: &str, idx: i64, start_time: Option<f64>) -> opensea::StageInfo {
+        opensea::StageInfo {
+            stage_type: stage_type.to_string(),
+            stage_index: Some(idx),
+            label: None,
+            start_time,
+            end_time: None,
+            is_eligible: Some(true),
+            max_mintable: Some(2),
+            price_eth: None,
+            price_wei: None,
+            payment_token_contract: None,
+            payment_token_chain: None,
+            raw: serde_json::json!({}),
+        }
+    }
+
+    fn info(stages: Vec<opensea::StageInfo>) -> opensea::CollectionInfo {
+        opensea::CollectionInfo {
+            slug: "t".into(),
+            name: "T".into(),
+            chain: "ethereum".into(),
+            contracts: vec![],
+            drop_type: None,
+            stages,
+            minter_quantity_minted: None,
+        }
+    }
+
+    #[test]
+    fn started_presale_beats_future_presale() {
+        let now = chrono::Utc::now().timestamp() as f64;
+        // #0 opens in 1h, #1 opened 1h ago → recommend #1 (already started).
+        let i = info(vec![
+            stage("SIGNED_PRESALE", 0, Some(now + 3600.0)),
+            stage("SIGNED_PRESALE", 1, Some(now - 3600.0)),
+        ]);
+        assert_eq!(recommended_phase_index(&i), 1);
+    }
+
+    #[test]
+    fn presale_still_beats_public() {
+        let now = chrono::Utc::now().timestamp() as f64;
+        let i = info(vec![
+            stage("PUBLIC_SALE", 0, Some(now - 3600.0)),
+            stage("ALLOW_LIST", 1, Some(now - 3600.0)),
+        ]);
+        assert_eq!(recommended_phase_index(&i), 1);
+    }
+
+    #[test]
+    fn missing_start_time_counts_as_started() {
+        let now = chrono::Utc::now().timestamp() as f64;
+        let i = info(vec![
+            stage("SIGNED_PRESALE", 0, Some(now + 3600.0)),
+            stage("SIGNED_PRESALE", 1, None),
+        ]);
+        assert_eq!(recommended_phase_index(&i), 1);
+    }
+}
+
+#[cfg(test)]
 mod wl_classify_tests {
     use super::*;
 
@@ -2595,7 +2660,10 @@ fn recommended_phase_index(info: &opensea::CollectionInfo) -> usize {
         .filter(|(_, s)| opensea::available_mint_quantity(info, s).unwrap_or(1) > 0)
         .min_by_key(|(_, s)| {
             let is_public = s.stage_type == "PUBLIC_SALE";
-            let has_started = s.start_time.map(|t| t as i64).unwrap_or(0) <= 0;
+            // Started = start_time <= wall clock now (missing start_time counts as started).
+            // Comparing against 0 marked every real (past) timestamp as "not started".
+            let now = chrono::Utc::now().timestamp();
+            let has_started = s.start_time.map(|t| t as i64 <= now).unwrap_or(true);
             (is_public as usize, !has_started as usize, s.stage_index.unwrap_or(0))
         })
         .map(|(i, _)| i)

@@ -56,6 +56,22 @@ pub use api::{
     WalletBalanceRow, WalletEligibilityReport, WalletEligibilityRow, WalletInfo,
 };
 
+/// Truncate `s` to at most `max_bytes` **without splitting a UTF-8 character**.
+///
+/// Multi-byte-safe replacement for `&s[..s.len().min(n)]`, which panics when
+/// byte `n` lands inside a multi-byte char (non-ASCII RPC / OpenSea / relay
+/// error bodies would crash error formatting — the worst possible moment).
+pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// When true, suppress noisy `println!` in core (desktop sets QUIET=1 by default).
 pub fn quiet_mode() -> bool {
     match std::env::var("QUIET") {
@@ -105,3 +121,30 @@ pub use vault::Vault;
 pub const BURNER_WARNING: &str =
     "Use burner wallets only. Never import wallets with long-term funds.";
 pub const NO_TELEMETRY: &str = "No telemetry. Private keys stay on this machine.";
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate_str;
+
+    #[test]
+    fn ascii_truncates_exact() {
+        assert_eq!(truncate_str("hello world", 5), "hello");
+        assert_eq!(truncate_str("hi", 5), "hi");
+        assert_eq!(truncate_str("", 5), "");
+    }
+
+    #[test]
+    fn multibyte_boundary_does_not_panic() {
+        // "яя…" — Cyrillic is 2 bytes per char; cutting at odd byte must back off.
+        let s = "ошибка сети: тайм-аут";
+        for n in 0..=s.len() + 2 {
+            let t = truncate_str(s, n);
+            assert!(t.len() <= n || s.len() <= n);
+            assert!(s.starts_with(t));
+        }
+        // Emoji (4 bytes) mid-cut
+        let e = "err 🔥🔥";
+        assert_eq!(truncate_str(e, 5), "err ");
+        assert_eq!(truncate_str(e, 8), "err 🔥");
+    }
+}
