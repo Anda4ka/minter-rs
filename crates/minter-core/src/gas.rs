@@ -140,10 +140,10 @@ pub fn bump_gas_after_intrinsic(current: u64) -> u64 {
     current.saturating_mul(3).max(300_000).min(2_000_000)
 }
 
-pub fn is_intrinsic_gas_error(msg: &str) -> bool {
-    let m = msg.to_lowercase();
-    m.contains("intrinsic gas too low") || m.contains("gas too low")
-}
+/// Intrinsic-gas-too-low detection. Kept here as a re-export for existing
+/// callers; the implementation lives in [`crate::errors`] alongside the other
+/// RPC/tx error classifiers.
+pub use crate::errors::is_intrinsic_gas_too_low as is_intrinsic_gas_error;
 
 /// Bump a fee by basis points without f64 (e.g. 11500 = ×1.15, 13000 = ×1.30).
 /// If the result would not increase a non-zero fee, add 1 wei so RBF can progress.

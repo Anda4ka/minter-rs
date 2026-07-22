@@ -29,6 +29,7 @@ pub mod abi;
 pub mod amount;
 pub mod api;
 pub mod auth_cache;
+pub mod errors;
 pub mod export;
 pub mod gas;
 pub mod mint;
