@@ -2732,6 +2732,40 @@ pub async fn run_opensea_mint(
             }
             Err(e) => log_always(reporter.as_ref(), format!("Export failed: {}", e)),
         }
+
+        // Structured run metrics (plan #9): wallet outcomes + failure histogram
+        // + total elapsed, assembled from the finished run. Per-phase spans and
+        // precise t0 are a follow-up (they require threading the collector
+        // through the mint loop); this keeps the hot path untouched.
+        let collector = crate::metrics::MetricsCollector::new(
+            "opensea",
+            info.slug.clone(),
+            info.chain.clone(),
+            dry_run,
+            Some(stage_type_owned.clone()),
+        );
+        for w in &results {
+            let mut wm = crate::metrics::WalletMetrics::new(format!("{:?}", w.address));
+            wm.status = w.status.to_string();
+            wm.tx_hash = w
+                .tx_hash
+                .map(|h| format!("0x{}", hex::encode(h.as_slice())));
+            wm.gas_used = w.gas_used;
+            if let Some(err) = w.error.clone() {
+                wm = wm.with_error(err);
+            }
+            collector.upsert_wallet(wm);
+        }
+        let mut metrics = collector.finish();
+        metrics.summary.elapsed_ms = elapsed; // authoritative run duration
+        metrics.spans.done_ms = Some(elapsed);
+        match export::write_run_metrics(&metrics) {
+            Ok(p) => log_always(
+                reporter.as_ref(),
+                format!("Metrics: {}", export::path_display(&p)),
+            ),
+            Err(e) => log_always(reporter.as_ref(), format!("Metrics write failed: {}", e)),
+        }
     }
 
     let wallets: Vec<crate::api::SweepResultRow> = results

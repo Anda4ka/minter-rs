@@ -105,6 +105,17 @@ pub fn write_mint_results(run: &MintRunExport) -> Result<(PathBuf, PathBuf)> {
     Ok((json_path, csv_path))
 }
 
+/// Write a run's structured metrics (plan #9) as JSON next to the results.
+pub fn write_run_metrics(m: &crate::metrics::RunMetrics) -> Result<PathBuf> {
+    let dir = results_dir();
+    std::fs::create_dir_all(&dir).context("create results/")?;
+    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let path = dir.join(format!("metrics_{}_{}.json", safe_slug(&m.slug), ts));
+    let json = serde_json::to_string_pretty(m).context("serialize run metrics")?;
+    std::fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
+    Ok(path)
+}
+
 fn csv_escape(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') {
         format!("\"{}\"", s.replace('"', "\"\""))
