@@ -1214,7 +1214,7 @@ $("btn-probe-networks")?.addEventListener("click", async () => {
   if (btn) btn.disabled = true;
   try {
     const rows = await invoke("probe_networks", {
-      input: { viaProxy, chains: null },
+      input: { viaProxy, chains: selectedRpcChains() },
     });
     renderNetworkProbeRows(rows);
     await refreshStatus();
@@ -4364,14 +4364,17 @@ function clearMintLog() {
 // —— Mission Control overlay (live mint HUD) ——
 let mcMinimized = false;
 let mcStatsScheduled = false;
+/** Last title Mission Control was opened with, so a hotkey can reopen it. */
+let lastMcTitle = null;
 
 function openMissionControl(title) {
   const root = $("mission-control");
   if (!root) return;
+  if (title) lastMcTitle = title;
   root.classList.remove("hidden", "mc-collapsed");
   mcMinimized = false;
   const tEl = $("mc-title");
-  if (tEl) tEl.textContent = title || "MISSION CONTROL";
+  if (tEl) tEl.textContent = title || lastMcTitle || "MISSION CONTROL";
   const minBtn = $("mc-minimize");
   if (minBtn) minBtn.textContent = "▾";
   updateMcStats();
@@ -5141,3 +5144,226 @@ async function startMintTask(taskId, opts = {}) {
     if (!fromQueue) setTimeout(() => processQueue(), 50);
   }
 }
+
+// ——————————————————————————————————————————————————————————————
+// UI polish: persisted network selectors, command palette, hotkeys
+// ——————————————————————————————————————————————————————————————
+
+// —— Persist last-used balance network (Wallets) ——
+const BAL_CHAIN_KEY = "minter_balance_chain";
+(function restoreBalanceChain() {
+  const sel = $("wallet-balance-chain");
+  if (!sel) return;
+  try {
+    const saved = localStorage.getItem(BAL_CHAIN_KEY);
+    if (saved && [...sel.options].some((o) => o.value === saved)) sel.value = saved;
+  } catch (_) {}
+  sel.addEventListener("change", () => {
+    try {
+      localStorage.setItem(BAL_CHAIN_KEY, sel.value);
+    } catch (_) {}
+  });
+})();
+
+// —— Persist RPC per-network ping selection ——
+const RPC_CHAINS_KEY = "minter_rpc_ping_chains";
+(function restoreRpcChains() {
+  const boxes = [...document.querySelectorAll(".rpc-chain-cb")];
+  if (!boxes.length) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(RPC_CHAINS_KEY) || "null");
+    if (Array.isArray(saved)) {
+      const set = new Set(saved);
+      boxes.forEach((b) => (b.checked = set.has(b.value)));
+    }
+  } catch (_) {}
+  boxes.forEach((b) =>
+    b.addEventListener("change", () => {
+      try {
+        const on = boxes.filter((x) => x.checked).map((x) => x.value);
+        localStorage.setItem(RPC_CHAINS_KEY, JSON.stringify(on));
+      } catch (_) {}
+    })
+  );
+})();
+
+/** Chains selected for RPC ping, or null to let the backend use its defaults. */
+function selectedRpcChains() {
+  const on = [...document.querySelectorAll(".rpc-chain-cb:checked")].map((b) => b.value);
+  return on.length ? on : null;
+}
+
+// —— Command palette (Ctrl/Cmd+K) ——
+const cmdState = { items: [], filtered: [], active: 0 };
+
+function cmdIsOpen() {
+  const p = $("cmd-palette");
+  return p && !p.classList.contains("hidden");
+}
+
+function buildCmdItems() {
+  const items = [];
+  document.querySelectorAll(".nav-item[data-page]").forEach((btn) => {
+    const page = btn.dataset.page;
+    const label = (btn.textContent || page).trim();
+    const icoEl = btn.querySelector(".nav-ico");
+    items.push({
+      label,
+      sub: t("cmd.navGroup"),
+      icon: icoEl ? icoEl.innerHTML : "",
+      run: () => navigate(page),
+    });
+  });
+  items.push({
+    label: t("cmd.toggleMode"),
+    sub: t("cmd.actionGroup"),
+    icon: "",
+    run: () => $("mode-chip")?.click(),
+  });
+  items.push({
+    label: t("cmd.reopenMc"),
+    sub: t("cmd.actionGroup"),
+    icon: "",
+    run: () => openMissionControl(lastMcTitle),
+  });
+  items.push({
+    label: t("cmd.toggleLang"),
+    sub: t("cmd.actionGroup"),
+    icon: "",
+    run: () => $("lang-chip")?.click(),
+  });
+  return items;
+}
+
+function renderCmdList() {
+  const list = $("cmd-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!cmdState.filtered.length) {
+    const li = document.createElement("li");
+    li.className = "cmd-empty";
+    li.textContent = t("cmd.empty");
+    list.appendChild(li);
+    return;
+  }
+  cmdState.filtered.forEach((it, i) => {
+    const li = document.createElement("li");
+    li.className = "cmd-item" + (i === cmdState.active ? " active" : "");
+    li.setAttribute("role", "option");
+    li.innerHTML =
+      `<span class="cmd-ico">${it.icon || ""}</span>` +
+      `<span class="cmd-label"></span>` +
+      `<span class="cmd-sub"></span>`;
+    li.querySelector(".cmd-label").textContent = it.label;
+    li.querySelector(".cmd-sub").textContent = it.sub || "";
+    li.addEventListener("mouseenter", () => {
+      cmdState.active = i;
+      highlightCmd();
+    });
+    li.addEventListener("click", () => runCmd(i));
+    list.appendChild(li);
+  });
+}
+
+function highlightCmd() {
+  const list = $("cmd-list");
+  if (!list) return;
+  [...list.querySelectorAll(".cmd-item")].forEach((el, i) =>
+    el.classList.toggle("active", i === cmdState.active)
+  );
+  const el = list.querySelector(".cmd-item.active");
+  if (el) el.scrollIntoView({ block: "nearest" });
+}
+
+function filterCmd(q) {
+  const query = (q || "").trim().toLowerCase();
+  cmdState.filtered = query
+    ? cmdState.items.filter((it) => it.label.toLowerCase().includes(query))
+    : cmdState.items.slice();
+  cmdState.active = 0;
+  renderCmdList();
+}
+
+function openCmdPalette() {
+  const p = $("cmd-palette");
+  const input = $("cmd-input");
+  if (!p || !input) return;
+  cmdState.items = buildCmdItems();
+  input.value = "";
+  filterCmd("");
+  show(p);
+  input.focus();
+}
+
+function closeCmdPalette() {
+  const p = $("cmd-palette");
+  if (p) hide(p);
+}
+
+function runCmd(i) {
+  const it = cmdState.filtered[i];
+  closeCmdPalette();
+  if (it && typeof it.run === "function") {
+    try {
+      it.run();
+    } catch (e) {
+      console.warn("cmd run", e);
+    }
+  }
+}
+
+$("cmd-input")?.addEventListener("input", (e) => filterCmd(e.target.value));
+$("cmd-palette")?.addEventListener("mousedown", (e) => {
+  if (e.target === $("cmd-palette")) closeCmdPalette();
+});
+$("cmd-input")?.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    cmdState.active = Math.min(cmdState.active + 1, cmdState.filtered.length - 1);
+    highlightCmd();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    cmdState.active = Math.max(cmdState.active - 1, 0);
+    highlightCmd();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    runCmd(cmdState.active);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeCmdPalette();
+  }
+});
+
+// —— Global hotkeys ——
+document.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  // Ctrl/Cmd+K → command palette
+  if (mod && (e.key === "k" || e.key === "K")) {
+    e.preventDefault();
+    if (cmdIsOpen()) closeCmdPalette();
+    else openCmdPalette();
+    return;
+  }
+  // Ctrl/Cmd+M → reopen / toggle Mission Control
+  if (mod && (e.key === "m" || e.key === "M")) {
+    const mc = $("mission-control");
+    if (!mc) return;
+    e.preventDefault();
+    if (mc.classList.contains("hidden")) openMissionControl(lastMcTitle);
+    else toggleMcMinimize();
+    return;
+  }
+  // Esc → collapse Mission Control (only if nothing else is capturing Esc)
+  if (e.key === "Escape") {
+    if (cmdIsOpen()) return; // palette input handles its own Escape
+    const modalOpen = ["modal-overlay", "onboard-overlay"].some((id) => {
+      const el = $(id);
+      return el && !el.classList.contains("hidden");
+    });
+    if (modalOpen) return;
+    const mc = $("mission-control");
+    if (mc && !mc.classList.contains("hidden") && !mc.classList.contains("mc-collapsed")) {
+      toggleMcMinimize();
+    }
+  }
+});
