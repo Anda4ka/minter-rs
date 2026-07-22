@@ -84,53 +84,10 @@ fn maybe_beep(beep: bool, first_confirm: &AtomicBool) {
     }
 }
 
-pub(crate) fn classify_mint_error(msg: &str) -> &'static str {
-    let lower = msg.to_lowercase();
-    // Funds / balance — never retry, never "dry-run OK".
-    if lower.contains("insufficient funds")
-        || lower.contains("insufficient balance")
-        || lower.contains("outoffunds")
-        || lower.contains("out of funds")
-        || lower.contains("out of fund")
-        || lower.contains("exceeds balance")
-        || lower.contains("overshot the sender account's balance")
-    {
-        return "fatal";
-    }
-
-    // Only treat known unrecoverable contract/wallet errors as fatal.
-    // Generic "execution reverted" is retryable (phase not open yet, temporary
-    // sold-out, RPC noise, etc.) so sniper retry bursts can keep trying.
-    let fatal_patterns = [
-        "InvalidProof",
-        "PayerNotAllowed",
-        "SignatureAlreadyUsed",
-        "IncorrectPayment",
-        "MintQuantityExceedsMaxMintedPerWallet",
-        "MintQuantityExceedsMaxSupply",
-    ];
-    for pat in &fatal_patterns {
-        if lower.contains(&pat.to_lowercase()) {
-            return "fatal";
-        }
-    }
-    "retryable"
-}
-
-fn is_already_known(err: &str) -> bool {
-    let lower = err.to_lowercase();
-    lower.contains("already known")
-}
-
-fn is_nonce_too_low(err: &str) -> bool {
-    let lower = err.to_lowercase();
-    lower.contains("nonce too low") || lower.contains("nonce is too low")
-}
-
-fn is_underpriced(err: &str) -> bool {
-    let lower = err.to_lowercase();
-    lower.contains("underpriced") || lower.contains("fee too low")
-}
+// Error classification lives in one place (`crate::errors`) so retry / RBF
+// decisions stay consistent across providers and are unit-tested there.
+pub(crate) use crate::errors::classify_mint_error;
+use crate::errors::{is_already_known, is_nonce_too_low, is_underpriced};
 
 fn parse_hex_u256(value: &str) -> Option<U256> {
     if let Some(hex) = value.strip_prefix("0x") {
