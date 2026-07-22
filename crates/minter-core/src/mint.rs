@@ -99,8 +99,8 @@ pub(crate) fn classify_mint_error(msg: &str) -> &'static str {
     }
 
     // Only treat known unrecoverable contract/wallet errors as fatal.
-    // Generic "execution reverted" is retryable (phase not open yet, temporary
-    // sold-out, RPC noise, etc.) so sniper retry bursts can keep trying.
+    // Generic "execution reverted" / SeaDrop NotActive is retryable (phase not
+    // open yet on chain, temporary sold-out, RPC noise, etc.).
     let fatal_patterns = [
         "InvalidProof",
         "PayerNotAllowed",
@@ -115,6 +115,142 @@ pub(crate) fn classify_mint_error(msg: &str) -> &'static str {
         }
     }
     "retryable"
+}
+
+/// SeaDrop `NotActive(uint256 current, uint256 start, uint256 end)` — selector `0x13da22f2`.
+pub(crate) const NOT_ACTIVE_SELECTOR: &str = "13da22f2";
+
+/// Seconds after wall-clock phase open where chain `block.timestamp` often still
+/// lags (~1 L1 block). Used for auto skip-estimate and NotActive → fixed gas.
+pub(crate) const PHASE_OPEN_LAG_WINDOW_SECS: i64 = 25;
+
+/// Max chain lag (seconds) decoded from NotActive still treated as "about to open".
+pub(crate) const NOT_ACTIVE_CHAIN_WAIT_MAX_SECS: u64 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NotActiveInfo {
+    pub chain_ts: u64,
+    pub start_ts: u64,
+    pub end_ts: u64,
+}
+
+fn format_unix_hms(ts: u64) -> String {
+    chrono::DateTime::from_timestamp(ts as i64, 0)
+        .map(|d| d.format("%H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
+fn parse_abi_u64_word(word64_hex: &str) -> Option<u64> {
+    let w = word64_hex.trim();
+    if w.len() != 64 {
+        return None;
+    }
+    // Timestamps fit in u64 — take low 16 hex chars (8 bytes).
+    u64::from_str_radix(&w[w.len() - 16..], 16).ok()
+}
+
+/// Parse SeaDrop `NotActive` from an RPC / estimate error string (hex `data` blob).
+pub(crate) fn parse_not_active(err: &str) -> Option<NotActiveInfo> {
+    let lower = err.to_ascii_lowercase();
+    let idx = lower.find(NOT_ACTIVE_SELECTOR)?;
+    // Collect hex digits after the selector (ABI: 3 × 32-byte words = 192 nibbles).
+    // JSON may interleave quotes/spaces — strip non-hex.
+    let hex: String = lower[idx + NOT_ACTIVE_SELECTOR.len()..]
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(192)
+        .collect();
+    if hex.len() < 192 {
+        return None;
+    }
+    let chain_ts = parse_abi_u64_word(&hex[0..64])?;
+    let start_ts = parse_abi_u64_word(&hex[64..128])?;
+    let end_ts = parse_abi_u64_word(&hex[128..192])?;
+    Some(NotActiveInfo {
+        chain_ts,
+        start_ts,
+        end_ts,
+    })
+}
+
+pub(crate) fn format_not_active(info: &NotActiveInfo) -> String {
+    let wait = info.start_ts.saturating_sub(info.chain_ts);
+    format!(
+        "NotActive: chain_ts={} ({}) start={} ({}) end={} ({}) (wait ~{}s)",
+        info.chain_ts,
+        format_unix_hms(info.chain_ts),
+        info.start_ts,
+        format_unix_hms(info.start_ts),
+        info.end_ts,
+        format_unix_hms(info.end_ts),
+        wait
+    )
+}
+
+/// Prefer human-readable NotActive decode; keep a short raw tail for debugging.
+pub(crate) fn enrich_mint_rpc_error(err: &str) -> String {
+    if let Some(info) = parse_not_active(err) {
+        let decoded = format_not_active(&info);
+        // Keep message compact — full multi-RPC dump is huge.
+        let raw = err.trim();
+        let short = if raw.len() > 160 {
+            format!("{}…", raw.chars().take(160).collect::<String>())
+        } else {
+            raw.to_string()
+        };
+        format!("{decoded} | {short}")
+    } else {
+        err.to_string()
+    }
+}
+
+/// Wall clock is at/after phase start and still inside typical L1 timestamp lag.
+pub(crate) fn in_phase_open_lag_window(stage_start_ts: Option<i64>, now_wall: i64) -> bool {
+    let Some(start) = stage_start_ts.filter(|s| *s > 0) else {
+        return false;
+    };
+    let elapsed = now_wall - start;
+    // Allow 1s clock skew early; window covers ~2 eth blocks of lag.
+    elapsed >= -1 && elapsed <= PHASE_OPEN_LAG_WINDOW_SECS
+}
+
+/// Policy after eth_estimateGas failure: always restore calldata; maybe force fixed gas.
+///
+/// Returns `(enriched_error, force_fixed_gas, wait_ms_override)`.
+/// `wait_ms_override = 0` → caller uses normal burst delays.
+///
+/// Force fixed-gas send only when the stage is **not yet open on chain**
+/// (`chain_ts < start`) with a small wait, or wall clock is still inside the
+/// post-open lag window — never when `chain_ts` is already past `end`.
+pub(crate) fn estimate_fail_policy(
+    err: &str,
+    stage_start_ts: Option<i64>,
+    now_wall: i64,
+) -> (String, bool, u64) {
+    let enriched = enrich_mint_rpc_error(err);
+    let info = parse_not_active(err);
+    let force = if let Some(info) = info {
+        let not_yet_open = info.chain_ts < info.start_ts;
+        let still_before_end = info.end_ts == 0 || info.chain_ts < info.end_ts;
+        let wait_s = info.start_ts.saturating_sub(info.chain_ts);
+        still_before_end
+            && ((not_yet_open && wait_s <= NOT_ACTIVE_CHAIN_WAIT_MAX_SECS)
+                || in_phase_open_lag_window(stage_start_ts, now_wall))
+    } else {
+        let lower = err.to_ascii_lowercase();
+        lower.contains("notactive") && in_phase_open_lag_window(stage_start_ts, now_wall)
+    };
+    let wait_ms = if force {
+        if let Some(info) = info {
+            let wait_s = info.start_ts.saturating_sub(info.chain_ts);
+            (wait_s.saturating_mul(250)).clamp(150, 2_000)
+        } else {
+            300
+        }
+    } else {
+        0
+    };
+    (enriched, force, wait_ms)
 }
 
 fn is_already_known(err: &str) -> bool {
@@ -1557,6 +1693,13 @@ pub async fn run_opensea_mint(
                 "Phase is open! (wall clock, fire lag ~{fire_lag_ms}ms after start_ts)"
             ),
         );
+        // LIVE always fixed-gas (see worker). Dry-run may still estimate.
+        if !dry_run {
+            log_always(
+                reporter.as_ref(),
+                "Live mint: fixed gas on open (no eth_estimateGas) — fast path",
+            );
+        }
 
         // Collect prefetched calldata; don't block long if a wallet still retrying.
         let join_deadline =
@@ -1650,7 +1793,9 @@ pub async fn run_opensea_mint(
         let reporter = reporter.clone();
         let quiet_w = quiet;
         let skip_preflight_w = skip_preflight;
-        let skip_estimate_on_open = opts.skip_estimate_on_open.unwrap_or(false);
+        // Default true: OS mint should not require a per-task "skip estimate" checkbox.
+        let skip_estimate_on_open = opts.skip_estimate_on_open.unwrap_or(true);
+        let stage_start_ts_w = stage_start_ts;
         let beep_w = beep;
         let first_confirm_w = first_confirm.clone();
         let cancel_w = cancel.clone();
@@ -1670,6 +1815,20 @@ pub async fn run_opensea_mint(
             let mut last_error = String::new();
             let mut max_fee = max_fee;
             let mut max_priority_fee = max_priority_fee;
+            // Product rule: LIVE OpenSea mint is always fixed-gas / fast.
+            // No separate "sniper mode". Dry-run still estimates unless skip flags.
+            let wall_at_spawn = chrono::Utc::now().timestamp();
+            let auto_skip_estimate = dry_run_w
+                && !skip_preflight_w
+                && !skip_estimate_on_open
+                && in_phase_open_lag_window(stage_start_ts_w, wall_at_spawn);
+            let mut force_fixed_gas = if dry_run_w {
+                skip_preflight_w || skip_estimate_on_open || auto_skip_estimate
+            } else {
+                true
+            };
+            let mut logged_auto_skip = false;
+            let mut logged_reuse = false;
 
             loop {
                 if cancelled(&cancel_w) {
@@ -1728,9 +1887,19 @@ pub async fn run_opensea_mint(
                     None,
                 );
 
-                // `.take()`: consume cache for this attempt; put back only on fee/nonce retry.
+                // `.take()`: consume cache for this attempt; restore on estimate / fee / nonce retry.
                 let (to_addr, tx_value, calldata): (alloy_primitives::Address, U256, Bytes) =
                     if let Some((to, val, cd)) = cached_tx.take() {
+                        if !logged_reuse && attempt > 1 {
+                            logged_reuse = true;
+                            log_always(
+                                reporter.as_ref(),
+                                format!(
+                                    "[{}] reusing PREPARED calldata (no GQL re-fetch)",
+                                    sign::shorten_address(&addr)
+                                ),
+                            );
+                        }
                         (to, val, cd)
                     } else if stage_type_owned == "PUBLIC_SALE" && !use_gql_owned {
                         let local_start = std::time::Instant::now();
@@ -1908,14 +2077,30 @@ pub async fn run_opensea_mint(
                         }
                     };
 
-                let gas_limit = if skip_preflight_w || skip_estimate_on_open {
+                let gas_limit = if force_fixed_gas {
                     let fixed_raw = fixed_gas_limit_owned.unwrap_or(250_000);
                     let fixed = resolve_mint_gas_limit(fixed_raw, gas_multiplier, chain_id, true);
-                    let label = if skip_preflight_w {
+                    let label = if !dry_run_w {
+                        "LIVE_FIXED"
+                    } else if skip_preflight_w {
                         "SKIP_PREFLIGHT"
-                    } else {
+                    } else if skip_estimate_on_open {
                         "SKIP_ESTIMATE_ON_OPEN"
+                    } else if auto_skip_estimate {
+                        "AUTO_SKIP_ESTIMATE_ON_OPEN"
+                    } else {
+                        "FIXED_GAS_AFTER_NOT_ACTIVE"
                     };
+                    if !logged_auto_skip {
+                        logged_auto_skip = true;
+                        log_always(
+                            reporter.as_ref(),
+                            format!(
+                                "[{}] {label} gas_limit={fixed} (no eth_estimateGas)",
+                                sign::shorten_address(&addr)
+                            ),
+                        );
+                    }
                     if fixed != fixed_raw {
                         mint_log(
                             reporter.as_ref(),
@@ -1946,7 +2131,8 @@ pub async fn run_opensea_mint(
                     );
                     fixed
                 } else if let Some(fixed_raw) = fixed_gas_limit_owned {
-                    // Manual gas: still require preflight OK before any send (Start → sim → tx).
+                    // Manual gas: still prefer preflight OK before send, but NotActive near
+                    // open → short wait + fixed-gas send (do not re-GQL).
                     let fixed = resolve_mint_gas_limit(fixed_raw, gas_multiplier, chain_id, true);
                     if fixed != fixed_raw {
                         mint_log(
@@ -1988,24 +2174,28 @@ pub async fn run_opensea_mint(
                             );
                         }
                         Err(e) => {
-                            let err_str = format!("{}", e);
+                            let raw = format!("{}", e);
+                            let now_wall = chrono::Utc::now().timestamp();
+                            let (enriched, force_fixed, wait_override) =
+                                estimate_fail_policy(&raw, stage_start_ts_w, now_wall);
                             mint_log(reporter.as_ref(), quiet_w,
                                 format!(
                                     "[{}] PRE-FLIGHT FAIL {}ms: {}",
                                     sign::shorten_address(&addr),
                                     sim_start.elapsed().as_millis(),
-                                    err_str
+                                    enriched
                                 ),
                             );
-                            // Never send after failed sim — fatal fail, retryable retry.
-                            match classify_mint_error(&err_str) {
+                            // Always keep PREPARED calldata for the next attempt.
+                            cached_tx = Some((to_addr, tx_value, calldata.clone()));
+                            match classify_mint_error(&raw) {
                                 "fatal" => {
                                     report_wallet(reporter.as_ref(),
                                         &addr,
                                         Some(WalletStatus::Failed),
                                         None,
                                         None,
-                                        Some(err_str.clone()),
+                                        Some(enriched.clone()),
                                     );
                                     break (
                                         addr,
@@ -2015,22 +2205,34 @@ pub async fn run_opensea_mint(
                                             status: WalletStatus::Failed,
                                             gas_used: None,
                                             block_number: None,
-                                            error: Some(err_str),
+                                            error: Some(enriched),
                                         },
                                     );
                                 }
                                 _ => {
-                                    if attempt == 1 || attempt % 5 == 0 {
+                                    if force_fixed {
+                                        force_fixed_gas = true;
+                                        log_always(
+                                            reporter.as_ref(),
+                                            format!(
+                                                "[{}] NotActive near open — next attempt FIXED gas send (no re-estimate / no GQL)",
+                                                sign::shorten_address(&addr)
+                                            ),
+                                        );
+                                    }
+                                    if attempt == 1 || attempt % 5 == 0 || force_fixed {
                                         log_always(reporter.as_ref(), format!(
                                             "[{}] pre-flight retry {}/{}: {}",
                                             sign::shorten_address(&addr),
                                             attempt,
                                             max_attempts,
-                                            err_str
+                                            enriched
                                         ));
                                     }
-                                    last_error = err_str;
-                                    let delay_ms = if burst_idx < burst_delays.len() {
+                                    last_error = enriched;
+                                    let delay_ms = if wait_override > 0 {
+                                        wait_override
+                                    } else if burst_idx < burst_delays.len() {
                                         burst_delays[burst_idx]
                                     } else {
                                         100
@@ -2063,19 +2265,24 @@ pub async fn run_opensea_mint(
                                 g
                             }
                             Err(e) => {
+                                let raw = format!("{}", e);
+                                let now_wall = chrono::Utc::now().timestamp();
+                                let (enriched, force_fixed, wait_override) =
+                                    estimate_fail_policy(&raw, stage_start_ts_w, now_wall);
                                 log_always(reporter.as_ref(), format!("[{}] estimate_gas FAIL {}ms: {}",
                                     sign::shorten_address(&addr),
                                     est_gas_start.elapsed().as_millis(),
-                                    e));
-                                let err_str = format!("{}", e);
-                                match classify_mint_error(&err_str) {
+                                    enriched));
+                                // Keep PREPARED calldata — do not re-fetch GQL on estimate retries.
+                                cached_tx = Some((to_addr, tx_value, calldata.clone()));
+                                match classify_mint_error(&raw) {
                                     "fatal" => {
                                         report_wallet(reporter.as_ref(),
                                             &addr,
                                             Some(WalletStatus::Failed),
                                             None,
                                             None,
-                                            Some(err_str.clone()),
+                                            Some(enriched.clone()),
                                         );
                                         break (
                                             addr,
@@ -2085,21 +2292,32 @@ pub async fn run_opensea_mint(
                                                 status: WalletStatus::Failed,
                                                 gas_used: None,
                                                 block_number: None,
-                                                error: Some(err_str),
+                                                error: Some(enriched),
                                             },
                                         );
                                     }
                                     _ => {
-                                        if attempt == 1 || attempt % 5 == 0 {
+                                        if force_fixed {
+                                            force_fixed_gas = true;
+                                            log_always(
+                                                reporter.as_ref(),
+                                                format!(
+                                                    "[{}] NotActive near open — next attempt FIXED gas send (no re-estimate / no GQL)",
+                                                    sign::shorten_address(&addr)
+                                                ),
+                                            );
+                                        }
+                                        if attempt == 1 || attempt % 5 == 0 || force_fixed {
                                             log_always(reporter.as_ref(), format!("[{}] estimate_gas retry {}/{}: {}",
                                                 sign::shorten_address(&addr),
                                                 attempt,
                                                 max_attempts,
-                                                err_str));
+                                                enriched));
                                         }
-                                        last_error = err_str;
-                                        // leave cached_tx empty (already taken) → rebuild next attempt
-                                        let delay_ms = if burst_idx < burst_delays.len() {
+                                        last_error = enriched;
+                                        let delay_ms = if wait_override > 0 {
+                                            wait_override
+                                        } else if burst_idx < burst_delays.len() {
                                             burst_delays[burst_idx]
                                         } else {
                                             100
@@ -2810,7 +3028,10 @@ pub async fn run_opensea_mint(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_mint_error, fire_lag_ms_from_clock, parse_tx_calldata_hex, resolve_mint_gas_limit,
+        classify_mint_error, enrich_mint_rpc_error, estimate_fail_policy, fire_lag_ms_from_clock,
+        format_not_active, in_phase_open_lag_window, parse_not_active, parse_tx_calldata_hex,
+        resolve_mint_gas_limit, NotActiveInfo, NOT_ACTIVE_CHAIN_WAIT_MAX_SECS,
+        PHASE_OPEN_LAG_WINDOW_SECS,
     };
 
     #[test]
@@ -2918,5 +3139,88 @@ mod tests {
         assert_eq!(classify_mint_error("nonce too low"), "retryable");
         assert_eq!(classify_mint_error("replacement transaction underpriced"), "retryable");
         assert_eq!(classify_mint_error(""), "retryable");
+    }
+
+    /// Real Wonkies / SeaDrop estimateGas blob from mint_wonkiescc0 log.
+    const WONKIES_NOT_ACTIVE: &str = concat!(
+        r#"RPC eth_estimateGas via https://eth-mainnet.g.alchemy....24dMEiRl error: {"code":3,"data":"0x"#,
+        "13da22f2",
+        "000000000000000000000000000000000000000000000000000000006a60daef",
+        "000000000000000000000000000000000000000000000000000000006a60daf0",
+        "000000000000000000000000000000000000000000000000000000006a60e900",
+        r#"","message":"execution reverted"}"#
+    );
+
+    #[test]
+    fn parse_not_active_from_wonkies_log() {
+        let info = parse_not_active(WONKIES_NOT_ACTIVE).expect("decode NotActive");
+        assert_eq!(info.chain_ts, 1_784_732_399); // 14:59:59 UTC
+        assert_eq!(info.start_ts, 1_784_732_400); // 15:00:00
+        assert_eq!(info.end_ts, 1_784_736_000); // 16:00:00
+        let wait = info.start_ts.saturating_sub(info.chain_ts);
+        assert_eq!(wait, 1);
+    }
+
+    #[test]
+    fn format_not_active_includes_wait() {
+        let info = NotActiveInfo {
+            chain_ts: 1_784_732_399,
+            start_ts: 1_784_732_400,
+            end_ts: 1_784_736_000,
+        };
+        let s = format_not_active(&info);
+        assert!(s.contains("NotActive:"), "{s}");
+        assert!(s.contains("wait ~1s"), "{s}");
+        assert!(s.contains("1784732399"), "{s}");
+        assert!(s.contains("1784732400"), "{s}");
+    }
+
+    #[test]
+    fn enrich_mint_rpc_error_decodes_selector() {
+        let e = enrich_mint_rpc_error(WONKIES_NOT_ACTIVE);
+        assert!(e.starts_with("NotActive:"), "{e}");
+        assert!(e.contains("wait ~1s"), "{e}");
+        // still classified retryable (not fatal)
+        assert_eq!(classify_mint_error(WONKIES_NOT_ACTIVE), "retryable");
+    }
+
+    #[test]
+    fn estimate_fail_policy_forces_fixed_near_open() {
+        let start = 1_784_732_400i64;
+        // wall 10s after open
+        let (enriched, force, wait_ms) =
+            estimate_fail_policy(WONKIES_NOT_ACTIVE, Some(start), start + 10);
+        assert!(force, "should force fixed gas");
+        assert!(wait_ms >= 150 && wait_ms <= 2_000, "wait_ms={wait_ms}");
+        assert!(enriched.contains("NotActive"), "{enriched}");
+    }
+
+    #[test]
+    fn estimate_fail_policy_forces_fixed_from_chain_wait_alone() {
+        // Phase start far in past by wall, but decoded wait is 1s → still force fixed.
+        let (enriched, force, wait_ms) =
+            estimate_fail_policy(WONKIES_NOT_ACTIVE, Some(1_000_000), 2_000_000);
+        assert!(force, "chain wait 1s ≤ {NOT_ACTIVE_CHAIN_WAIT_MAX_SECS}");
+        assert!(wait_ms >= 150, "wait_ms={wait_ms}");
+        assert!(enriched.contains("wait ~1s"), "{enriched}");
+    }
+
+    #[test]
+    fn phase_open_lag_window() {
+        let start = 1_000_000i64;
+        assert!(in_phase_open_lag_window(Some(start), start));
+        assert!(in_phase_open_lag_window(Some(start), start + PHASE_OPEN_LAG_WINDOW_SECS));
+        assert!(!in_phase_open_lag_window(
+            Some(start),
+            start + PHASE_OPEN_LAG_WINDOW_SECS + 1
+        ));
+        assert!(!in_phase_open_lag_window(Some(start), start - 5));
+        assert!(!in_phase_open_lag_window(None, start));
+    }
+
+    #[test]
+    fn parse_not_active_rejects_unrelated() {
+        assert!(parse_not_active("timeout").is_none());
+        assert!(parse_not_active("execution reverted: InvalidProof").is_none());
     }
 }

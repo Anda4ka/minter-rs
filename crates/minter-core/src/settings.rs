@@ -43,6 +43,9 @@ pub struct Settings {
     pub gas_multiplier: String,
     pub max_retries: u32,
     pub quiet: bool,
+    /// Legacy flag; LIVE OpenSea mint always uses fixed gas regardless.
+    /// Kept for dry-run / advanced. Default ON so old mental model matches fast mint.
+    #[serde(default = "default_true")]
     pub skip_preflight: bool,
     pub beep: bool,
     pub export_results: bool,
@@ -88,7 +91,7 @@ impl Default for Settings {
             gas_multiplier: "1.15".to_string(),
             max_retries: 20,
             quiet: false,
-            skip_preflight: false,
+            skip_preflight: true,
             beep: true,
             export_results: true,
             dry_run: true,
@@ -274,19 +277,20 @@ impl Settings {
         }
     }
 
+    /// Fast mint defaults (legacy name: "sniper preset"). Same as product defaults —
+    /// not a separate mode. Prefer leaving Settings alone.
     pub fn apply_sniper_preset(&mut self) {
         self.gas_limit = 250_000;
         self.use_gql = false;
         self.priority_fee_gwei = "auto".to_string();
         self.base_fee_multiplier = "2.0".to_string();
-        self.gas_multiplier = "1.0".to_string();
-        self.max_retries = 30;
-        self.quiet = true;
+        self.gas_multiplier = "1.15".to_string();
+        self.max_retries = 20;
+        self.quiet = false;
         self.skip_preflight = true;
         self.beep = true;
         self.export_results = true;
-        // Power-user sniper path: skip LIVE type-confirm for speed.
-        self.require_live_confirm = false;
+        // Keep LIVE confirm — safety default; not a "sniper mode".
     }
 
     /// Non-empty proxy lines (comments `#…` stripped).

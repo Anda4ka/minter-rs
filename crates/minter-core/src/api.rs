@@ -2757,7 +2757,7 @@ impl Default for MintOptions {
             chain_override: None,
             proxy_overrides: None,
             wallet_quantities: None,
-            skip_estimate_on_open: None,
+            skip_estimate_on_open: Some(true),
             use_flashbots: None,
         }
     }

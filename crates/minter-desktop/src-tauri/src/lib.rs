@@ -677,6 +677,7 @@ async fn run_mint(
         phase_index: input.phase_index,
         at_time,
         use_gql: None,
+        // LIVE path ignores preflight estimate (core always fixed-gas on live).
         skip_preflight: None,
         quiet: Some(false),
         priority_fee_gwei: input.priority_fee_gwei,
@@ -685,7 +686,8 @@ async fn run_mint(
         chain_override,
         proxy_overrides: input.proxy_overrides,
         wallet_quantities: input.wallet_quantities,
-        skip_estimate_on_open: input.skip_estimate_on_open,
+        // Default true — no per-task "sniper" checkbox required.
+        skip_estimate_on_open: Some(input.skip_estimate_on_open.unwrap_or(true)),
         use_flashbots: input.use_flashbots,
     };
     // Confirm string ignored by core (mint starts without typed CONFIRM).

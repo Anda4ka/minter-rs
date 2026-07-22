@@ -1411,10 +1411,11 @@ async function loadSettings() {
   if (typeof resetIdleLockTimer === "function") resetIdleLockTimer();
 }
 
-$("btn-sniper").addEventListener("click", async () => {
+// Sniper preset removed — LIVE OpenSea mint is always fixed-gas / fast.
+$("btn-sniper")?.addEventListener("click", async () => {
   await invoke("apply_sniper");
   await loadSettings();
-  $("settings-msg").textContent = "Sniper preset applied (click Save to persist)";
+  $("settings-msg").textContent = "Fast mint defaults applied (click Save to persist)";
 });
 
 $("btn-save-settings").addEventListener("click", async () => {
@@ -3191,21 +3192,33 @@ let countdownTimer = null;
 let queueProcessing = false;
 
 const TASK_TEMPLATES = {
+  // "sniper" key kept for old saved UI state; product name is Standard mint
   sniper: {
-    name: "Sniper",
+    name: "Mint",
     quantity: 1,
     gasMode: "auto",
     gasLimit: null,
     phaseIndex: null,
     chainOverride: "auto",
+    skipEstimateOnOpen: true,
+  },
+  standard: {
+    name: "Mint",
+    quantity: 1,
+    gasMode: "auto",
+    gasLimit: null,
+    phaseIndex: null,
+    chainOverride: "auto",
+    skipEstimateOnOpen: true,
   },
   manualGas: {
-    name: "Sniper manual gas",
+    name: "Manual gas",
     quantity: 1,
     gasMode: "manual",
     gasLimit: 250000,
     phaseIndex: null,
     chainOverride: "auto",
+    skipEstimateOnOpen: true,
   },
   multi: {
     name: "Multi qty",
@@ -3214,6 +3227,7 @@ const TASK_TEMPLATES = {
     gasLimit: null,
     phaseIndex: null,
     chainOverride: "auto",
+    skipEstimateOnOpen: true,
   },
 };
 
@@ -3266,7 +3280,11 @@ function normalizeTask(raw) {
       t0.walletQuantities && typeof t0.walletQuantities === "object"
         ? t0.walletQuantities
         : null,
-    skipEstimateOnOpen: !!t0.skipEstimateOnOpen,
+    // Default true — live mint never needs per-task estimate toggle
+    skipEstimateOnOpen:
+      t0.skipEstimateOnOpen === false || t0.skipEstimateOnOpen === 0
+        ? false
+        : true,
     status,
     createdAt: Number(t0.createdAt) || nowMs(),
     updatedAt: Number(t0.updatedAt) || nowMs(),
@@ -3563,7 +3581,7 @@ async function openTaskModal(opts = {}) {
   if ($("task-send-mode"))
     $("task-send-mode").value = pref.useFlashbots ? "flashbots" : "public";
   if ($("task-filter-balance")) $("task-filter-balance").checked = pref.filterBalance !== false;
-  if ($("task-skip-est")) $("task-skip-est").checked = !!pref.skipEstimateOnOpen;
+  if ($("task-skip-est")) $("task-skip-est").checked = pref.skipEstimateOnOpen !== false;
   if ($("task-prio")) $("task-prio").value = pref.priorityFeeGwei || "";
   if ($("task-at")) $("task-at").value = pref.atTime || "";
   if ($("task-per-wallet-qty")) {
@@ -4025,7 +4043,7 @@ $("task-modal-save")?.addEventListener("click", () => {
     phaseStartAt,
     phaseLabel,
     filterBalance: $("task-filter-balance")?.checked !== false,
-    skipEstimateOnOpen: !!$("task-skip-est")?.checked,
+    skipEstimateOnOpen: $("task-skip-est") ? !!$("task-skip-est").checked : true,
     priorityFeeGwei: ($("task-prio")?.value || "").trim(),
     atTime: ($("task-at")?.value || "").trim(),
     walletQuantities: collectTaskWalletQuantities(),

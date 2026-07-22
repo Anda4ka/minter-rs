@@ -12,7 +12,7 @@
   "gas_multiplier": "1.15",
   "max_retries": 20,
   "quiet": false,
-  "skip_preflight": false,
+  "skip_preflight": true,
   "beep": true,
   "export_results": true,
   "dry_run": true

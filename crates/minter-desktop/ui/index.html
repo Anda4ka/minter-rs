@@ -154,7 +154,7 @@
                 <button type="button" class="home-launch-card card-os" data-goto="tasks">
                   <span class="hl-badge" data-i18n="home.badgeOs">OpenSea</span>
                   <span class="hl-title" data-i18n="home.openTasks">OpenSea Mint</span>
-                  <span class="hl-desc" data-i18n="home.osDesc">Tasks, phases, multi-wallet sniper for OpenSea drops</span>
+                  <span class="hl-desc" data-i18n="home.osDesc">Tasks: phase, wallets, Start — OpenSea drops</span>
                   <span class="hl-cta" data-i18n="home.goTasks">Open Tasks →</span>
                 </button>
                 <button type="button" class="home-launch-card card-raw" data-goto="raw">
@@ -181,14 +181,14 @@
                   <span class="sr-only" data-i18n="tasks.templates">Templates</span>
                   <select id="task-template" class="task-template-select">
                     <option value="" data-i18n="tasks.templates">Templates…</option>
-                    <option value="sniper" data-i18n="tasks.tpl.sniper">Sniper standard</option>
-                    <option value="manualGas" data-i18n="tasks.tpl.manualGas">Sniper manual gas</option>
+                    <option value="standard" data-i18n="tasks.tpl.sniper">Standard</option>
+                    <option value="manualGas" data-i18n="tasks.tpl.manualGas">Manual gas</option>
                     <option value="multi" data-i18n="tasks.tpl.multi">Multi qty ×3</option>
                   </select>
                 </label>
                 <button type="button" id="btn-create-task" class="primary" data-i18n="tasks.create">Create task</button>
               </div>
-              <p class="muted" data-i18n="tasks.mintHint">Create a task (wallets, phase, chain, gas). Start → sim → if OK, send tx → wait for on-chain confirm.</p>
+              <p class="muted" data-i18n="tasks.mintHint">Slug → phase → wallets → Start. Bot waits for open and mints fast (fixed gas).</p>
               <div id="task-queue-bar" class="task-queue-bar hidden">
                 <span id="task-queue-label" class="muted"></span>
                 <button type="button" id="btn-clear-queue" class="danger-btn" data-i18n="tasks.clearQueue">Clear queue</button>
@@ -927,12 +927,12 @@
                   <div class="settings-acc-body">
                     <label class="check"><input type="checkbox" id="set-dry" /> Dry run mode (default)</label>
                     <label class="check"><input type="checkbox" id="set-live-confirm" checked /> Require type LIVE before Tasks Start</label>
-                    <label class="check"><input type="checkbox" id="set-skip" /> Skip preflight</label>
+                    <label class="check hidden" id="set-skip-wrap"><input type="checkbox" id="set-skip" checked /> Skip preflight (legacy; LIVE always fixed gas)</label>
                     <label class="check"><input type="checkbox" id="set-quiet" /> Quiet logs</label>
                     <label>Idle lock (minutes, 0=off)
                       <input type="number" id="set-idle-lock" min="0" max="1440" value="30" />
                     </label>
-                    <label>Raw sniper fee refresh at fire
+                    <label>Raw mint fee refresh at fire
                       <select id="set-fee-refresh">
                         <option value="mainnetOnly">Mainnet only (default)</option>
                         <option value="always">Always (incl. L2, adds latency)</option>
@@ -943,7 +943,6 @@
                 </details>
 
                 <div class="row actions" style="margin-top:12px">
-                  <button id="btn-sniper">Apply Sniper preset</button>
                   <button id="btn-save-settings" class="primary">Save settings</button>
                 </div>
                 <p id="settings-msg" class="msg"></p>
@@ -1024,7 +1023,7 @@
           <p class="muted small" data-i18n="tasks.perWalletQtyHint">Set qty per checked wallet after selecting wallets (default uses task qty).</p>
           <div id="task-qty-map" class="task-qty-map"></div>
         </div>
-        <p class="muted small" data-i18n="tasks.startHint">Start always runs live: sim → send if OK → success only after on-chain confirm.</p>
+        <p class="muted small" data-i18n="tasks.startHint">Start = live mint. Fixed gas, wait open, send → success after on-chain confirm.</p>
         <div class="wallet-pick-head">
           <span data-i18n="tasks.pickWallets">Wallets</span>
           <div class="task-group-filter">
@@ -1037,7 +1036,7 @@
         </div>
         <div id="task-wallet-list" class="task-wallet-list muted">Unlock vault to load wallets…</div>
         <label class="check"><input type="checkbox" id="task-filter-balance" checked /> <span data-i18n="tasks.filterBalance">On Start: only funded wallets</span></label>
-        <label class="check"><input type="checkbox" id="task-skip-est" /> <span data-i18n="tasks.skipEst">Skip estimate on open (faster, use gas limit)</span></label>
+        <input type="checkbox" id="task-skip-est" class="hidden" checked aria-hidden="true" />
         <p id="wizard-msg" class="msg"></p>
         <div class="row actions modal-actions">
           <button type="button" id="task-modal-cancel" data-i18n="modal.cancel">Cancel</button>

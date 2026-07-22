@@ -323,7 +323,8 @@ pub fn quiet_from_env(env: &std::collections::HashMap<String, String>) -> bool {
 }
 
 pub fn skip_preflight_from_env(env: &std::collections::HashMap<String, String>) -> bool {
-    env_flag(env, "SKIP_PREFLIGHT", false)
+    // Default ON: OpenSea live mint is fixed-gas / fast (no estimate gate).
+    env_flag(env, "SKIP_PREFLIGHT", true)
 }
 
 pub fn beep_from_env(env: &std::collections::HashMap<String, String>) -> bool {
