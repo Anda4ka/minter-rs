@@ -454,8 +454,7 @@ impl Settings {
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))
                     .context("set config temp permissions")?;
             }
-            file.write_all(data)
-                .context("write config temp")?;
+            file.write_all(data).context("write config temp")?;
             file.sync_all().context("fsync config temp")?;
         }
         if path.exists() {
@@ -516,10 +515,7 @@ impl Settings {
                 lines.push(line.to_string());
                 continue;
             }
-            let key = trimmed
-                .split_once('=')
-                .map(|(k, _)| k.trim())
-                .unwrap_or("");
+            let key = trimmed.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
             if key.is_empty() {
                 lines.push(line.to_string());
                 continue;
@@ -890,7 +886,12 @@ mod tests {
         // Temp must not remain as the only good file
         assert!(path.exists());
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("atomic_secret_xyz") || raw.contains("gasLimit") || raw.contains("424242") || raw.contains("alchemy"));
+        assert!(
+            raw.contains("atomic_secret_xyz")
+                || raw.contains("gasLimit")
+                || raw.contains("424242")
+                || raw.contains("alchemy")
+        );
         // Full Settings::save path
         let mut s = Settings::default();
         s.alchemy_api_key = "round_atomic_key".into();
@@ -902,7 +903,12 @@ mod tests {
         // leftover .tmp should not be the canonical path
         let tmp = path.with_extension("json.tmp");
         // after success, temp is renamed away
-        assert!(!tmp.exists() || std::fs::read_to_string(&path).unwrap().contains("round_atomic_key"));
+        assert!(
+            !tmp.exists()
+                || std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("round_atomic_key")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

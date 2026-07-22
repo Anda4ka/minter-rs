@@ -132,7 +132,10 @@ mod tests {
     #[test]
     fn fee_refresh_modes() {
         assert!(should_refresh_fees_at_fire(1, FeeRefreshMode::MainnetOnly));
-        assert!(!should_refresh_fees_at_fire(8453, FeeRefreshMode::MainnetOnly));
+        assert!(!should_refresh_fees_at_fire(
+            8453,
+            FeeRefreshMode::MainnetOnly
+        ));
         assert!(should_refresh_fees_at_fire(8453, FeeRefreshMode::Always));
         assert!(!should_refresh_fees_at_fire(1, FeeRefreshMode::Never));
         assert_eq!(FeeRefreshMode::parse("always"), FeeRefreshMode::Always);

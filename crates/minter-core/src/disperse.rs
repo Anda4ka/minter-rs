@@ -1,7 +1,7 @@
 //! Disperse native coin: one vault wallet → many destinations (fixed amount each).
 
 use alloy_primitives::{Address, Bytes, U256};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::gas::{self, bump_gas_after_intrinsic, is_intrinsic_gas_error};
 use crate::rpc::RpcClient;
@@ -96,7 +96,10 @@ pub async fn run_disperse(
     crate::rlog!("  From:        {:?}", from_addr);
     crate::rlog!("  To:          {} wallet(s)", destinations.len());
     crate::rlog!("  Amount each: {} ETH", fmt_eth(config.amount));
-    crate::rlog!("  Total value: {} ETH", fmt_eth(config.amount * U256::from(n)));
+    crate::rlog!(
+        "  Total value: {} ETH",
+        fmt_eth(config.amount * U256::from(n))
+    );
     crate::rlog!("  Chain ID:    {}", chain_id);
     crate::rlog!(
         "  Gas:         max={}gwei priority={}gwei limit={}",
@@ -386,9 +389,6 @@ async fn try_send_native(
         max_fee,
         max_priority_fee,
     };
-    let (raw, _hash) =
-        sign_transaction(from, &tx).map_err(|e| format!("sign: {e}"))?;
-    rpc.race_send(&raw)
-        .await
-        .map_err(|e| e.to_string())
+    let (raw, _hash) = sign_transaction(from, &tx).map_err(|e| format!("sign: {e}"))?;
+    rpc.race_send(&raw).await.map_err(|e| e.to_string())
 }

@@ -1,5 +1,5 @@
 use alloy_primitives::U256;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Convert a decimal amount string (e.g. `"0.08"`, `"1.5"`) into integer units
 /// with the given number of fractional digits (18 for ETH/wei).

@@ -212,7 +212,9 @@ pub fn build_client_with_cookie_jar_and_proxy(
     builder.build().context("failed to create HTTP client")
 }
 
-pub fn build_client_with_cookie_jar(cookie_jar: Arc<reqwest::cookie::Jar>) -> Result<reqwest::Client> {
+pub fn build_client_with_cookie_jar(
+    cookie_jar: Arc<reqwest::cookie::Jar>,
+) -> Result<reqwest::Client> {
     build_client_with_cookie_jar_and_proxy(cookie_jar, None)
 }
 
@@ -248,7 +250,9 @@ fn set_connected_account_cookie(session: &AuthSession, address: &Address) -> Res
             session.access_token
         );
         session.cookie_jar.add_cookie_str(&token_cookie, &gql_url);
-        session.cookie_jar.add_cookie_str(&token_cookie, &opensea_url);
+        session
+            .cookie_jar
+            .add_cookie_str(&token_cookie, &opensea_url);
         session.cookie_jar.add_cookie_str(
             "auth_access_hint=true; Path=/; Domain=.opensea.io; Secure; SameSite=None",
             &gql_url,
@@ -265,7 +269,10 @@ fn gql_request(client: &reqwest::Client) -> reqwest::RequestBuilder {
     client
         .post(GQL_URL)
         .header("content-type", "application/json")
-        .header("accept", "application/graphql-response+json, application/graphql+json, application/json")
+        .header(
+            "accept",
+            "application/graphql-response+json, application/graphql+json, application/json",
+        )
         .header("origin", OPENSEA_ORIGIN)
         .header("referer", format!("{}/", OPENSEA_ORIGIN))
         .header("x-app-id", "os2-web")
@@ -291,10 +298,10 @@ fn retry_after_secs(headers: &reqwest::header::HeaderMap, body: &str) -> u64 {
     }
     // OpenSea often embeds retry-after in JSON meta.
     if let Ok(j) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(secs) = j
-            .pointer("/meta/retry-after")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
-        {
+        if let Some(secs) = j.pointer("/meta/retry-after").and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        }) {
             return secs.max(1).min(60);
         }
     }
@@ -405,7 +412,7 @@ async fn siwe_auth_once(
         bail!(
             "Nonce failed: HTTP {} {}",
             nonce_status,
-crate::safe_truncate(&text, 300)
+            crate::safe_truncate(&text, 300)
         );
     }
     let nonce_data: serde_json::Value = nonce_resp.json().await?;
@@ -470,13 +477,13 @@ crate::safe_truncate(&text, 300)
                 "Verify failed: HTTP {} Too Many Requests retry-after={} {}",
                 verify_status,
                 if ra > 0 { ra } else { 1 },
-crate::safe_truncate(&text, 200)
+                crate::safe_truncate(&text, 200)
             );
         }
         bail!(
             "Verify failed: HTTP {} {}",
             verify_status,
-crate::safe_truncate(&text, 500)
+            crate::safe_truncate(&text, 500)
         );
     }
 
@@ -544,12 +551,18 @@ static DROP_CACHE: std::sync::OnceLock<
 const DROP_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(12);
 const DROP_MAX_ATTEMPTS: u32 = 4;
 
-fn drop_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, CollectionInfo)>> {
+fn drop_cache() -> &'static std::sync::Mutex<
+    std::collections::HashMap<String, (std::time::Instant, CollectionInfo)>,
+> {
     DROP_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 fn drop_cache_key(slug: &str, address: &Address) -> String {
-    format!("{}:{}", slug.to_lowercase(), format!("{:?}", address).to_lowercase())
+    format!(
+        "{}:{}",
+        slug.to_lowercase(),
+        format!("{:?}", address).to_lowercase()
+    )
 }
 
 fn is_retryable_drop_err(msg: &str) -> bool {
@@ -673,14 +686,22 @@ async fn collection_drop_info_once(
     if std::env::var("DEBUG").ok().as_deref() == Some("1") {
         let debug_file = debug_file_next_to_exe(&format!(
             "debug_collection_{}.json",
-            addr_str.replace("0x", "").chars().take(6).collect::<String>()
+            addr_str
+                .replace("0x", "")
+                .chars()
+                .take(6)
+                .collect::<String>()
         ));
         match std::fs::write(
             &debug_file,
             serde_json::to_string_pretty(&data).unwrap_or_else(|_| data.to_string()),
         ) {
             Ok(()) => crate::rlog!("Saved collection debug {}", debug_file.display()),
-            Err(e) => crate::rlog!("Failed to save collection debug {}: {}", debug_file.display(), e),
+            Err(e) => crate::rlog!(
+                "Failed to save collection debug {}: {}",
+                debug_file.display(),
+                e
+            ),
         }
     }
     if let Some(errors) = data.get("errors") {
@@ -803,9 +824,10 @@ fn merge_eligibility_stages(stages: &mut [StageInfo], eligibility_stages: &[Stag
             })
         });
         let type_idx = index_idx.or_else(|| {
-            stages.iter().enumerate().position(|(i, stage)| {
-                !used[i] && stage.stage_type == eligibility_stage.stage_type
-            })
+            stages
+                .iter()
+                .enumerate()
+                .position(|(i, stage)| !used[i] && stage.stage_type == eligibility_stage.stage_type)
         });
 
         if let Some(idx) = type_idx {
@@ -837,9 +859,10 @@ fn parse_stages(drop: &serde_json::Value) -> Result<Vec<StageInfo>> {
             .and_then(crate::amount::decimal_string_to_f64)
             .or_else(|| {
                 // Display-only fallback if unit was unparseable as wei.
-                price_token
-                    .and_then(|t| t.get("unit"))
-                    .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|u| u.parse().ok())))
+                price_token.and_then(|t| t.get("unit")).and_then(|v| {
+                    v.as_f64()
+                        .or_else(|| v.as_str().and_then(|u| u.parse().ok()))
+                })
             });
         let payment_token_contract = price_token
             .and_then(|t| t.get("contractAddress"))
@@ -939,7 +962,8 @@ pub async fn fetch_mint_calldata(
         if text.contains("PERSISTED_QUERY_NOT_FOUND") {
             let mut fallback_req = gql_request(client);
             if !session.access_token.is_empty() {
-                fallback_req = fallback_req.header("authorization", format!("Bearer {}", session.access_token));
+                fallback_req = fallback_req
+                    .header("authorization", format!("Bearer {}", session.access_token));
             }
             let fallback_resp = fallback_req
                 .json(&payload)
@@ -958,13 +982,13 @@ pub async fn fetch_mint_calldata(
             bail!(
                 "Mint action failed: OpenSea persisted query hash expired and inline fallback failed: HTTP {} {}",
                 fallback_status,
-crate::safe_truncate(&fallback_text, 500)
+                crate::safe_truncate(&fallback_text, 500)
             );
         }
         bail!(
             "Mint action failed: HTTP {} {}",
             status,
-crate::safe_truncate(&text, 500)
+            crate::safe_truncate(&text, 500)
         );
     }
 
@@ -1081,7 +1105,9 @@ pub fn stage_eligibility_label(stage: &StageInfo) -> &'static str {
         Some(true) => "eligible",
         Some(false) => "not eligible",
         None if stage.stage_type == "PUBLIC_SALE" => "eligible (public)",
-        None if stage.stage_type == "SIGNED_PRESALE" && stage_wallet_limit(stage).is_some() => "check on mint",
+        None if stage.stage_type == "SIGNED_PRESALE" && stage_wallet_limit(stage).is_some() => {
+            "check on mint"
+        }
         None => "unknown",
     }
 }

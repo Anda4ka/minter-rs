@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, Bytes, U256};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::abi::function_selector;
 use crate::gas;
@@ -134,7 +134,11 @@ async fn fetch_token_ids_alchemy(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("Alchemy NFT API {}: {}", status, crate::safe_truncate(&text, 300));
+            bail!(
+                "Alchemy NFT API {}: {}",
+                status,
+                crate::safe_truncate(&text, 300)
+            );
         }
         let data: serde_json::Value =
             serde_json::from_str(&text).context("failed to parse Alchemy NFT API response")?;
@@ -195,10 +199,9 @@ pub async fn run_sweep(
     let is_erc721 = supports_interface(rpc, &config.contract, ERC721_INTERFACE_ID)
         .await
         .unwrap_or(true);
-    let has_enumerable =
-        supports_interface(rpc, &config.contract, ERC721_ENUMERABLE_INTERFACE_ID)
-            .await
-            .unwrap_or(false);
+    let has_enumerable = supports_interface(rpc, &config.contract, ERC721_ENUMERABLE_INTERFACE_ID)
+        .await
+        .unwrap_or(false);
 
     if !is_erc721 {
         crate::rlog!("Warning: contract may not be ERC721, proceeding anyway");
@@ -209,9 +212,7 @@ pub async fn run_sweep(
 
     if !has_enumerable {
         if can_use_alchemy {
-            crate::rlog!(
-                "No ERC721Enumerable — will use Alchemy NFT API to discover token IDs"
-            );
+            crate::rlog!("No ERC721Enumerable — will use Alchemy NFT API to discover token IDs");
         } else {
             crate::rlog!(
                 "Warning: no ERC721Enumerable and no Alchemy API key — cannot auto-discover token IDs"
@@ -282,7 +283,9 @@ pub async fn run_sweep(
         // Saturating conversion: a broken/malicious contract can return a huge
         // balanceOf which would panic `to::<u128>()`. Cap enumeration too.
         const MAX_ENUMERATE: u64 = 10_000;
-        let count = u64::try_from(balance).unwrap_or(u64::MAX).min(MAX_ENUMERATE);
+        let count = u64::try_from(balance)
+            .unwrap_or(u64::MAX)
+            .min(MAX_ENUMERATE);
         crate::rlog!("  Owns {} NFT(s)", count);
 
         let mut token_ids: Vec<U256> = Vec::new();
@@ -507,7 +510,11 @@ pub async fn run_sweep(
                             nonce = n;
                         }
                         Err(ne) => {
-                            crate::rlog!("  WARN: nonce re-fetch failed: {}, using {}+1", ne, nonce);
+                            crate::rlog!(
+                                "  WARN: nonce re-fetch failed: {}, using {}+1",
+                                ne,
+                                nonce
+                            );
                             nonce += 1;
                         }
                     }
@@ -785,10 +792,7 @@ mod fmt_eth_tests {
         assert_eq!(fmt_eth(one), "1.000000");
         assert_eq!(fmt_eth(one + one / U256::from(2u64)), "1.500000");
         // 0.08 ETH
-        assert_eq!(
-            fmt_eth(U256::from(80_000_000_000_000_000u64)),
-            "0.080000"
-        );
+        assert_eq!(fmt_eth(U256::from(80_000_000_000_000_000u64)), "0.080000");
         assert_eq!(fmt_eth(U256::ZERO), "0.000000");
     }
 

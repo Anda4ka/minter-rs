@@ -376,7 +376,10 @@ mod tests {
 
     #[test]
     fn parse_socks5() {
-        assert_eq!(parse_proxy("socks5://host:1080").unwrap(), "socks5://host:1080");
+        assert_eq!(
+            parse_proxy("socks5://host:1080").unwrap(),
+            "socks5://host:1080"
+        );
     }
 
     #[test]

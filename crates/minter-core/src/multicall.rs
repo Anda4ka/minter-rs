@@ -6,17 +6,18 @@
 use alloy::sol;
 use alloy::sol_types::SolCall;
 use alloy_primitives::{Address, Bytes, U256};
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 
 use crate::abi::build_calldata;
 use crate::amount;
 use crate::gas::{self, resolve_call_gas};
 use crate::rpc::RpcClient;
-use crate::sign::{sign_transaction, shorten_address, shorten_hash, BuiltTx};
+use crate::sign::{BuiltTx, shorten_address, shorten_hash, sign_transaction};
 use crate::types::{GasParams, MintResult, Signer, WalletStatus};
 
 /// Canonical Multicall3 deployment (same address on most EVM chains).
-pub const MULTICALL3: Address = alloy_primitives::address!("0xcA11bde05977b3631167028862bE2a173976CA11");
+pub const MULTICALL3: Address =
+    alloy_primitives::address!("0xcA11bde05977b3631167028862bE2a173976CA11");
 
 sol! {
     /// https://github.com/mds1/multicall
@@ -133,11 +134,7 @@ pub fn encode_aggregate3_value(steps: &[MulticallStep]) -> anyhow::Result<(Bytes
 }
 
 /// Run multicall from a single signer.
-pub async fn run_multicall(
-    from: &Signer,
-    rpc: &RpcClient,
-    config: &MulticallConfig,
-) -> MintResult {
+pub async fn run_multicall(from: &Signer, rpc: &RpcClient, config: &MulticallConfig) -> MintResult {
     let addr = from.address();
     let multicall = if config.multicall == Address::ZERO {
         MULTICALL3
@@ -185,10 +182,7 @@ pub async fn run_multicall(
         } else {
             s.label.clone()
         };
-        match rpc
-            .eth_call(&addr, &s.target, &s.call_data)
-            .await
-        {
+        match rpc.eth_call(&addr, &s.target, &s.call_data).await {
             // eth_call with value is not always supported; use estimate_gas as proxy when value>0
             Ok(_) => {
                 crate::rlog!("    [{}] EOA call OK", label);
@@ -310,10 +304,7 @@ pub async fn run_multicall(
                     " | EOA preflight OK but Multicall3 fails → contract likely rejects non-EOA msg.sender",
                 );
             } else {
-                err.push_str(&format!(
-                    " | EOA preflight: {}",
-                    eoa_notes.join(", ")
-                ));
+                err.push_str(&format!(" | EOA preflight: {}", eoa_notes.join(", ")));
             }
             return MintResult {
                 address: addr,
@@ -340,10 +331,7 @@ pub async fn run_multicall(
             status: WalletStatus::DryRunOk,
             gas_used: Some(gas_estimate),
             block_number: None,
-            error: Some(format!(
-                "{note} | {}",
-                eoa_notes.join(", ")
-            )),
+            error: Some(format!("{note} | {}", eoa_notes.join(", "))),
         };
     }
 
@@ -431,7 +419,9 @@ pub async fn run_multicall(
                     status: WalletStatus::Failed,
                     gas_used: Some(info.gas_used),
                     block_number: Some(info.block_number),
-                    error: Some("reverted (one of the calls failed — msg.sender is Multicall3)".into()),
+                    error: Some(
+                        "reverted (one of the calls failed — msg.sender is Multicall3)".into(),
+                    ),
                 }
             }
         }

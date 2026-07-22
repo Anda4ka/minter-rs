@@ -82,12 +82,9 @@ pub fn write_mint_results(run: &MintRunExport) -> Result<(PathBuf, PathBuf)> {
     let csv_path = dir.join(format!("{}.csv", base));
 
     let json = serde_json::to_string_pretty(run).context("serialize mint results")?;
-    std::fs::write(&json_path, json)
-        .with_context(|| format!("write {}", json_path.display()))?;
+    std::fs::write(&json_path, json).with_context(|| format!("write {}", json_path.display()))?;
 
-    let mut csv = String::from(
-        "address,status,tx_hash,gas_used,block_number,error,proxy\n",
-    );
+    let mut csv = String::from("address,status,tx_hash,gas_used,block_number,error,proxy\n");
     for w in &run.wallets {
         csv.push_str(&format!(
             "{},{},{},{},{},{},{}\n",
@@ -212,8 +209,7 @@ pub fn write_wl_eligibility_export(
         not_body.push_str(a.trim());
         not_body.push('\n');
     }
-    std::fs::write(&not_path, not_body)
-        .with_context(|| format!("write {}", not_path.display()))?;
+    std::fs::write(&not_path, not_body).with_context(|| format!("write {}", not_path.display()))?;
 
     Ok(WlExportPaths {
         dir,

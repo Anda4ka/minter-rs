@@ -720,7 +720,8 @@ async fn run_mint(
     result.map_err(|e| {
         let s = e.to_string();
         let lower = s.to_lowercase();
-        if lower.contains("chain") && (lower.contains("mismatch") || lower.contains("wrong network"))
+        if lower.contains("chain")
+            && (lower.contains("mismatch") || lower.contains("wrong network"))
         {
             minter_core::chain_mismatch_message("collection", "RPC")
         } else if lower.contains("401") || lower.contains("unauthorized") {
@@ -830,10 +831,7 @@ async fn warm_auth(
 ) -> Result<Vec<minter_core::AuthTestRow>, String> {
     let session = state.session.lock().clone();
     let addrs = input.and_then(|i| i.wallet_addresses);
-    session
-        .warm_auth(addrs)
-        .await
-        .map_err(|e| e.to_string())
+    session.warm_auth(addrs).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1073,7 +1071,10 @@ fn set_dry_run(state: State<'_, Arc<AppState>>, dry_run: bool) -> Result<bool, S
 
 /// Native file picker (keys / proxy list).
 #[tauri::command]
-fn pick_file(title: Option<String>, filters: Option<Vec<String>>) -> Result<Option<String>, String> {
+fn pick_file(
+    title: Option<String>,
+    filters: Option<Vec<String>>,
+) -> Result<Option<String>, String> {
     let mut d = rfd::FileDialog::new().set_title(title.as_deref().unwrap_or("Open file"));
     let exts: Vec<String> = filters.unwrap_or_else(|| vec!["txt".into(), "*".into()]);
     let refs: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
@@ -1148,10 +1149,7 @@ fn load_wallet_meta(state: State<'_, Arc<AppState>>) -> Result<WalletMetaFile, S
 }
 
 #[tauri::command]
-fn save_wallet_meta(
-    state: State<'_, Arc<AppState>>,
-    file: WalletMetaFile,
-) -> Result<(), String> {
+fn save_wallet_meta(state: State<'_, Arc<AppState>>, file: WalletMetaFile) -> Result<(), String> {
     let path = wallet_meta_path(&state);
     let mut out = file;
     out.version = 1;
@@ -1286,10 +1284,7 @@ fn load_runs_history(state: State<'_, Arc<AppState>>) -> Result<RunsHistoryFile,
 }
 
 #[tauri::command]
-fn save_runs_history(
-    state: State<'_, Arc<AppState>>,
-    file: RunsHistoryFile,
-) -> Result<(), String> {
+fn save_runs_history(state: State<'_, Arc<AppState>>, file: RunsHistoryFile) -> Result<(), String> {
     let path = runs_history_path(&state);
     let mut out = file;
     out.version = 1;

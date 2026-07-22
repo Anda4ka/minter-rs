@@ -131,7 +131,8 @@ pub fn flashbots_status_label(status: &str, error: Option<&str>) -> &'static str
     if st.contains("CONFIRM") || e.contains("confirmed") {
         return "confirmed";
     }
-    if e.contains("sim ok") || (st.contains("DRY") && e.contains("callbundle") && !e.contains("fail"))
+    if e.contains("sim ok")
+        || (st.contains("DRY") && e.contains("callbundle") && !e.contains("fail"))
     {
         return "sim_ok";
     }
@@ -177,7 +178,10 @@ mod tests {
 
     #[test]
     fn parse_unix_seconds() {
-        assert_eq!(parse_at_time_unix("1700000000").unwrap(), Some(1_700_000_000));
+        assert_eq!(
+            parse_at_time_unix("1700000000").unwrap(),
+            Some(1_700_000_000)
+        );
     }
 
     #[test]
@@ -211,10 +215,7 @@ mod tests {
             "0xBBBBbbbbBBBBbbbbBBBBbbbbBBBBbbbbBBBBbbbb".into(),
         ];
         let mut m = HashMap::new();
-        m.insert(
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            3u32,
-        );
+        m.insert("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(), 3u32);
         let out = expand_wallet_quantities(1, &addrs, Some(&m));
         assert_eq!(
             out.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
@@ -230,10 +231,7 @@ mod tests {
     fn qty_drops_zero() {
         let addrs = vec!["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()];
         let mut m = HashMap::new();
-        m.insert(
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            0u32,
-        );
+        m.insert("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(), 0u32);
         let out = expand_wallet_quantities(2, &addrs, Some(&m));
         assert!(out.is_empty());
     }

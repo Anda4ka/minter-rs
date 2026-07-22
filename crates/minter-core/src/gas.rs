@@ -64,12 +64,7 @@ pub fn chain_needs_elevated_gas(chain_id: u64) -> bool {
 }
 
 /// Apply multiplier + floors for a raw estimate.
-pub fn apply_gas_limit(
-    estimated: u64,
-    gas_multiplier: f64,
-    chain_id: u64,
-    min_floor: u64,
-) -> u64 {
+pub fn apply_gas_limit(estimated: u64, gas_multiplier: f64, chain_id: u64, min_floor: u64) -> u64 {
     const MIN_EOA: u64 = 21_000;
     const L2_FLOOR: u64 = 150_000;
     const CAP: u64 = 15_000_000;
@@ -174,7 +169,6 @@ pub fn multiplier_to_bps(m: f64) -> u64 {
 pub fn mul_bps(value: U256, bps: u64) -> U256 {
     value.saturating_mul(U256::from(bps)) / U256::from(10_000u64)
 }
-
 
 /// Parse gwei decimal string → wei via integer math (9 fractional digits).
 pub fn gwei_str_to_wei(s: &str) -> anyhow::Result<U256> {
@@ -313,14 +307,8 @@ mod tests {
 
     #[test]
     fn gwei_str_to_wei_exact() {
-        assert_eq!(
-            gwei_str_to_wei("3").unwrap(),
-            U256::from(3_000_000_000u64)
-        );
-        assert_eq!(
-            gwei_str_to_wei("0.1").unwrap(),
-            U256::from(100_000_000u64)
-        );
+        assert_eq!(gwei_str_to_wei("3").unwrap(), U256::from(3_000_000_000u64));
+        assert_eq!(gwei_str_to_wei("0.1").unwrap(), U256::from(100_000_000u64));
         assert_eq!(
             gwei_str_to_wei("1.5").unwrap(),
             U256::from(1_500_000_000u64)

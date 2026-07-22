@@ -127,10 +127,7 @@ pub struct FileTeeReporter {
 }
 
 impl FileTeeReporter {
-    pub fn create(
-        inner: std::sync::Arc<dyn MintReporter>,
-        slug: &str,
-    ) -> std::io::Result<Self> {
+    pub fn create(inner: std::sync::Arc<dyn MintReporter>, slug: &str) -> std::io::Result<Self> {
         let dir = std::path::PathBuf::from("logs");
         std::fs::create_dir_all(&dir)?;
         let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
@@ -150,7 +147,11 @@ impl FileTeeReporter {
             "# mint log slug={slug} started={}",
             chrono::Utc::now().to_rfc3339()
         );
-        Ok(Self { inner, file: Mutex::new(file), path })
+        Ok(Self {
+            inner,
+            file: Mutex::new(file),
+            path,
+        })
     }
 }
 
@@ -192,7 +193,10 @@ impl CollectingReporter {
     }
 
     pub fn drain(&self) -> Vec<MintEvent> {
-        self.events.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
+        self.events
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
     }
 }
 
@@ -231,9 +235,6 @@ impl MintReporter for StdoutReporter {
         let detail = event.detail.as_deref().unwrap_or("");
         let err = event.error.as_deref().unwrap_or("");
         let tx = event.tx_hash.as_deref().unwrap_or("");
-        println!(
-            "[{}] {} {} {} {}",
-            addr, status, detail, tx, err
-        );
+        println!("[{}] {} {} {} {}", addr, status, detail, tx, err);
     }
 }

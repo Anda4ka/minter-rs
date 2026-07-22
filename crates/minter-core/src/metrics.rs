@@ -122,11 +122,10 @@ impl WalletMetrics {
 
     fn is_confirmed(&self) -> bool {
         self.error.is_none()
-            && (self.tx_hash.is_some()
-                || {
-                    let s = self.status.to_lowercase();
-                    s.contains("confirm") || s == "ok"
-                })
+            && (self.tx_hash.is_some() || {
+                let s = self.status.to_lowercase();
+                s.contains("confirm") || s == "ok"
+            })
     }
 }
 
@@ -178,7 +177,11 @@ impl MetricsCollector {
     ) -> Self {
         let slug = slug.into();
         let t0_unix_ms = unix_ms_now();
-        let run_id = format!("{}_{}", if slug.is_empty() { "run" } else { &slug }, t0_unix_ms);
+        let run_id = format!(
+            "{}_{}",
+            if slug.is_empty() { "run" } else { &slug },
+            t0_unix_ms
+        );
         let metrics = RunMetrics {
             run_id,
             kind: kind.into(),
@@ -278,7 +281,10 @@ mod tests {
         assert_eq!(error_class("insufficient funds for gas"), "funds");
         assert_eq!(error_class("execution reverted: InvalidProof"), "fatal");
         assert_eq!(error_class("nonce too low"), "retryable");
-        assert_eq!(error_class("replacement transaction underpriced"), "retryable");
+        assert_eq!(
+            error_class("replacement transaction underpriced"),
+            "retryable"
+        );
         assert_eq!(error_class("request timeout"), "rpc");
         assert_eq!(error_class("RPC connection reset"), "rpc");
         assert_eq!(error_class("user canceled mint"), "cancel");

@@ -54,8 +54,6 @@ impl RpcTuning {
     }
 }
 
-
-
 pub struct RpcClient {
     client: reqwest::Client,
     urls: Vec<String>,
@@ -136,13 +134,13 @@ impl RpcClient {
         if !status.is_success() {
             bail!(
                 "RPC {method} HTTP {status} via {short}: {}",
-crate::safe_truncate(&text, 240)
+                crate::safe_truncate(&text, 240)
             );
         }
         let data: serde_json::Value = serde_json::from_str(&text).with_context(|| {
             format!(
                 "RPC {method}: bad JSON from {short}: {}",
-crate::safe_truncate(&text, 240)
+                crate::safe_truncate(&text, 240)
             )
         })?;
         if let Some(error) = data.get("error") {
@@ -247,11 +245,7 @@ crate::safe_truncate(&text, 240)
         for (url, handle) in results {
             match handle.await {
                 Ok((elapsed, true)) => {
-                    crate::rlog!(
-                        "RPC OK {}ms {}",
-                        elapsed.as_millis(),
-                        Self::short_url(&url)
-                    );
+                    crate::rlog!("RPC OK {}ms {}", elapsed.as_millis(), Self::short_url(&url));
                     probed.push((url, elapsed));
                 }
                 Ok((elapsed, false)) => {
@@ -313,14 +307,14 @@ crate::safe_truncate(&text, 240)
                 "RPC HTTP {} from {}: {}",
                 status,
                 Self::short_url(url),
-crate::safe_truncate(&text, 240)
+                crate::safe_truncate(&text, 240)
             );
         }
         let data: serde_json::Value = serde_json::from_str(&text).with_context(|| {
             format!(
                 "failed to parse RPC response from {}: {}",
                 Self::short_url(url),
-crate::safe_truncate(&text, 240)
+                crate::safe_truncate(&text, 240)
             )
         })?;
         if let Some(error) = data.get("error") {
@@ -347,7 +341,12 @@ crate::safe_truncate(&text, 240)
         }
         let mut errors: Vec<String> = Vec::new();
         for (i, url) in self.urls.iter().take(max_urls).enumerate() {
-            match tokio::time::timeout(self.tuning.call_timeout, self.rpc_call(url, method, params.clone())).await {
+            match tokio::time::timeout(
+                self.tuning.call_timeout,
+                self.rpc_call(url, method, params.clone()),
+            )
+            .await
+            {
                 Ok(Ok(result)) => return Ok(result),
                 Ok(Err(e)) => {
                     let msg = format!("{} via {}: {}", method, Self::short_url(url), e);
@@ -395,7 +394,12 @@ crate::safe_truncate(&text, 240)
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let urls: Vec<String> = self.urls.iter().take(self.tuning.max_nodes).cloned().collect();
+        let urls: Vec<String> = self
+            .urls
+            .iter()
+            .take(self.tuning.max_nodes)
+            .cloned()
+            .collect();
         if urls.is_empty() {
             bail!("No RPC URLs configured (method {method})");
         }
@@ -459,9 +463,9 @@ crate::safe_truncate(&text, 240)
             } else {
                 match set.join_next().await {
                     Some(Ok((_url, Ok(val)))) => return Ok(val),
-                    Some(Ok((url, Err(e)))) => errors.push(format!(
-                        "{} via {}: {}", method, Self::short_url(&url), e
-                    )),
+                    Some(Ok((url, Err(e)))) => {
+                        errors.push(format!("{} via {}: {}", method, Self::short_url(&url), e))
+                    }
                     Some(Err(e)) => errors.push(format!("{method} task join: {e}")),
                     None => break,
                 }
@@ -575,9 +579,7 @@ crate::safe_truncate(&text, 240)
                 "data": format!("0x{}", hex::encode(data)),
             })
         };
-        let result = self
-            .call("eth_call", json!([tx, "latest"]))
-            .await?;
+        let result = self.call("eth_call", json!([tx, "latest"])).await?;
         let hex_str = result.as_str().context("eth_call result not a string")?;
         Ok(Bytes::from(
             hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str)).context("invalid hex")?,
@@ -651,7 +653,12 @@ crate::safe_truncate(&text, 240)
     /// the errors from the others (`losers`). Useful for latency/observability
     /// (which node is winning broadcasts) without changing the hash contract.
     pub async fn send_raw_transaction_report(&self, raw: &Bytes) -> Result<SendReport> {
-        let urls: Vec<String> = self.urls.iter().take(self.tuning.max_nodes).cloned().collect();
+        let urls: Vec<String> = self
+            .urls
+            .iter()
+            .take(self.tuning.max_nodes)
+            .cloned()
+            .collect();
         let max_attempts = urls.len();
         if max_attempts == 0 {
             bail!("No RPC URLs configured");
@@ -883,7 +890,14 @@ mod tests {
             "blockNumber": "0x1234"
         });
         let info = parse_receipt(&receipt);
-        assert_eq!(info, ReceiptInfo { success: true, gas_used: 0x5208, block_number: 0x1234 });
+        assert_eq!(
+            info,
+            ReceiptInfo {
+                success: true,
+                gas_used: 0x5208,
+                block_number: 0x1234
+            }
+        );
     }
 
     #[test]
@@ -903,7 +917,14 @@ mod tests {
     fn parse_receipt_missing_fields() {
         let receipt = json!({});
         let info = parse_receipt(&receipt);
-        assert_eq!(info, ReceiptInfo { success: false, gas_used: 0, block_number: 0 });
+        assert_eq!(
+            info,
+            ReceiptInfo {
+                success: false,
+                gas_used: 0,
+                block_number: 0
+            }
+        );
     }
 
     #[test]
@@ -984,7 +1005,8 @@ mod tests {
         // Lead node returns a JSON-RPC error quickly → fail over to node 2
         // without waiting for the hedge delay.
         let bad = spawn_mock(
-            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"boom\"}}".to_string(),
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"boom\"}}"
+                .to_string(),
             Duration::ZERO,
         );
         let good = spawn_mock(ok_body("0x7"), Duration::ZERO);
@@ -1039,7 +1061,8 @@ mod tests {
         // the winner and carry the loser's error.
         let hash_hex = format!("0x{}", "11".repeat(32));
         let bad = spawn_mock(
-            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"nope\"}}".to_string(),
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"nope\"}}"
+                .to_string(),
             Duration::ZERO,
         );
         let good = spawn_mock(ok_body(&hash_hex), Duration::ZERO);
@@ -1054,4 +1077,3 @@ mod tests {
         assert!(report.losers[0].contains("nope"));
     }
 }
-

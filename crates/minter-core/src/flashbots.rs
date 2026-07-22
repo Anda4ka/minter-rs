@@ -3,14 +3,14 @@
 //! Auth: `X-Flashbots-Signature: <addr>:<sig>` where sig is EIP-191 personal sign of
 //! `keccak256(json_body)` (same as official Flashbots + ethers `signMessage(id(body))`).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use alloy::signers::SignerSync;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
-use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use anyhow::{Context, Result, bail};
+use serde_json::{Value, json};
 
 use crate::types::Signer;
 
@@ -119,12 +119,7 @@ impl FlashbotsClient {
         Ok(format!("{:?}:{}", addr, sig_hex))
     }
 
-    async fn rpc(
-        &self,
-        auth: &Signer,
-        method: &str,
-        params: Value,
-    ) -> Result<Value> {
+    async fn rpc(&self, auth: &Signer, method: &str, params: Value) -> Result<Value> {
         let body_obj = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -150,7 +145,7 @@ impl FlashbotsClient {
         if !status.is_success() {
             bail!(
                 "Flashbots HTTP {status}: {}",
-crate::safe_truncate(&text, 400)
+                crate::safe_truncate(&text, 400)
             );
         }
         let data: Value = serde_json::from_str(&text).context("flashbots json")?;
@@ -240,7 +235,7 @@ crate::safe_truncate(&text, 400)
                     crate::rlog!(
                         "  sendBundle OK block {} resp={}",
                         target,
-crate::safe_truncate(&last_resp, 120)
+                        crate::safe_truncate(&last_resp, 120)
                     );
                 }
                 Err(e) => {
@@ -296,8 +291,8 @@ mod tests {
     fn auth_header_format() {
         // ephemeral key
         let key_bytes = [7u8; 32];
-        let signer = alloy::signers::local::LocalSigner::from_bytes(&key_bytes.into())
-            .expect("signer");
+        let signer =
+            alloy::signers::local::LocalSigner::from_bytes(&key_bytes.into()).expect("signer");
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"eth_sendBundle","params":[]}"#;
         let h = FlashbotsClient::sign_auth_header(&signer, body).expect("sign");
         assert!(h.contains(':'));
@@ -313,8 +308,8 @@ mod tests {
     #[test]
     fn auth_header_signs_hex_string_of_body_hash() {
         let key_bytes = [9u8; 32];
-        let signer = alloy::signers::local::LocalSigner::from_bytes(&key_bytes.into())
-            .expect("signer");
+        let signer =
+            alloy::signers::local::LocalSigner::from_bytes(&key_bytes.into()).expect("signer");
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"eth_sendBundle","params":[]}"#;
         let h = FlashbotsClient::sign_auth_header(&signer, body).expect("sign");
         let (addr_s, sig_s) = h.split_once(':').expect("format");

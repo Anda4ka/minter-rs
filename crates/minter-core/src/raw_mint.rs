@@ -2,8 +2,8 @@ use alloy_primitives::{Address, U256};
 use anyhow::{Context, Result};
 
 use crate::abi::{
-    extract_selectors, is_mint_like_signature, lookup_4byte, parse_eip1167_implementation,
-    build_calldata, EIP1967_IMPLEMENTATION_SLOT, KNOWN_MINT_SELECTORS,
+    EIP1967_IMPLEMENTATION_SLOT, KNOWN_MINT_SELECTORS, build_calldata, extract_selectors,
+    is_mint_like_signature, lookup_4byte, parse_eip1167_implementation,
 };
 use crate::flashbots::{self, BundleTx, FlashbotsClient, FlashbotsConfig, MAINNET_CHAIN_ID};
 use crate::gas::{self, apply_gas_limit};
@@ -161,9 +161,7 @@ pub async fn discover_functions_on_chain(
             .await
             .with_context(|| format!("failed to get implementation bytecode {impl_addr:?}"))?;
         if impl_code.is_empty() {
-            anyhow::bail!(
-                "Proxy ({kind}) points to {impl_addr:?} but implementation has no code"
-            );
+            anyhow::bail!("Proxy ({kind}) points to {impl_addr:?} but implementation has no code");
         }
         code_addr = impl_addr;
         code = impl_code.to_vec();
@@ -512,10 +510,7 @@ pub async fn run_raw_mint(
 
     // —— Flashbots dry: callBundle ——
     if config.use_flashbots && config.dry_run {
-        let pieces: Vec<BundleTx> = prepared
-            .iter()
-            .filter_map(|(_, p, _)| p.clone())
-            .collect();
+        let pieces: Vec<BundleTx> = prepared.iter().filter_map(|(_, p, _)| p.clone()).collect();
         if pieces.is_empty() {
             return prepared.into_iter().map(|(_, _, r)| r).collect();
         }
@@ -688,10 +683,7 @@ pub async fn run_raw_mint(
     }
 
     // —— Flashbots live ——
-    let pieces: Vec<BundleTx> = prepared
-        .iter()
-        .filter_map(|(_, p, _)| p.clone())
-        .collect();
+    let pieces: Vec<BundleTx> = prepared.iter().filter_map(|(_, p, _)| p.clone()).collect();
     if pieces.is_empty() {
         return prepared.into_iter().map(|(_, _, r)| r).collect();
     }
@@ -794,9 +786,7 @@ pub async fn run_raw_mint(
                     status: WalletStatus::Sent,
                     gas_used: None,
                     block_number: None,
-                    error: Some(format!(
-                        "submitted — not included (receipt timeout: {e})"
-                    )),
+                    error: Some(format!("submitted — not included (receipt timeout: {e})")),
                 });
             }
         }

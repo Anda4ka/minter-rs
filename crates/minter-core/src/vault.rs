@@ -96,19 +96,16 @@ impl Vault {
         let tmp_path = PathBuf::from(tmp_path);
 
         {
-            let mut file = std::fs::File::create(&tmp_path).with_context(|| {
-                format!("failed to create vault temp {}", tmp_path.display())
-            })?;
+            let mut file = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("failed to create vault temp {}", tmp_path.display()))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))
                     .context("failed to set vault temp permissions")?;
             }
-            file.write_all(data)
-                .context("failed to write vault temp")?;
-            file.sync_all()
-                .context("failed to fsync vault temp")?;
+            file.write_all(data).context("failed to write vault temp")?;
+            file.sync_all().context("failed to fsync vault temp")?;
         }
 
         #[cfg(unix)]
@@ -214,7 +211,10 @@ impl Vault {
 
     pub fn decrypt_keys(&self, password: &str) -> Result<Vec<zeroize::Zeroizing<String>>> {
         let entries = self.read_entries(password)?;
-        Ok(entries.iter().map(|e| zeroize::Zeroizing::new(e.key.clone())).collect())
+        Ok(entries
+            .iter()
+            .map(|e| zeroize::Zeroizing::new(e.key.clone()))
+            .collect())
     }
 
     /// Import private keys from free-form text (one key per line; `#` comments ok).

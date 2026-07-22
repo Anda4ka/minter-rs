@@ -9,12 +9,12 @@
 //! Does **not** gate on `getMintStatus` / `estimate_gas` at open.
 //! Probe helpers remain for UI status only.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::{Address, B256, Bytes, U256};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
@@ -23,8 +23,8 @@ use crate::gas;
 use crate::mint_ops::parse_at_time_unix;
 use crate::progress::{MintEvent, MintReporter};
 use crate::rpc::RpcClient;
-use crate::safety_policy::{should_refresh_fees_at_fire, FeeRefreshMode};
-use crate::sign::{sign_transaction, shorten_hash, BuiltTx};
+use crate::safety_policy::{FeeRefreshMode, should_refresh_fees_at_fire};
+use crate::sign::{BuiltTx, shorten_hash, sign_transaction};
 use crate::types::{GasParams, MintResult, Signer, WalletStatus};
 
 /// Default gas limit when UI leaves it empty (Hoodies winners used ~450k–650k).
@@ -125,7 +125,9 @@ pub(crate) fn u256_to_i64_sat(v: U256) -> i64 {
 
 /// Saturating U256 → u8 (phase type words from arbitrary contracts).
 fn u256_to_u8_sat(v: U256) -> u8 {
-    u64::try_from(v).map(|n| n.min(u8::MAX as u64) as u8).unwrap_or(u8::MAX)
+    u64::try_from(v)
+        .map(|n| n.min(u8::MAX as u64) as u8)
+        .unwrap_or(u8::MAX)
 }
 
 fn now_unix() -> i64 {
@@ -178,7 +180,10 @@ async fn sleep_until_unix(target: i64, cancel: &Option<Arc<AtomicBool>>) -> Resu
 }
 
 /// Fine-grained wait for fire: target is unix **seconds**; spins last ~20ms.
-async fn sleep_until_fire(target_unix: i64, cancel: &Option<Arc<AtomicBool>>) -> Result<(), String> {
+async fn sleep_until_fire(
+    target_unix: i64,
+    cancel: &Option<Arc<AtomicBool>>,
+) -> Result<(), String> {
     let target_ms = target_unix.saturating_mul(1000);
     loop {
         if cancelled(cancel) {
@@ -503,7 +508,10 @@ pub async fn run_raw_sniper(
                 if left % 10 == 0 || left <= 5 {
                     report(
                         &reporter,
-                        MintEvent::message(format!("clock: prep in {left}s · fire in {}s", at - now)),
+                        MintEvent::message(format!(
+                            "clock: prep in {left}s · fire in {}s",
+                            at - now
+                        )),
                     );
                 }
                 if let Err(e) = sleep_until_unix((now + 1).min(prep_at), &cancel).await {
@@ -678,7 +686,10 @@ pub async fn run_raw_sniper(
         }
         report(
             &reporter,
-            MintEvent::phase("done", format!("Dry-run pre-sign OK: {}/{}", results.len(), signers.len())),
+            MintEvent::phase(
+                "done",
+                format!("Dry-run pre-sign OK: {}/{}", results.len(), signers.len()),
+            ),
         );
         return results;
     }
@@ -742,8 +753,7 @@ pub async fn run_raw_sniper(
                         );
                         let mut resign_ok = 0usize;
                         for ps in prepared.iter_mut() {
-                            let Some(signer) =
-                                signers.iter().find(|s| s.address() == ps.address)
+                            let Some(signer) = signers.iter().find(|s| s.address() == ps.address)
                             else {
                                 continue;
                             };
@@ -776,17 +786,12 @@ pub async fn run_raw_sniper(
                         }
                         report(
                             &reporter,
-                            MintEvent::message(format!(
-                                "re-signed {resign_ok}/{}",
-                                prepared.len()
-                            )),
+                            MintEvent::message(format!("re-signed {resign_ok}/{}", prepared.len())),
                         );
                     } else {
                         report(
                             &reporter,
-                            MintEvent::message(
-                                "fee refresh: no increase — using prep signatures",
-                            ),
+                            MintEvent::message("fee refresh: no increase — using prep signatures"),
                         );
                     }
                 }
@@ -1029,9 +1034,15 @@ mod tests {
     #[test]
     fn parse_sniper_at_time_forms() {
         assert_eq!(parse_sniper_at_time(None).unwrap(), None);
-        assert_eq!(parse_sniper_at_time(Some("1700000000")).unwrap(), Some(1_700_000_000));
+        assert_eq!(
+            parse_sniper_at_time(Some("1700000000")).unwrap(),
+            Some(1_700_000_000)
+        );
         // milliseconds are normalized to seconds
-        assert_eq!(parse_sniper_at_time(Some("1700000000000")).unwrap(), Some(1_700_000_000));
+        assert_eq!(
+            parse_sniper_at_time(Some("1700000000000")).unwrap(),
+            Some(1_700_000_000)
+        );
         assert_eq!(parse_sniper_at_time(Some("  ")).unwrap(), None);
         assert!(parse_sniper_at_time(Some("not-a-time")).is_err());
     }
@@ -1056,7 +1067,12 @@ mod tests {
 
     #[test]
     fn build_mint_params_explicit_params_win() {
-        let p = build_mint_params(&cfg("claimTo(address,uint256)", vec!["0xabc".into(), "2".into()], 9)).unwrap();
+        let p = build_mint_params(&cfg(
+            "claimTo(address,uint256)",
+            vec!["0xabc".into(), "2".into()],
+            9,
+        ))
+        .unwrap();
         assert_eq!(p, vec!["0xabc", "2"]);
     }
 

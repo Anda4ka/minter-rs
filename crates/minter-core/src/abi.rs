@@ -198,7 +198,7 @@ fn type_is_dynamic(ty: &str) -> bool {
     }
     if let Some((elem, fixed)) = parse_array_type(ty) {
         return match fixed {
-            None => true,                         // T[] is always dynamic
+            None => true,                            // T[] is always dynamic
             Some(_) => type_is_dynamic(elem.trim()), // T[n] dynamic iff element is
         };
     }
@@ -290,7 +290,10 @@ fn is_static_word_type(ty: &str) -> bool {
         if n.is_empty() {
             return false; // bare `bytes` is dynamic
         }
-        return n.parse::<usize>().map(|s| (1..=32).contains(&s)).unwrap_or(false);
+        return n
+            .parse::<usize>()
+            .map(|s| (1..=32).contains(&s))
+            .unwrap_or(false);
     }
     if let Some(rest) = ty.strip_prefix("uint") {
         return rest.is_empty()
@@ -504,19 +507,13 @@ fn encode_sequence(types: &[String], values: &[String]) -> Result<Vec<u8>> {
     Ok(head)
 }
 
-
-
-
 /// Parse unsigned integer from decimal or 0x-hex into U256 word.
 pub fn encode_uint256(val: &str) -> Result<[u8; 32]> {
     let val = val.trim();
     if val.is_empty() {
         bail!("empty uint value");
     }
-    let u = if let Some(hex) = val
-        .strip_prefix("0x")
-        .or_else(|| val.strip_prefix("0X"))
-    {
+    let u = if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
         if hex.is_empty() {
             bail!("empty hex uint");
         }
@@ -531,7 +528,10 @@ pub fn encode_uint256(val: &str) -> Result<[u8; 32]> {
 }
 
 pub fn encode_address(val: &str) -> Result<[u8; 32]> {
-    let addr = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")).unwrap_or(val);
+    let addr = val
+        .strip_prefix("0x")
+        .or_else(|| val.strip_prefix("0X"))
+        .unwrap_or(val);
     let decoded = hex::decode(addr).context("invalid address hex")?;
     if decoded.len() != 20 {
         bail!(
@@ -568,12 +568,7 @@ pub fn encode_bytes_fixed(val: &str, n: usize) -> Result<[u8; 32]> {
         .unwrap_or(val);
     let decoded = hex::decode(hex_str).context("invalid bytes hex")?;
     if decoded.len() != n {
-        bail!(
-            "bytes{} expects {} bytes, got {}",
-            n,
-            n,
-            decoded.len()
-        );
+        bail!("bytes{} expects {} bytes, got {}", n, n, decoded.len());
     }
     let mut out = [0u8; 32];
     out[..n].copy_from_slice(&decoded);
@@ -737,8 +732,8 @@ mod tests {
         assert_eq!(
             arr[12..],
             [
-                0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90,
-                0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78
+                0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab,
+                0xcd, 0xef, 0x12, 0x34, 0x56, 0x78
             ]
         );
     }
@@ -877,10 +872,22 @@ mod tests {
 
     #[test]
     fn parse_array_type_forms() {
-        assert_eq!(parse_array_type("uint256[]"), Some(("uint256".into(), None)));
-        assert_eq!(parse_array_type("address[]"), Some(("address".into(), None)));
-        assert_eq!(parse_array_type("bytes32[]"), Some(("bytes32".into(), None)));
-        assert_eq!(parse_array_type("uint256[3]"), Some(("uint256".into(), Some(3))));
+        assert_eq!(
+            parse_array_type("uint256[]"),
+            Some(("uint256".into(), None))
+        );
+        assert_eq!(
+            parse_array_type("address[]"),
+            Some(("address".into(), None))
+        );
+        assert_eq!(
+            parse_array_type("bytes32[]"),
+            Some(("bytes32".into(), None))
+        );
+        assert_eq!(
+            parse_array_type("uint256[3]"),
+            Some(("uint256".into(), Some(3)))
+        );
         assert_eq!(parse_array_type("uint256"), None);
         assert_eq!(parse_array_type("bytes"), None);
     }
@@ -920,7 +927,8 @@ mod tests {
     #[test]
     fn encode_mixed_uint_then_array() {
         // claim(uint256, uint256[]) → head = [uint][offset=0x40], then tail.
-        let cd = build_calldata("claim(uint256,uint256[])", &["5".into(), "[1,2,3]".into()]).unwrap();
+        let cd =
+            build_calldata("claim(uint256,uint256[])", &["5".into(), "[1,2,3]".into()]).unwrap();
         let b = &cd[4..];
         assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(5)); // arg 0
         assert_eq!(U256::from_be_slice(&b[32..64]), U256::from(64)); // offset to tail
@@ -971,7 +979,11 @@ mod tests {
         // The dynamic array's offset must therefore be 96 (0x60).
         let a1 = "0x1111111111111111111111111111111111111111";
         let a2 = "0x2222222222222222222222222222222222222222";
-        let cd = build_calldata("f(address[2],uint256[])", &[format!("[{a1},{a2}]"), "[5]".into()]).unwrap();
+        let cd = build_calldata(
+            "f(address[2],uint256[])",
+            &[format!("[{a1},{a2}]"), "[5]".into()],
+        )
+        .unwrap();
         let b = &cd[4..];
         assert_eq!(&b[0..32], encode_address(a1).unwrap().as_slice());
         assert_eq!(&b[32..64], encode_address(a2).unwrap().as_slice());
@@ -982,7 +994,9 @@ mod tests {
 
     #[test]
     fn fixed_array_wrong_count_errors() {
-        let e = build_calldata("f(uint256[3])", &["[1,2]".into()]).unwrap_err().to_string();
+        let e = build_calldata("f(uint256[3])", &["[1,2]".into()])
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("expects 3"), "{e}");
     }
 
@@ -1043,7 +1057,11 @@ mod tests {
     fn encode_mixed_scalar_and_static_tuple() {
         // f(uint256,(address,uint256)) — both static → all inline, 3 words.
         let a = "0x2222222222222222222222222222222222222222";
-        let cd = build_calldata("f(uint256,(address,uint256))", &["9".into(), format!("({a},4)")]).unwrap();
+        let cd = build_calldata(
+            "f(uint256,(address,uint256))",
+            &["9".into(), format!("({a},4)")],
+        )
+        .unwrap();
         let b = &cd[4..];
         assert_eq!(b.len(), 96);
         assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(9));
@@ -1068,13 +1086,22 @@ mod tests {
 
     #[test]
     fn unsupported_array_and_tuple_forms_have_clear_errors() {
-        let nested = encode_parameter("uint256[][]", "x").unwrap_err().to_string();
+        let nested = encode_parameter("uint256[][]", "x")
+            .unwrap_err()
+            .to_string();
         assert!(nested.contains("nested arrays"), "{nested}");
         let fixed_dyn = encode_parameter("bytes[3]", "x").unwrap_err().to_string();
-        assert!(fixed_dyn.contains("fixed arrays of dynamic elements"), "{fixed_dyn}");
-        let arr_tuple = encode_parameter("(uint256)[]", "x").unwrap_err().to_string();
+        assert!(
+            fixed_dyn.contains("fixed arrays of dynamic elements"),
+            "{fixed_dyn}"
+        );
+        let arr_tuple = encode_parameter("(uint256)[]", "x")
+            .unwrap_err()
+            .to_string();
         assert!(arr_tuple.contains("arrays of tuples"), "{arr_tuple}");
-        let bad_tuple_val = build_calldata("f((address,uint256))", &["0xabc,5".into()]).unwrap_err().to_string();
+        let bad_tuple_val = build_calldata("f((address,uint256))", &["0xabc,5".into()])
+            .unwrap_err()
+            .to_string();
         assert!(bad_tuple_val.contains("wrapped in ()"), "{bad_tuple_val}");
     }
 
