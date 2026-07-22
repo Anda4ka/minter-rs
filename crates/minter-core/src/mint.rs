@@ -390,6 +390,13 @@ pub async fn run_opensea_mint(
         };
     let _mint_log_path = mint_log_path;
 
+    // #9 metrics: sequential-phase span timings, filled as the run progresses
+    // and folded into RunMetrics at finalization. Measured with local Instants
+    // (no state threaded through the concurrent send loop). auth/nonce run
+    // unconditionally (plain bindings below); wait only in the timed-open path.
+    let mut span_wait_ms: Option<u64> = None;
+    let mut open_signal_meta: Option<(i64, i64)> = None; // (start_ts, fire_lag_ms)
+
     // Optional wallet subset: keep original vault indices for proxy mapping.
     // proxy_overrides: address → proxy list index (manual wallet→proxy map).
     let override_by_vault: std::collections::HashMap<usize, usize> = {
@@ -592,6 +599,7 @@ pub async fn run_opensea_mint(
 
     let mut auth_cache = auth_cache::AuthCache::load(vault_password);
     let mut wallets: Vec<WalletAuth> = Vec::new();
+    let span_auth_started = std::time::Instant::now();
     let mut auth_handles = Vec::new();
     let auth_sem = Arc::new(tokio::sync::Semaphore::new(auth_concurrency));
     // After first 429: serialize remaining auth (don't keep N-way hammering one IP).
@@ -726,6 +734,8 @@ pub async fn run_opensea_mint(
             Err(e) => log_always(reporter.as_ref(), format!("Auth task failed: {}", e)),
         }
     }
+
+    let span_auth_ms = span_auth_started.elapsed().as_millis() as u64;
 
     // One disk encrypt (PBKDF2) for the whole auth batch — not per wallet.
     if let Err(e) = auth_cache.flush() {
@@ -1148,6 +1158,7 @@ pub async fn run_opensea_mint(
 
     let chain_id = actual_chain_id;
 
+    let span_nonce_started = std::time::Instant::now();
     log_always(reporter.as_ref(), format!("\nRefreshing nonces for all wallets..."));
     let mut nonce_handles = Vec::new();
     for w in &wallets {
@@ -1191,6 +1202,8 @@ pub async fn run_opensea_mint(
             }
         }
     }
+
+    let span_nonce_ms = span_nonce_started.elapsed().as_millis() as u64;
 
     log_always(reporter.as_ref(), format!("\nChecking balances..."));
     {
@@ -1325,6 +1338,7 @@ pub async fn run_opensea_mint(
     }
 
     if let Some(start_ts) = stage_start_ts {
+        let span_wait_started = std::time::Instant::now();
         // OpenSea stage.start_time is wall-clock (unix). Waiting on eth block.timestamp
         // lags ~1 block (~12s on L1) — that is why logs showed "opens in ~1s" then
         // "Phase is open!" only ~12s later. Fire on wall clock.
@@ -1505,6 +1519,8 @@ pub async fn run_opensea_mint(
         }
 
         let fire_lag_ms = fire_lag_ms_from_clock(start_ts, chrono::Utc::now().timestamp_millis());
+        span_wait_ms = Some(span_wait_started.elapsed().as_millis() as u64);
+        open_signal_meta = Some((start_ts, fire_lag_ms as i64));
         log_always(
             reporter.as_ref(),
             format!(
@@ -2755,6 +2771,14 @@ pub async fn run_opensea_mint(
                 wm = wm.with_error(err);
             }
             collector.upsert_wallet(wm);
+        }
+        collector.mark_span("auth", span_auth_ms);
+        collector.mark_span("nonce", span_nonce_ms);
+        if let Some(ms) = span_wait_ms {
+            collector.mark_span("wait", ms);
+        }
+        if let Some((start_ts, lag)) = open_signal_meta {
+            collector.set_open_signal("wall_clock", Some(start_ts), lag);
         }
         let mut metrics = collector.finish();
         metrics.summary.elapsed_ms = elapsed; // authoritative run duration
