@@ -18,7 +18,7 @@ The only app you run day-to-day:
 Public\minter-desktop.exe
 ```
 
-Config, vault, tasks, proxies, results and logs live **next to the exe** in `Public\` (or your unzip folder).
+Config, vault, tasks, proxies, results and logs live **next to the exe** in `Public\`.
 
 | Path | Role |
 |------|------|
@@ -94,7 +94,7 @@ cargo check -p minter-core -p minter-desktop
 |-----|----------|
 | [`ЗАПУСК.md`](ЗАПУСК.md) | Quick start (RU) |
 | [`Public/ИНСТРУКЦИЯ.md`](Public/ИНСТРУКЦИЯ.md) | Full end-user guide (RU) |
-| [`Public/README.txt`](Public/README.txt) | Zip contents (EN) |
+| [`Public/README.txt`](Public/README.txt) | Quick reference (EN) |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules & flows |
 | [`docs/UI_PLAN.md`](docs/UI_PLAN.md) | Operator UI (balances, RPC, MC, Raw) |
 | [`docs/CODE_AUDIT.md`](docs/CODE_AUDIT.md) | Code audit (post P0–P2) |
@@ -108,7 +108,7 @@ cargo check -p minter-core -p minter-desktop
 
 - Sticky proxy per wallet · L2 gas floors · auth cache flush once  
 - RBF multi-hash receipts · integer gwei/fee bumps · type-`LIVE` gate  
-- Idle vault auto-lock · OpenSea 429 serial mode · safe share zip  
+- Idle vault auto-lock · OpenSea 429 serial mode  
 
 **Operator UI / RPC**
 

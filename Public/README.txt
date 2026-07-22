@@ -1,7 +1,7 @@
 MINTER — Windows GUI (Tauri) v0.1.0
 ====================================
 
-Public zip should contain ONLY:
+Program folder should contain ONLY:
   minter-desktop.exe    - Main app (release build)
   config.example.json   - Settings template
   proxies.example.txt   - Proxy list format
@@ -14,7 +14,7 @@ Do NOT ship: keys.vault, config.json, proxies.txt, tasks.json,
 Burner wallets only. No telemetry. Keys stay in local encrypted vault.
 
 Quick start:
-  1. Put the 5 files above in a folder (e.g. C:\Minter)
+  1. Put the files above in a folder (e.g. C:\Minter)
   2. Double-click minter-desktop.exe
   3. Accept burner warning, set vault password, Unlock
   4. Wallets → import burners
@@ -41,7 +41,7 @@ Notes (2026-07):
   - Mission Control overlay on OpenSea LIVE
   - Raw Discover: proxy implementation + 4byte + explorer ABI
   - Sticky per-wallet proxy · L2 gas floors · type-LIVE gate
-  - RBF multi-hash receipts · safe share zip allowlist
+  - RBF multi-hash receipts
 
 After first run the app may create next to the exe:
   keys.vault, config.json, tasks.json, wallet_meta.json,
