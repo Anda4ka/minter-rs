@@ -184,21 +184,77 @@ fn word_offset(offset: usize) -> [u8; 32] {
     word_from_u256(U256::from(offset))
 }
 
-/// True for ABI dynamic types we support (string, bytes) and unsupported
-/// dynamic forms (arrays/tuples) that must be rejected rather than mis-encoded.
+/// True for ABI dynamic types (need an offset word + tail): `string`, `bytes`,
+/// dynamic arrays `T[]`, fixed arrays `T[n]` whose element is dynamic, and
+/// tuples with any dynamic component. Everything else is static.
 pub fn is_dynamic_type(ty: &str) -> bool {
+    type_is_dynamic(ty)
+}
+
+fn type_is_dynamic(ty: &str) -> bool {
     let ty = ty.trim();
     if ty == "string" || ty == "bytes" {
         return true;
     }
-    if ty.ends_with("[]") {
-        return true;
+    if let Some((elem, fixed)) = parse_array_type(ty) {
+        return match fixed {
+            None => true,                         // T[] is always dynamic
+            Some(_) => type_is_dynamic(elem.trim()), // T[n] dynamic iff element is
+        };
     }
-    // tuple components e.g. (address,uint256)
-    if ty.starts_with('(') {
-        return true;
+    if let Some(components) = parse_tuple_components(ty) {
+        return components.iter().any(|c| type_is_dynamic(c));
     }
     false
+}
+
+/// If `ty` is a tuple `(T1,T2,...)`, return its component type strings (comma
+/// split at depth 0, respecting nested `()` and `[]`). Non-tuples return `None`.
+pub fn parse_tuple_components(ty: &str) -> Option<Vec<String>> {
+    let ty = ty.trim();
+    if !(ty.starts_with('(') && ty.ends_with(')')) {
+        return None;
+    }
+    Some(split_top_level(&ty[1..ty.len() - 1]))
+}
+
+/// Split a string on top-level commas, treating `()` and `[]` as nesting.
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '(' | '[' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ')' | ']' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    let last = cur.trim();
+    if !last.is_empty() {
+        out.push(last.to_string());
+    }
+    out
+}
+
+/// Split a tuple **value** `(v1,v2,...)` into component value strings.
+fn split_tuple_values(val: &str) -> Result<Vec<String>> {
+    let v = val.trim();
+    let inner = v
+        .strip_prefix('(')
+        .and_then(|x| x.strip_suffix(')'))
+        .with_context(|| format!("tuple value must be wrapped in (): {val}"))?;
+    Ok(split_top_level(inner))
 }
 
 fn is_supported_type(ty: &str) -> bool {
@@ -211,6 +267,10 @@ fn is_supported_type(ty: &str) -> bool {
             Some(_) => is_static_word_type(elem),
             None => is_static_word_type(elem) || elem == "bytes" || elem == "string",
         };
+    }
+    // Tuple (Phase D): supported iff every component is supported.
+    if let Some(components) = parse_tuple_components(ty) {
+        return components.iter().all(|c| is_supported_type(c));
     }
     if ty == "string" || ty == "bytes" {
         return true;
@@ -363,20 +423,87 @@ pub fn encode_dynamic_element_array(elem_ty: &str, values: &[String]) -> Result<
     Ok(out)
 }
 
-/// Bytes this type contributes to the ABI **head**: dynamic types write a single
-/// 32-byte offset word; a fixed static array `T[n]` writes `n` words inline;
-/// every other static type writes one word.
-fn head_word_bytes(ty: &str) -> usize {
-    if is_dynamic_type(ty) {
+/// Bytes this type contributes to the ABI **head**: dynamic types write one
+/// 32-byte offset word; a fixed static array `T[n]` writes `n` element heads; a
+/// static tuple writes the sum of its component heads; every other static type
+/// writes one word.
+fn type_head_bytes(ty: &str) -> usize {
+    if type_is_dynamic(ty) {
         return 32;
     }
     if let Some((elem, Some(n))) = parse_array_type(ty) {
-        if is_static_word_type(&elem) {
-            return n * 32;
-        }
+        return n * type_head_bytes(elem.trim());
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        return components.iter().map(|c| type_head_bytes(c)).sum();
     }
     32
 }
+
+/// Encode a static value into its inline head bytes (length == `type_head_bytes`).
+fn encode_static_value(ty: &str, val: &str) -> Result<Vec<u8>> {
+    let ty = ty.trim();
+    if let Some((elem, Some(n))) = parse_array_type(ty) {
+        return encode_static_array_fixed(elem.trim(), &split_array_values(val), n);
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        // Static tuple: all components static → sequence yields head only.
+        return encode_sequence(&components, &split_tuple_values(val)?);
+    }
+    Ok(encode_static_parameter(ty, val)?.to_vec())
+}
+
+/// Encode a dynamic value into its tail payload.
+fn encode_dynamic_value(ty: &str, val: &str) -> Result<Vec<u8>> {
+    let ty = ty.trim();
+    if ty == "bytes" {
+        return encode_bytes_dynamic(val);
+    }
+    if ty == "string" {
+        return encode_string(val);
+    }
+    if let Some((elem, None)) = parse_array_type(ty) {
+        let elem = elem.trim();
+        return if is_static_word_type(elem) {
+            encode_static_array_dynamic(elem, &split_array_values(val))
+        } else {
+            encode_dynamic_element_array(elem, &split_array_values(val))
+        };
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        // Dynamic tuple: its own head+tail block.
+        return encode_sequence(&components, &split_tuple_values(val)?);
+    }
+    bail!("not a dynamic type: {}", ty);
+}
+
+/// Encode a sequence of (type, value) pairs as an ABI tuple body: head (static
+/// values inline, dynamic values as offsets) followed by the tail, with offsets
+/// relative to the start of this body. This is the recursive core shared by
+/// function calldata, tuples, and arrays.
+fn encode_sequence(types: &[String], values: &[String]) -> Result<Vec<u8>> {
+    if types.len() != values.len() {
+        bail!(
+            "tuple/args arity mismatch: expected {}, got {}",
+            types.len(),
+            values.len()
+        );
+    }
+    let head_size: usize = types.iter().map(|t| type_head_bytes(t)).sum();
+    let mut head = Vec::with_capacity(head_size);
+    let mut tail = Vec::new();
+    for (ty, val) in types.iter().zip(values.iter()) {
+        if type_is_dynamic(ty) {
+            head.extend_from_slice(&word_offset(head_size + tail.len()));
+            tail.extend_from_slice(&encode_dynamic_value(ty, val)?);
+        } else {
+            head.extend_from_slice(&encode_static_value(ty, val)?);
+        }
+    }
+    head.extend_from_slice(&tail);
+    Ok(head)
+}
+
 
 
 
@@ -515,39 +642,35 @@ fn unsupported_type_error(ty: &str) -> anyhow::Error {
         if parse_array_type(elem).is_some() {
             return anyhow::anyhow!("nested arrays ({ty}) not yet supported");
         }
+        if parse_tuple_components(elem).is_some() {
+            return anyhow::anyhow!("arrays of tuples ({ty}) not yet supported");
+        }
         if fixed.is_some() && !is_static_word_type(elem) {
             return anyhow::anyhow!("fixed arrays of dynamic elements ({ty}) not yet supported");
         }
     }
-    if ty.starts_with('(') {
-        return anyhow::anyhow!("tuples ({ty}) not yet supported");
+    if let Some(components) = parse_tuple_components(ty) {
+        if let Some(bad) = components.iter().find(|c| !is_supported_type(c)) {
+            return anyhow::anyhow!("tuple {ty}: unsupported component {bad}");
+        }
     }
     anyhow::anyhow!("Unsupported type: {ty}")
 }
 
-/// Encode parameter for legacy callers; dynamic types return tail-only payload
-/// (length+data). Prefer [`build_calldata`] for full ABI layout.
+/// Encode a single parameter. Dynamic types (`bytes`, `string`, arrays, dynamic
+/// tuples) return the tail payload; static types (scalars, fixed static arrays,
+/// static tuples) return their inline head words. Prefer [`build_calldata`] for
+/// a full call (it lays out offsets across all args).
 pub fn encode_parameter(ty: &str, val: &str) -> Result<Vec<u8>> {
     let ty = ty.trim();
     if !is_supported_type(ty) {
         return Err(unsupported_type_error(ty));
     }
-    if let Some((elem, fixed)) = parse_array_type(ty) {
-        let values = split_array_values(val);
-        let elem = elem.trim();
-        return match fixed {
-            Some(n) => encode_static_array_fixed(elem, &values, n),
-            None if is_static_word_type(elem) => encode_static_array_dynamic(elem, &values),
-            None => encode_dynamic_element_array(elem, &values),
-        };
+    if type_is_dynamic(ty) {
+        encode_dynamic_value(ty, val)
+    } else {
+        encode_static_value(ty, val)
     }
-    if ty == "string" {
-        return encode_string(val);
-    }
-    if ty == "bytes" {
-        return encode_bytes_dynamic(val);
-    }
-    Ok(encode_static_parameter(ty, val)?.to_vec())
 }
 
 /// Build full ABI calldata: selector || head || tail with correct dynamic offsets.
@@ -572,42 +695,10 @@ pub fn build_calldata(signature: &str, param_values: &[String]) -> Result<Bytes>
         return Ok(Bytes::from(selector.to_vec()));
     }
 
-    let head_size: usize = types.iter().map(|t| head_word_bytes(t)).sum();
-    let mut head = Vec::with_capacity(head_size);
-    let mut tail = Vec::new();
-
-    for (ty, val) in types.iter().zip(param_values.iter()) {
-        if is_dynamic_type(ty) {
-            let offset = head_size + tail.len();
-            head.extend_from_slice(&word_offset(offset));
-            let dynamic = if let Some((elem, None)) = parse_array_type(ty) {
-                let elem = elem.trim();
-                if is_static_word_type(elem) {
-                    encode_static_array_dynamic(elem, &split_array_values(val))?
-                } else {
-                    encode_dynamic_element_array(elem, &split_array_values(val))?
-                }
-            } else {
-                match ty.as_str() {
-                    "string" => encode_string(val)?,
-                    "bytes" => encode_bytes_dynamic(val)?,
-                    other => bail!("internal: unhandled dynamic type {}", other),
-                }
-            };
-            tail.extend_from_slice(&dynamic);
-        } else if let Some((elem, Some(n))) = parse_array_type(ty) {
-            // Fixed static array `T[n]`: n words inline in the head.
-            head.extend_from_slice(&encode_static_array_fixed(&elem, &split_array_values(val), n)?);
-        } else {
-            let word = encode_static_parameter(ty, val)?;
-            head.extend_from_slice(&word);
-        }
-    }
-
-    let mut data = Vec::with_capacity(4 + head.len() + tail.len());
+    let body = encode_sequence(&types, param_values)?;
+    let mut data = Vec::with_capacity(4 + body.len());
     data.extend_from_slice(&selector);
-    data.extend_from_slice(&head);
-    data.extend_from_slice(&tail);
+    data.extend_from_slice(&body);
     Ok(Bytes::from(data))
 }
 
@@ -925,13 +1016,66 @@ mod tests {
     }
 
     #[test]
+    fn encode_static_tuple_inline() {
+        // f((address,uint256)) — static tuple: two words inline, no offset.
+        let a = "0x1111111111111111111111111111111111111111";
+        let cd = build_calldata("f((address,uint256))", &[format!("({a},5)")]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(b.len(), 64);
+        assert_eq!(&b[0..32], encode_address(a).unwrap().as_slice());
+        assert_eq!(U256::from_be_slice(&b[32..64]), U256::from(5));
+    }
+
+    #[test]
+    fn encode_dynamic_tuple_with_bytes() {
+        // f((uint256,bytes)) — tuple is dynamic (bytes), so arg is offset+tail.
+        let cd = build_calldata("f((uint256,bytes))", &["(7,0x1122)".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(32)); // offset to tuple
+        let t = &b[32..];
+        assert_eq!(U256::from_be_slice(&t[0..32]), U256::from(7)); // uint
+        assert_eq!(U256::from_be_slice(&t[32..64]), U256::from(64)); // offset to bytes (within tuple)
+        assert_eq!(U256::from_be_slice(&t[64..96]), U256::from(2)); // bytes len
+        assert_eq!(&t[96..98], &[0x11, 0x22]);
+    }
+
+    #[test]
+    fn encode_mixed_scalar_and_static_tuple() {
+        // f(uint256,(address,uint256)) — both static → all inline, 3 words.
+        let a = "0x2222222222222222222222222222222222222222";
+        let cd = build_calldata("f(uint256,(address,uint256))", &["9".into(), format!("({a},4)")]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(b.len(), 96);
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(9));
+        assert_eq!(&b[32..64], encode_address(a).unwrap().as_slice());
+        assert_eq!(U256::from_be_slice(&b[64..96]), U256::from(4));
+    }
+
+    #[test]
+    fn tuple_with_array_component() {
+        // f((address,bytes32[])) — dynamic tuple containing a static-element array.
+        let a = "0x3333333333333333333333333333333333333333";
+        let proof = format!("[0x{}]", "aa".repeat(32));
+        let cd = build_calldata("claim((address,bytes32[]))", &[format!("({a},{proof})")]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(32)); // offset to tuple
+        let t = &b[32..];
+        assert_eq!(&t[0..32], encode_address(a).unwrap().as_slice()); // address inline
+        assert_eq!(U256::from_be_slice(&t[32..64]), U256::from(64)); // offset to array within tuple
+        assert_eq!(U256::from_be_slice(&t[64..96]), U256::from(1)); // array len
+        assert_eq!(&t[96..128], &[0xaau8; 32]); // proof[0]
+    }
+
+    #[test]
     fn unsupported_array_and_tuple_forms_have_clear_errors() {
-        let tuple = encode_parameter("(address,uint256)", "x").unwrap_err().to_string();
-        assert!(tuple.contains("tuples"), "{tuple}");
         let nested = encode_parameter("uint256[][]", "x").unwrap_err().to_string();
         assert!(nested.contains("nested arrays"), "{nested}");
         let fixed_dyn = encode_parameter("bytes[3]", "x").unwrap_err().to_string();
         assert!(fixed_dyn.contains("fixed arrays of dynamic elements"), "{fixed_dyn}");
+        let arr_tuple = encode_parameter("(uint256)[]", "x").unwrap_err().to_string();
+        assert!(arr_tuple.contains("arrays of tuples"), "{arr_tuple}");
+        let bad_tuple_val = build_calldata("f((address,uint256))", &["0xabc,5".into()]).unwrap_err().to_string();
+        assert!(bad_tuple_val.contains("wrapped in ()"), "{bad_tuple_val}");
     }
 
     #[test]
