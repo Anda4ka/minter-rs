@@ -3,17 +3,27 @@
 Краткий map репозитория для разработчиков.  
 **Runtime для оператора:** только `Public\minter-desktop.exe`.
 
+## Canonical repository
+
+| | |
+|--|--|
+| **URL** | https://github.com/Anda4ka/minter-rs |
+| **Branch** | `main` |
+| **Push** | **Только в этот репозиторий.** Не пушить product-коммиты в `Anda4ka/MINTER` / `Minter-privat` без явного решения. |
+
+Local remotes may be named `origin` or `viktor` — always check `git remote -v` points at **minter-rs**.
+
 ---
 
 ## Workspace
 
 ```
-minter-rs/
+minter-rs/                   ← clone of github.com/Anda4ka/minter-rs
   Cargo.toml                 workspace
   crates/minter-core/        shared engine (lib)
   crates/minter-desktop/     Tauri 2 app + UI
   scripts/package-public.ps1 release → Public\
-  Public/                    shipped product + local data
+  Public/                    shipped product + local data (mostly gitignored)
   docs/                      plans, audit, this file
 ```
 

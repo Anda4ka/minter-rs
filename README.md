@@ -10,6 +10,28 @@ Multi-wallet, encrypted vault, proxies, task queue, results export.
 
 ---
 
+## Repository (canonical)
+
+| | |
+|--|--|
+| **GitHub** | **https://github.com/Anda4ka/minter-rs** |
+| **Default branch** | `main` |
+| **Push policy** | **Push only to this repository.** Do not push product updates to other remotes (`MINTER`, `Minter-privat`, etc.) unless explicitly intended for those repos. |
+
+```powershell
+# remote name can be "origin" or "viktor" — URL must be minter-rs
+git remote -v
+# expected: … github.com/Anda4ka/minter-rs.git …
+
+git push origin main
+# or, if remote is named viktor:
+git push viktor main
+```
+
+Local runtime data under `Public\` (`keys.vault`, `config.json`, `.env`, logs, results) is **gitignored** — never commit or push secrets.
+
+---
+
 ## Runtime product
 
 The only app you run day-to-day:
@@ -41,24 +63,25 @@ powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
 - **Encrypted vault** — AES-GCM, password-protected, atomic writes  
 - **Wallets** — import, A/B/C groups, **balance by network**, per-wallet proxy  
 - **OpenSea drops** — slug/URL, phase picker, WL / eligibility export  
-- **Tasks** — save/edit/queue, Start/Stop (Start = **LIVE**; type `LIVE` confirm by default)  
-- **Mission Control** — live HUD overlay on OpenSea Start (phase, stats, wallets, log)  
-- **Sniper** — wall-clock phase open → sim → send → **on-chain confirm**  
+- **Tasks (OpenSea)** — slug → phase → wallets → **Start** (LIVE; type `LIVE` by default)  
+- **Mission Control** — live HUD on OpenSea Start (phase, stats, wallets, log)  
+- **OpenSea mint** — wall-clock phase open → **fixed gas** send (no estimate gate on LIVE) → **on-chain confirm**  
 - **Raw Mint** — multi-wallet pre-sign race; Discover (proxy EIP-1167/1967 + 4byte); Simple `mint(uint256)`  
 - **RPC** — private Alchemy multi-chain (own API key only), **Ping networks** (+ via proxy), latency  
 - **Proxies** — HTTP/SOCKS, health checks, sticky wallet mapping  
 - **Results** — JSON/CSV, run history, explorer links, full mint logs  
 - **UI** — dark-only, EN/RU, phase banner, first-confirm badge + optional beep  
 
-### Mint flow
+### OpenSea mint flow
 
 ```text
 Start → auth / prep → wait phase open (wall clock)
-     → estimate (sim) → if OK: sign + send
+     → LIVE: fixed gas → sign + send
      → wait receipt (RBF multi-hash) → CONFIRMED = success
 ```
 
-`SENT` = broadcast only. **Success is only after block confirmation.**
+`SENT` = broadcast only. **Success is only after block confirmation.**  
+SeaDrop `NotActive` near open is decoded in logs; LIVE does not block on `eth_estimateGas`.
 
 ---
 
@@ -104,20 +127,23 @@ cargo check -p minter-core -p minter-desktop
 
 ### Recent updates (2026-07)
 
-**Hardening**
+**OpenSea / product**
 
-- Sticky proxy per wallet · L2 gas floors · auth cache flush once  
-- RBF multi-hash receipts · integer gwei/fee bumps · type-`LIVE` gate  
-- Idle vault auto-lock · OpenSea 429 serial mode  
+- LIVE mint: **fixed gas by default** (no sniper preset required)  
+- SeaDrop **NotActive** (`0x13da22f2`) decoded in logs  
+- **config.json** owns RPC/Alchemy — empty fields + Save clear stale `.env`  
+
+**Core hardening** (merged engine work)
+
+- Error taxonomy · hedged RPC reads · integer fee/gas math · send observability  
+- Metrics export · ABI completeness (raw path) · concurrency gate on money paths  
 
 **Operator UI / RPC**
 
 - Wallet balances **by chain** (incl. Robinhood)  
 - **Ping networks** (multi-chain, optional via proxy); private Alchemy only  
-- Per-chain Alchemy slugs (no eth-mainnet fallback on L2)  
+- Command palette / hotkeys · persisted network selectors  
 - **Mission Control** overlay on OpenSea LIVE  
-- Raw **Discover**: EIP-1167/1967 proxy resolve + 4byte + explorer ABI  
-- Raw multi-wallet Simple `mint(uint256)` documented in ИНСТРУКЦИЯ  
 
 Risk plan: [`docs/RISK_MITIGATION_PLAN.md`](docs/RISK_MITIGATION_PLAN.md) · UI: [`docs/UI_PLAN.md`](docs/UI_PLAN.md)
 
