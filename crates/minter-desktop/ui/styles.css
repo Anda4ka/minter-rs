@@ -2258,6 +2258,9 @@ code {
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   margin-bottom: 20px;
+  /* size each card to its own content instead of stretching both to a fixed
+     row height; otherwise added content (e.g. the icon) overflows the card */
+  align-items: start;
 }
 
 @media (max-width: 800px) {
@@ -2273,7 +2276,8 @@ code {
   gap: 8px;
   text-align: left;
   padding: 22px 20px;
-  min-height: 140px;
+  min-height: 150px;
+  height: auto;
   border-radius: 12px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -2292,6 +2296,20 @@ code {
 
 .home-launch-card.card-raw {
   border-color: rgba(255, 107, 107, 0.28);
+}
+
+.home-launch-card .hl-ico {
+  display: inline-flex;
+  margin-bottom: 2px;
+  color: var(--muted-2);
+}
+
+.home-launch-card.card-os .hl-ico {
+  color: var(--accent-border);
+}
+
+.home-launch-card.card-raw .hl-ico {
+  color: var(--red);
 }
 
 .home-launch-card .hl-badge {
@@ -2313,14 +2331,14 @@ code {
   font-size: 0.86rem;
   color: var(--muted);
   line-height: 1.4;
-  flex: 1;
+  flex: 0 0 auto;
 }
 
 .home-launch-card .hl-cta {
   font-size: 0.8rem;
   font-weight: 650;
   color: var(--accent-border);
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .qa-grid {
