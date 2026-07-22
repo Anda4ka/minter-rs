@@ -17,7 +17,7 @@
 | # | Этап | Файлы | Риск | Статус |
 |---|------|-------|------|--------|
 | 1 | Единая таксономия RPC/tx‑ошибок + тесты | `errors.rs` (new), `mint.rs`, `gas.rs`, `disperse.rs` | низкий | ✅ [PR](../../pull) · `docs/CORE_STAGE1_ERROR_TAXONOMY.md` |
-| 2 | Hedged‑чтения RPC (латентность у T0) | `rpc.rs`, `mint.rs` | средний | ⬜ |
+| 2 | Hedged‑чтения RPC (латентность у T0) | `rpc.rs`, `mint.rs` | средний | ✅ `docs/CORE_STAGE2_HEDGED_READS.md` |
 | 3 | Детерминированная целочисленная математика газа | `gas.rs`, `types.rs` | низкий | ⬜ |
 | 4 | Именованные константы + конфиг фанаута/таймаутов RPC | `rpc.rs`, `settings.rs` | низкий | ⬜ |
 | 5 | Наблюдаемость отправки tx (per‑node исход) | `rpc.rs`, `progress.rs` | низкий | ⬜ |
