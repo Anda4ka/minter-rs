@@ -102,14 +102,37 @@ impl Default for Settings {
     }
 }
 
+/// Env keys owned by Settings Connection fields (config.json is source of truth).
+/// Cleared from in-memory env / `.env` when the matching Settings field is empty.
+pub const MANAGED_CONNECTION_ENV_KEYS: &[&str] = &[
+    "ALCHEMY_API_KEY",
+    "ALCHEMYAPIKEY",
+    "alchemyapikey",
+    "RPC_URL",
+    "RPC_URLS",
+    "RPC_URL_ETHEREUM",
+    "ETHEREUM_RPC_URL",
+    "RPC_URLS_ETHEREUM",
+    "RPC_URL_BASE",
+    "BASE_RPC_URL",
+    "RPC_URLS_BASE",
+    "RPC_URL_POLYGON",
+    "POLYGON_RPC_URL",
+];
+
 impl Settings {
     pub fn config_path_default() -> PathBuf {
         PathBuf::from("config.json")
     }
 
-    /// Load settings: config.json first, then fill blanks from legacy .env / proxies.txt.
+    /// Load settings: `config.json` is authoritative when present.
+    ///
+    /// Legacy `.env` is only used to **seed** a first install (no config yet).
+    /// Once config exists, empty RPC/Alchemy fields stay empty — they are **not**
+    /// re-filled from stale `.env` lines (that made "clear Settings" a no-op).
     pub fn load(config_path: &Path, env_path: Option<&Path>) -> Self {
-        let mut s = if config_path.exists() {
+        let config_exists = config_path.exists();
+        let mut s = if config_exists {
             match std::fs::read_to_string(config_path) {
                 Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
                 Err(_) => Self::default(),
@@ -121,11 +144,37 @@ impl Settings {
         if let Some(env_path) = env_path {
             if env_path.exists() {
                 let env = load_simple_env(env_path);
-                s.merge_from_env_map(&env, /*only_if_empty*/ config_path.exists());
+                if config_exists {
+                    // Config wins for connection. Still allow non-connection flags
+                    // only if missing from config defaults? Skip entirely — config
+                    // already holds gas/flags from last Save.
+                } else {
+                    // First install: full migration from .env
+                    s.merge_from_env_map(&env, /*only_if_empty*/ false);
+                }
             }
         }
         s.load_proxies_file_if_empty(config_path);
         s
+    }
+
+    /// Clear Alchemy + all custom RPC URL fields (connection block).
+    pub fn clear_connection(&mut self) {
+        self.alchemy_api_key.clear();
+        self.rpc_urls.clear();
+        self.rpc_url_ethereum.clear();
+        self.rpc_url_base.clear();
+        self.rpc_url_polygon.clear();
+    }
+
+    /// Drop managed connection keys from an env map, then apply [`to_env_map`].
+    pub fn apply_connection_to_env(&self, env: &mut HashMap<String, String>) {
+        for k in MANAGED_CONNECTION_ENV_KEYS {
+            env.remove(*k);
+        }
+        for (k, v) in self.to_env_map() {
+            env.insert(k, v);
+        }
     }
 
     /// Backward-compatible load purely from env map (CLI mint paths).
@@ -397,6 +446,14 @@ impl Settings {
         {
             let mut file = std::fs::File::create(&tmp_path)
                 .with_context(|| format!("create temp {}", tmp_path.display()))?;
+            // config.json holds secrets (e.g. Alchemy API key) in plaintext, so
+            // restrict it to the owner on unix — same posture as the key vault.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .context("set config temp permissions")?;
+            }
             file.write_all(data)
                 .context("write config temp")?;
             file.sync_all().context("fsync config temp")?;
@@ -433,6 +490,10 @@ impl Settings {
 
     /// Optional mirror into `.env` so older helpers that re-read the file stay in sync.
     /// Primary store is always `config.json` via [`Settings::save`].
+    ///
+    /// Managed connection keys that are **empty** in Settings are **removed** from
+    /// `.env` (not left as stale lines). That way clearing Alchemy/RPC in the UI
+    /// and Save actually sticks after restart.
     pub fn save_to_env_file(&self, env_path: &PathBuf) -> anyhow::Result<()> {
         // Ensure config.json exists beside .env (or cwd)
         let config = env_path
@@ -447,11 +508,39 @@ impl Settings {
         } else {
             String::new()
         };
-        let mut lines: Vec<String> = existing.lines().map(String::from).collect();
-        for (key, value) in self.to_env_map() {
+        let managed: HashMap<String, String> = self.to_env_map();
+        let mut lines: Vec<String> = Vec::new();
+        for line in existing.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                lines.push(line.to_string());
+                continue;
+            }
+            let key = trimmed
+                .split_once('=')
+                .map(|(k, _)| k.trim())
+                .unwrap_or("");
+            if key.is_empty() {
+                lines.push(line.to_string());
+                continue;
+            }
+            // Drop stale managed connection keys; re-add from map below.
+            if MANAGED_CONNECTION_ENV_KEYS
+                .iter()
+                .any(|k| k.eq_ignore_ascii_case(key))
+            {
+                continue;
+            }
+            // Other keys written by to_env_map (gas flags etc.) — update if present
+            if managed.contains_key(key) {
+                continue; // rewritten below
+            }
+            lines.push(line.to_string());
+        }
+        for (key, value) in &managed {
             if let Some(line) = lines.iter_mut().find(|l| {
                 let l = l.trim();
-                l.starts_with(&key) && l[key.len()..].starts_with('=')
+                l.starts_with(key.as_str()) && l[key.len()..].starts_with('=')
             }) {
                 *line = format!("{}={}", key, value);
             } else {
@@ -683,10 +772,95 @@ mod tests {
         writeln!(f, "ALCHEMY_API_KEY=migrated_key").unwrap();
         writeln!(f, "GAS_LIMIT=222000").unwrap();
         let config = dir.join("config.json");
+        // No config yet → full migration from .env
         let s = Settings::load(&config, Some(&env_path));
         assert_eq!(s.alchemy_api_key, "migrated_key");
         assert_eq!(s.gas_limit, 222_000);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_wins_empty_connection_not_refilled_from_env() {
+        let dir = std::env::temp_dir().join(format!(
+            "minter-cfg-wins-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let config = dir.join("config.json");
+        let env_path = dir.join(".env");
+        // Stale .env still has Alchemy + eth RPC
+        std::fs::write(
+            &env_path,
+            "ALCHEMY_API_KEY=stale_key\nRPC_URL_ETHEREUM=https://eth.example/v2/stale\n",
+        )
+        .unwrap();
+        // Config has empty connection (user cleared Settings)
+        let mut s = Settings::default();
+        s.alchemy_api_key.clear();
+        s.rpc_url_ethereum.clear();
+        s.gas_limit = 250_000;
+        s.save(&config).unwrap();
+        let loaded = Settings::load(&config, Some(&env_path));
+        assert!(
+            loaded.alchemy_api_key.is_empty(),
+            "must not re-import Alchemy from .env"
+        );
+        assert!(
+            loaded.rpc_url_ethereum.is_empty(),
+            "must not re-import RPC from .env"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_to_env_strips_cleared_connection_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "minter-env-strip-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let env_path = dir.join(".env");
+        std::fs::write(
+            &env_path,
+            "ALCHEMY_API_KEY=old\nRPC_URL_ETHEREUM=https://x\nBEEP=1\n",
+        )
+        .unwrap();
+        let mut s = Settings::default();
+        s.clear_connection();
+        s.beep = true;
+        s.save_to_env_file(&env_path).unwrap();
+        let raw = std::fs::read_to_string(&env_path).unwrap();
+        assert!(
+            !raw.contains("ALCHEMY_API_KEY"),
+            "alchemy line must be removed: {raw}"
+        );
+        assert!(
+            !raw.contains("RPC_URL_ETHEREUM"),
+            "rpc line must be removed: {raw}"
+        );
+        assert!(raw.contains("BEEP=1") || raw.contains("BEEP="), "{raw}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_connection_to_env_drops_stale_keys() {
+        let mut env = HashMap::new();
+        env.insert("ALCHEMY_API_KEY".into(), "stale".into());
+        env.insert("RPC_URL_ETHEREUM".into(), "https://stale".into());
+        env.insert("CUSTOM_KEEP".into(), "yes".into());
+        let s = Settings::default(); // empty connection
+        s.apply_connection_to_env(&mut env);
+        assert!(!env.contains_key("ALCHEMY_API_KEY"));
+        assert!(!env.contains_key("RPC_URL_ETHEREUM"));
+        assert_eq!(env.get("CUSTOM_KEEP").map(String::as_str), Some("yes"));
     }
 
     #[test]

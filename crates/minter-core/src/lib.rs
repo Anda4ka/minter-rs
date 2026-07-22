@@ -29,7 +29,9 @@ pub mod abi;
 pub mod amount;
 pub mod api;
 pub mod auth_cache;
+pub mod errors;
 pub mod export;
+pub mod metrics;
 pub mod gas;
 pub mod mint;
 pub mod mint_ops;
@@ -56,22 +58,6 @@ pub use api::{
     WalletBalanceRow, WalletEligibilityReport, WalletEligibilityRow, WalletInfo,
 };
 
-/// Truncate `s` to at most `max_bytes` **without splitting a UTF-8 character**.
-///
-/// Multi-byte-safe replacement for `&s[..s.len().min(n)]`, which panics when
-/// byte `n` lands inside a multi-byte char (non-ASCII RPC / OpenSea / relay
-/// error bodies would crash error formatting — the worst possible moment).
-pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
 /// When true, suppress noisy `println!` in core (desktop sets QUIET=1 by default).
 pub fn quiet_mode() -> bool {
     match std::env::var("QUIET") {
@@ -90,12 +76,49 @@ pub fn core_print(msg: impl AsRef<str>) {
     }
 }
 
+/// Byte-safe prefix of `s` up to `max_bytes`, never splitting a UTF-8 char.
+///
+/// `&s[..n]` panics when `n` lands inside a multi-byte code point (e.g. when
+/// truncating a non-ASCII server error body), so all log/error truncation must
+/// go through this instead of raw byte slicing.
+#[inline]
+pub fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Alias kept for older call sites / tests (`audit 2` name).
+#[inline]
+pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    safe_truncate(s, max_bytes)
+}
+
 /// `println!` that respects `QUIET=1` (desktop default).
 #[macro_export]
 macro_rules! rlog {
     ($($arg:tt)*) => {{
         if !$crate::quiet_mode() {
             println!($($arg)*);
+        }
+    }};
+}
+
+/// `print!` (no newline, flushed) that respects `QUIET=1` (desktop default).
+///
+/// Raw `print!` bypassed the quiet gate, so partial "Simulating…"/"Sending…"
+/// lines leaked to stdout even in the desktop's default `QUIET=1` mode.
+#[macro_export]
+macro_rules! rprint {
+    ($($arg:tt)*) => {{
+        if !$crate::quiet_mode() {
+            print!($($arg)*);
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
     }};
 }
@@ -123,25 +146,37 @@ pub const BURNER_WARNING: &str =
 pub const NO_TELEMETRY: &str = "No telemetry. Private keys stay on this machine.";
 
 #[cfg(test)]
-mod truncate_tests {
-    use super::truncate_str;
+mod safe_truncate_tests {
+    use super::{safe_truncate, truncate_str};
 
     #[test]
-    fn ascii_truncates_exact() {
-        assert_eq!(truncate_str("hello world", 5), "hello");
-        assert_eq!(truncate_str("hi", 5), "hi");
-        assert_eq!(truncate_str("", 5), "");
+    fn shorter_than_limit_is_unchanged() {
+        assert_eq!(safe_truncate("hello", 240), "hello");
+        assert_eq!(safe_truncate("", 10), "");
     }
 
     #[test]
-    fn multibyte_boundary_does_not_panic() {
-        // "яя…" — Cyrillic is 2 bytes per char; cutting at odd byte must back off.
-        let s = "ошибка сети: тайм-аут";
-        for n in 0..=s.len() + 2 {
-            let t = truncate_str(s, n);
-            assert!(t.len() <= n || s.len() <= n);
-            assert!(s.starts_with(t));
-        }
+    fn ascii_truncates_exactly() {
+        assert_eq!(safe_truncate("abcdef", 3), "abc");
+        assert_eq!(truncate_str("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn never_splits_a_multibyte_char() {
+        // "é" is 2 bytes (0xC3 0xA9). Truncating at byte 1 must back off to 0.
+        let s = "é";
+        assert_eq!(s.len(), 2);
+        assert_eq!(safe_truncate(s, 1), "");
+        assert_eq!(safe_truncate(s, 2), "é");
+    }
+
+    #[test]
+    fn backs_off_to_char_boundary() {
+        let s = "ошибка"; // 12 bytes, 6 chars
+        let out = safe_truncate(s, 5); // 5 is mid-char → back to 4 bytes
+        assert!(s.starts_with(out));
+        assert!(out.len() <= 5);
+        assert!(s.is_char_boundary(out.len()));
         // Emoji (4 bytes) mid-cut
         let e = "err 🔥🔥";
         assert_eq!(truncate_str(e, 5), "err ");

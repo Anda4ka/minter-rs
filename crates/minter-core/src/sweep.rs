@@ -134,7 +134,7 @@ async fn fetch_token_ids_alchemy(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            bail!("Alchemy NFT API {}: {}", status, crate::truncate_str(&text, 300));
+            bail!("Alchemy NFT API {}: {}", status, crate::safe_truncate(&text, 300));
         }
         let data: serde_json::Value =
             serde_json::from_str(&text).context("failed to parse Alchemy NFT API response")?;

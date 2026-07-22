@@ -150,7 +150,7 @@ impl FlashbotsClient {
         if !status.is_success() {
             bail!(
                 "Flashbots HTTP {status}: {}",
-                crate::truncate_str(&text, 400)
+crate::safe_truncate(&text, 400)
             );
         }
         let data: Value = serde_json::from_str(&text).context("flashbots json")?;
@@ -240,7 +240,7 @@ impl FlashbotsClient {
                     crate::rlog!(
                         "  sendBundle OK block {} resp={}",
                         target,
-                        crate::truncate_str(&last_resp, 120)
+crate::safe_truncate(&last_resp, 120)
                     );
                 }
                 Err(e) => {

@@ -24,8 +24,10 @@ pub fn sign_transaction(
         chain_id: tx.chain_id,
         nonce: tx.nonce,
         gas_limit: tx.gas_limit,
-        max_fee_per_gas: tx.max_fee.to::<u128>(),
-        max_priority_fee_per_gas: tx.max_priority_fee.to::<u128>(),
+        // Saturate instead of `to::<u128>()`, which panics on overflow. Fees never
+        // legitimately exceed u128, but a bad RPC fee value must not crash signing.
+        max_fee_per_gas: tx.max_fee.saturating_to::<u128>(),
+        max_priority_fee_per_gas: tx.max_priority_fee.saturating_to::<u128>(),
         to: alloy::primitives::TxKind::Call(tx.to),
         value: tx.value,
         input: tx.data.clone().into(),

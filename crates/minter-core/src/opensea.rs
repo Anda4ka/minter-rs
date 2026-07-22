@@ -405,7 +405,7 @@ async fn siwe_auth_once(
         bail!(
             "Nonce failed: HTTP {} {}",
             nonce_status,
-            crate::truncate_str(&text, 300)
+crate::safe_truncate(&text, 300)
         );
     }
     let nonce_data: serde_json::Value = nonce_resp.json().await?;
@@ -470,13 +470,13 @@ async fn siwe_auth_once(
                 "Verify failed: HTTP {} Too Many Requests retry-after={} {}",
                 verify_status,
                 if ra > 0 { ra } else { 1 },
-                crate::truncate_str(&text, 200)
+crate::safe_truncate(&text, 200)
             );
         }
         bail!(
             "Verify failed: HTTP {} {}",
             verify_status,
-            crate::truncate_str(&text, 500)
+crate::safe_truncate(&text, 500)
         );
     }
 
@@ -958,13 +958,13 @@ pub async fn fetch_mint_calldata(
             bail!(
                 "Mint action failed: OpenSea persisted query hash expired and inline fallback failed: HTTP {} {}",
                 fallback_status,
-                crate::truncate_str(&fallback_text, 500)
+crate::safe_truncate(&fallback_text, 500)
             );
         }
         bail!(
             "Mint action failed: HTTP {} {}",
             status,
-            crate::truncate_str(&text, 500)
+crate::safe_truncate(&text, 500)
         );
     }
 
@@ -1013,11 +1013,16 @@ pub fn extract_opensea_action_tx(data: &serde_json::Value) -> Result<serde_json:
         .or_else(|| tx.get("input"))
         .and_then(|v| v.as_str())
         .context("OpenSea transactionSubmissionData has no data")?;
-    let value = tx
-        .get("value")
-        .or_else(|| tx.get("weiValue"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("0x0");
+    // `value` may arrive as a hex/decimal string *or* a JSON number. Reading only
+    // `as_str()` silently produced "0x0" for numeric values → a zero-value mint
+    // that reverts. Accept both forms.
+    let value_val = tx.get("value").or_else(|| tx.get("weiValue"));
+    let value = match value_val {
+        Some(v) if v.is_string() => v.as_str().unwrap_or("0x0").to_string(),
+        Some(v) if v.is_u64() => v.as_u64().unwrap_or(0).to_string(),
+        Some(v) if v.is_number() => v.to_string(),
+        _ => "0x0".to_string(),
+    };
 
     Ok(json!({
         "to": to,
@@ -1235,5 +1240,50 @@ mod available_qty_tests {
         s.max_mintable = None;
         let info = collection(vec![s.clone()], Some(1));
         assert_eq!(available_mint_quantity(&info, &s), None);
+    }
+}
+
+#[cfg(test)]
+mod extract_action_tx_tests {
+    use super::*;
+
+    #[test]
+    fn value_as_string_is_preserved() {
+        let data = json!({
+            "transactionSubmissionData": {
+                "to": "0x00005ea00ac477b1030ce78506496e8c2de24bf5",
+                "data": "0xdeadbeef",
+                "value": "0x2386f26fc10000"
+            }
+        });
+        let tx = extract_opensea_action_tx(&data).unwrap();
+        assert_eq!(tx.get("value").unwrap().as_str(), Some("0x2386f26fc10000"));
+    }
+
+    #[test]
+    fn numeric_value_is_not_dropped_to_zero() {
+        // Regression: a JSON *number* value used to fall through to "0x0",
+        // producing a zero-value mint that reverts.
+        let data = json!({
+            "transactionSubmissionData": {
+                "to": "0x00005ea00ac477b1030ce78506496e8c2de24bf5",
+                "data": "0xdeadbeef",
+                "value": 10000000000000000u64
+            }
+        });
+        let tx = extract_opensea_action_tx(&data).unwrap();
+        assert_eq!(tx.get("value").unwrap().as_str(), Some("10000000000000000"));
+    }
+
+    #[test]
+    fn missing_value_defaults_to_zero() {
+        let data = json!({
+            "transactionSubmissionData": {
+                "to": "0x00005ea00ac477b1030ce78506496e8c2de24bf5",
+                "data": "0xdeadbeef"
+            }
+        });
+        let tx = extract_opensea_action_tx(&data).unwrap();
+        assert_eq!(tx.get("value").unwrap().as_str(), Some("0x0"));
     }
 }

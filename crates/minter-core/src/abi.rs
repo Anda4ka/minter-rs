@@ -184,36 +184,113 @@ fn word_offset(offset: usize) -> [u8; 32] {
     word_from_u256(U256::from(offset))
 }
 
-/// True for ABI dynamic types we support (string, bytes) and unsupported
-/// dynamic forms (arrays/tuples) that must be rejected rather than mis-encoded.
+/// True for ABI dynamic types (need an offset word + tail): `string`, `bytes`,
+/// dynamic arrays `T[]`, fixed arrays `T[n]` whose element is dynamic, and
+/// tuples with any dynamic component. Everything else is static.
 pub fn is_dynamic_type(ty: &str) -> bool {
+    type_is_dynamic(ty)
+}
+
+fn type_is_dynamic(ty: &str) -> bool {
     let ty = ty.trim();
     if ty == "string" || ty == "bytes" {
         return true;
     }
-    if ty.ends_with("[]") {
-        return true;
+    if let Some((elem, fixed)) = parse_array_type(ty) {
+        return match fixed {
+            None => true,                         // T[] is always dynamic
+            Some(_) => type_is_dynamic(elem.trim()), // T[n] dynamic iff element is
+        };
     }
-    // tuple components e.g. (address,uint256)
-    if ty.starts_with('(') {
-        return true;
+    if let Some(components) = parse_tuple_components(ty) {
+        return components.iter().any(|c| type_is_dynamic(c));
     }
     false
 }
 
+/// If `ty` is a tuple `(T1,T2,...)`, return its component type strings (comma
+/// split at depth 0, respecting nested `()` and `[]`). Non-tuples return `None`.
+pub fn parse_tuple_components(ty: &str) -> Option<Vec<String>> {
+    let ty = ty.trim();
+    if !(ty.starts_with('(') && ty.ends_with(')')) {
+        return None;
+    }
+    Some(split_top_level(&ty[1..ty.len() - 1]))
+}
+
+/// Split a string on top-level commas, treating `()` and `[]` as nesting.
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '(' | '[' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ')' | ']' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(c),
+        }
+    }
+    let last = cur.trim();
+    if !last.is_empty() {
+        out.push(last.to_string());
+    }
+    out
+}
+
+/// Split a tuple **value** `(v1,v2,...)` into component value strings.
+fn split_tuple_values(val: &str) -> Result<Vec<String>> {
+    let v = val.trim();
+    let inner = v
+        .strip_prefix('(')
+        .and_then(|x| x.strip_suffix(')'))
+        .with_context(|| format!("tuple value must be wrapped in (): {val}"))?;
+    Ok(split_top_level(inner))
+}
+
 fn is_supported_type(ty: &str) -> bool {
     let ty = ty.trim();
-    if ty == "string" || ty == "bytes" || ty == "bool" || ty == "address" {
+    // Arrays: dynamic `T[]` for static elements (Phase A) or bytes/string
+    // elements (Phase C); fixed `T[n]` only for static elements (Phase B).
+    if let Some((elem, fixed)) = parse_array_type(ty) {
+        let elem = elem.trim();
+        return match fixed {
+            Some(_) => is_static_word_type(elem),
+            None => is_static_word_type(elem) || elem == "bytes" || elem == "string",
+        };
+    }
+    // Tuple (Phase D): supported iff every component is supported.
+    if let Some(components) = parse_tuple_components(ty) {
+        return components.iter().all(|c| is_supported_type(c));
+    }
+    if ty == "string" || ty == "bytes" {
+        return true;
+    }
+    is_static_word_type(ty)
+}
+
+/// True for ABI static types that occupy exactly one 32-byte word:
+/// `address`, `bool`, `uint<M>`, `int<M>`, `bytes<N>` (1..=32). Not `bytes` /
+/// `string` (dynamic) and not arrays.
+fn is_static_word_type(ty: &str) -> bool {
+    let ty = ty.trim();
+    if ty == "bool" || ty == "address" {
         return true;
     }
     if let Some(n) = ty.strip_prefix("bytes") {
         if n.is_empty() {
-            return true; // "bytes" already handled
+            return false; // bare `bytes` is dynamic
         }
-        if let Ok(size) = n.parse::<usize>() {
-            return (1..=32).contains(&size);
-        }
-        return false;
+        return n.parse::<usize>().map(|s| (1..=32).contains(&s)).unwrap_or(false);
     }
     if let Some(rest) = ty.strip_prefix("uint") {
         return rest.is_empty()
@@ -231,6 +308,204 @@ fn is_supported_type(ty: &str) -> bool {
     }
     false
 }
+
+/// If `ty` is an array type, return `(element_type, fixed_len)` where
+/// `fixed_len` is `Some(n)` for `T[n]` and `None` for a dynamic `T[]`.
+/// Non-array types return `None`.
+pub fn parse_array_type(ty: &str) -> Option<(String, Option<usize>)> {
+    let ty = ty.trim();
+    if !ty.ends_with(']') {
+        return None;
+    }
+    let open = ty.rfind('[')?;
+    let elem = ty[..open].trim().to_string();
+    if elem.is_empty() {
+        return None;
+    }
+    let inner = ty[open + 1..ty.len() - 1].trim();
+    if inner.is_empty() {
+        Some((elem, None)) // T[]
+    } else {
+        // T[n] — only a valid array if the inside is a number.
+        inner.parse::<usize>().ok().map(|n| (elem, Some(n)))
+    }
+}
+
+/// Split an array literal into element strings. Accepts `"[a,b,c]"`, `"a,b,c"`,
+/// or a single value; surrounding brackets and whitespace are stripped.
+pub fn split_array_values(raw: &str) -> Vec<String> {
+    let s = raw.trim();
+    let s = s
+        .strip_prefix('[')
+        .map(|inner| inner.strip_suffix(']').unwrap_or(inner))
+        .unwrap_or(s)
+        .trim();
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split(',')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
+}
+
+/// Encode a dynamic array of static-word elements (`T[]`): a uint256 length
+/// followed by one 32-byte word per element. Returns the tail payload (the
+/// head offset is written by [`build_calldata`]).
+pub fn encode_static_array_dynamic(elem_ty: &str, values: &[String]) -> Result<Vec<u8>> {
+    if !is_static_word_type(elem_ty) {
+        bail!(
+            "array element type {} is not a supported static type",
+            elem_ty
+        );
+    }
+    let mut out = Vec::with_capacity(32 + values.len() * 32);
+    out.extend_from_slice(&word_from_u256(U256::from(values.len())));
+    for v in values {
+        out.extend_from_slice(&encode_static_parameter(elem_ty, v)?);
+    }
+    Ok(out)
+}
+
+/// Encode a fixed-size array of static-word elements (`T[n]`): exactly `n`
+/// 32-byte words, inline, **no** length prefix. A fixed static array is itself
+/// a static type, so this goes directly in the head.
+pub fn encode_static_array_fixed(elem_ty: &str, values: &[String], n: usize) -> Result<Vec<u8>> {
+    if !is_static_word_type(elem_ty) {
+        bail!(
+            "array element type {} is not a supported static type",
+            elem_ty
+        );
+    }
+    if values.len() != n {
+        bail!(
+            "fixed array {}[{}] expects {} element(s), got {}",
+            elem_ty,
+            n,
+            n,
+            values.len()
+        );
+    }
+    let mut out = Vec::with_capacity(n * 32);
+    for v in values {
+        out.extend_from_slice(&encode_static_parameter(elem_ty, v)?);
+    }
+    Ok(out)
+}
+
+/// Encode a dynamic array of **dynamic** elements (`bytes[]` / `string[]`):
+/// a uint256 length, then `n` element offsets (relative to the start of the
+/// offset table, i.e. just after the length word), then each element's own
+/// dynamic encoding (length + right-padded data). Returns the tail payload.
+///
+/// Note: elements are split on commas, so `string[]` elements must not contain
+/// commas (operator CSV limitation); `bytes[]` (hex) is unaffected.
+pub fn encode_dynamic_element_array(elem_ty: &str, values: &[String]) -> Result<Vec<u8>> {
+    let encoded: Vec<Vec<u8>> = values
+        .iter()
+        .map(|v| match elem_ty {
+            "bytes" => encode_bytes_dynamic(v),
+            "string" => encode_string(v),
+            other => bail!("dynamic-element array of {} not supported", other),
+        })
+        .collect::<Result<_>>()?;
+    let n = encoded.len();
+    let mut out = Vec::new();
+    out.extend_from_slice(&word_from_u256(U256::from(n))); // length
+    let mut off = n * 32; // offsets are relative to the start of this table
+    for e in &encoded {
+        out.extend_from_slice(&word_offset(off));
+        off += e.len();
+    }
+    for e in &encoded {
+        out.extend_from_slice(e);
+    }
+    Ok(out)
+}
+
+/// Bytes this type contributes to the ABI **head**: dynamic types write one
+/// 32-byte offset word; a fixed static array `T[n]` writes `n` element heads; a
+/// static tuple writes the sum of its component heads; every other static type
+/// writes one word.
+fn type_head_bytes(ty: &str) -> usize {
+    if type_is_dynamic(ty) {
+        return 32;
+    }
+    if let Some((elem, Some(n))) = parse_array_type(ty) {
+        return n * type_head_bytes(elem.trim());
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        return components.iter().map(|c| type_head_bytes(c)).sum();
+    }
+    32
+}
+
+/// Encode a static value into its inline head bytes (length == `type_head_bytes`).
+fn encode_static_value(ty: &str, val: &str) -> Result<Vec<u8>> {
+    let ty = ty.trim();
+    if let Some((elem, Some(n))) = parse_array_type(ty) {
+        return encode_static_array_fixed(elem.trim(), &split_array_values(val), n);
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        // Static tuple: all components static → sequence yields head only.
+        return encode_sequence(&components, &split_tuple_values(val)?);
+    }
+    Ok(encode_static_parameter(ty, val)?.to_vec())
+}
+
+/// Encode a dynamic value into its tail payload.
+fn encode_dynamic_value(ty: &str, val: &str) -> Result<Vec<u8>> {
+    let ty = ty.trim();
+    if ty == "bytes" {
+        return encode_bytes_dynamic(val);
+    }
+    if ty == "string" {
+        return encode_string(val);
+    }
+    if let Some((elem, None)) = parse_array_type(ty) {
+        let elem = elem.trim();
+        return if is_static_word_type(elem) {
+            encode_static_array_dynamic(elem, &split_array_values(val))
+        } else {
+            encode_dynamic_element_array(elem, &split_array_values(val))
+        };
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        // Dynamic tuple: its own head+tail block.
+        return encode_sequence(&components, &split_tuple_values(val)?);
+    }
+    bail!("not a dynamic type: {}", ty);
+}
+
+/// Encode a sequence of (type, value) pairs as an ABI tuple body: head (static
+/// values inline, dynamic values as offsets) followed by the tail, with offsets
+/// relative to the start of this body. This is the recursive core shared by
+/// function calldata, tuples, and arrays.
+fn encode_sequence(types: &[String], values: &[String]) -> Result<Vec<u8>> {
+    if types.len() != values.len() {
+        bail!(
+            "tuple/args arity mismatch: expected {}, got {}",
+            types.len(),
+            values.len()
+        );
+    }
+    let head_size: usize = types.iter().map(|t| type_head_bytes(t)).sum();
+    let mut head = Vec::with_capacity(head_size);
+    let mut tail = Vec::new();
+    for (ty, val) in types.iter().zip(values.iter()) {
+        if type_is_dynamic(ty) {
+            head.extend_from_slice(&word_offset(head_size + tail.len()));
+            tail.extend_from_slice(&encode_dynamic_value(ty, val)?);
+        } else {
+            head.extend_from_slice(&encode_static_value(ty, val)?);
+        }
+    }
+    head.extend_from_slice(&tail);
+    Ok(head)
+}
+
+
+
 
 /// Parse unsigned integer from decimal or 0x-hex into U256 word.
 pub fn encode_uint256(val: &str) -> Result<[u8; 32]> {
@@ -358,26 +633,44 @@ pub fn encode_static_parameter(ty: &str, val: &str) -> Result<[u8; 32]> {
     bail!("not a static type: {}", ty);
 }
 
-/// Encode parameter for legacy callers; dynamic types return tail-only payload
-/// (length+data). Prefer [`build_calldata`] for full ABI layout.
+/// A precise error for a type we can parse but not (yet) encode, so the
+/// operator sees *why* (fixed array / dynamic-element array / tuple).
+fn unsupported_type_error(ty: &str) -> anyhow::Error {
+    let ty = ty.trim();
+    if let Some((elem, fixed)) = parse_array_type(ty) {
+        let elem = elem.trim();
+        if parse_array_type(elem).is_some() {
+            return anyhow::anyhow!("nested arrays ({ty}) not yet supported");
+        }
+        if parse_tuple_components(elem).is_some() {
+            return anyhow::anyhow!("arrays of tuples ({ty}) not yet supported");
+        }
+        if fixed.is_some() && !is_static_word_type(elem) {
+            return anyhow::anyhow!("fixed arrays of dynamic elements ({ty}) not yet supported");
+        }
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        if let Some(bad) = components.iter().find(|c| !is_supported_type(c)) {
+            return anyhow::anyhow!("tuple {ty}: unsupported component {bad}");
+        }
+    }
+    anyhow::anyhow!("Unsupported type: {ty}")
+}
+
+/// Encode a single parameter. Dynamic types (`bytes`, `string`, arrays, dynamic
+/// tuples) return the tail payload; static types (scalars, fixed static arrays,
+/// static tuples) return their inline head words. Prefer [`build_calldata`] for
+/// a full call (it lays out offsets across all args).
 pub fn encode_parameter(ty: &str, val: &str) -> Result<Vec<u8>> {
     let ty = ty.trim();
     if !is_supported_type(ty) {
-        if ty.ends_with("[]") || ty.starts_with('(') {
-            bail!(
-                "Unsupported type: {} (arrays/tuples not implemented)",
-                ty
-            );
-        }
-        bail!("Unsupported type: {}", ty);
+        return Err(unsupported_type_error(ty));
     }
-    if ty == "string" {
-        return encode_string(val);
+    if type_is_dynamic(ty) {
+        encode_dynamic_value(ty, val)
+    } else {
+        encode_static_value(ty, val)
     }
-    if ty == "bytes" {
-        return encode_bytes_dynamic(val);
-    }
-    Ok(encode_static_parameter(ty, val)?.to_vec())
 }
 
 /// Build full ABI calldata: selector || head || tail with correct dynamic offsets.
@@ -393,13 +686,7 @@ pub fn build_calldata(signature: &str, param_values: &[String]) -> Result<Bytes>
 
     for ty in &types {
         if !is_supported_type(ty) {
-            if ty.ends_with("[]") || ty.contains('[') || ty.starts_with('(') {
-                bail!(
-                    "Unsupported type: {} (arrays/tuples not implemented)",
-                    ty
-                );
-            }
-            bail!("Unsupported type: {}", ty);
+            return Err(unsupported_type_error(ty));
         }
     }
 
@@ -408,30 +695,10 @@ pub fn build_calldata(signature: &str, param_values: &[String]) -> Result<Bytes>
         return Ok(Bytes::from(selector.to_vec()));
     }
 
-    let head_size = types.len() * 32;
-    let mut head = Vec::with_capacity(head_size);
-    let mut tail = Vec::new();
-
-    for (ty, val) in types.iter().zip(param_values.iter()) {
-        if is_dynamic_type(ty) {
-            let offset = head_size + tail.len();
-            head.extend_from_slice(&word_offset(offset));
-            let dynamic = match ty.as_str() {
-                "string" => encode_string(val)?,
-                "bytes" => encode_bytes_dynamic(val)?,
-                other => bail!("internal: unhandled dynamic type {}", other),
-            };
-            tail.extend_from_slice(&dynamic);
-        } else {
-            let word = encode_static_parameter(ty, val)?;
-            head.extend_from_slice(&word);
-        }
-    }
-
-    let mut data = Vec::with_capacity(4 + head.len() + tail.len());
+    let body = encode_sequence(&types, param_values)?;
+    let mut data = Vec::with_capacity(4 + body.len());
     data.extend_from_slice(&selector);
-    data.extend_from_slice(&head);
-    data.extend_from_slice(&tail);
+    data.extend_from_slice(&body);
     Ok(Bytes::from(data))
 }
 
@@ -609,9 +876,206 @@ mod tests {
     }
 
     #[test]
-    fn arrays_rejected() {
-        let err = build_calldata("mint(uint256[])", &["1".to_string()]).unwrap_err();
-        assert!(err.to_string().contains("not implemented") || err.to_string().contains("Unsupported"));
+    fn parse_array_type_forms() {
+        assert_eq!(parse_array_type("uint256[]"), Some(("uint256".into(), None)));
+        assert_eq!(parse_array_type("address[]"), Some(("address".into(), None)));
+        assert_eq!(parse_array_type("bytes32[]"), Some(("bytes32".into(), None)));
+        assert_eq!(parse_array_type("uint256[3]"), Some(("uint256".into(), Some(3))));
+        assert_eq!(parse_array_type("uint256"), None);
+        assert_eq!(parse_array_type("bytes"), None);
+    }
+
+    #[test]
+    fn split_array_values_forms() {
+        assert_eq!(split_array_values("[1,2,3]"), vec!["1", "2", "3"]);
+        assert_eq!(split_array_values("1, 2 ,3"), vec!["1", "2", "3"]);
+        assert_eq!(split_array_values("[]"), Vec::<String>::new());
+        assert_eq!(split_array_values(" 0xabc "), vec!["0xabc"]);
+    }
+
+    #[test]
+    fn encode_dynamic_address_array() {
+        let a1 = "0x1111111111111111111111111111111111111111";
+        let a2 = "0x2222222222222222222222222222222222222222";
+        let cd = build_calldata("airdrop(address[])", &[format!("[{a1},{a2}]")]).unwrap();
+        let body = &cd[4..]; // skip selector
+        assert_eq!(U256::from_be_slice(&body[0..32]), U256::from(32)); // offset
+        assert_eq!(U256::from_be_slice(&body[32..64]), U256::from(2)); // length
+        assert_eq!(&body[64..96], encode_address(a1).unwrap().as_slice());
+        assert_eq!(&body[96..128], encode_address(a2).unwrap().as_slice());
+        assert_eq!(body.len(), 32 * 4);
+    }
+
+    #[test]
+    fn encode_bytes32_array_merkle_proof() {
+        let proof = format!("[0x{},0x{}]", "11".repeat(32), "22".repeat(32));
+        let cd = build_calldata("claim(bytes32[])", &[proof]).unwrap();
+        let body = &cd[4..];
+        assert_eq!(U256::from_be_slice(&body[0..32]), U256::from(32));
+        assert_eq!(U256::from_be_slice(&body[32..64]), U256::from(2));
+        assert_eq!(&body[64..96], &[0x11u8; 32]);
+        assert_eq!(&body[96..128], &[0x22u8; 32]);
+    }
+
+    #[test]
+    fn encode_mixed_uint_then_array() {
+        // claim(uint256, uint256[]) → head = [uint][offset=0x40], then tail.
+        let cd = build_calldata("claim(uint256,uint256[])", &["5".into(), "[1,2,3]".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(5)); // arg 0
+        assert_eq!(U256::from_be_slice(&b[32..64]), U256::from(64)); // offset to tail
+        assert_eq!(U256::from_be_slice(&b[64..96]), U256::from(3)); // length
+        assert_eq!(U256::from_be_slice(&b[96..128]), U256::from(1));
+        assert_eq!(U256::from_be_slice(&b[128..160]), U256::from(2));
+        assert_eq!(U256::from_be_slice(&b[160..192]), U256::from(3));
+    }
+
+    #[test]
+    fn empty_array_encodes_length_zero() {
+        let cd = build_calldata("claim(bytes32[])", &["[]".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(32));
+        assert_eq!(U256::from_be_slice(&b[32..64]), U256::from(0));
+        assert_eq!(b.len(), 64);
+    }
+
+    #[test]
+    fn bracketed_and_bare_forms_are_equivalent() {
+        let a = build_calldata("f(uint256[])", &["1,2,3".into()]).unwrap();
+        let b = build_calldata("f(uint256[])", &["[1,2,3]".into()]).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn encode_fixed_static_arrays() {
+        // uint256[3] is a static type: 3 inline words in the head, no length.
+        let cd = build_calldata("f(uint256[3])", &["[1,2,3]".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(b.len(), 3 * 32);
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(1));
+        assert_eq!(U256::from_be_slice(&b[32..64]), U256::from(2));
+        assert_eq!(U256::from_be_slice(&b[64..96]), U256::from(3));
+
+        // Mixed: f(uint256[2], uint256) — head is 2+1 = 3 words, all inline.
+        let cd = build_calldata("g(uint256[2],uint256)", &["[7,8]".into(), "9".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(b.len(), 3 * 32);
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(7));
+        assert_eq!(U256::from_be_slice(&b[32..64]), U256::from(8));
+        assert_eq!(U256::from_be_slice(&b[64..96]), U256::from(9));
+    }
+
+    #[test]
+    fn fixed_then_dynamic_offset_is_correct() {
+        // f(address[2], uint256[]) — head = 2 (fixed) + 1 (offset) = 3 words = 96B.
+        // The dynamic array's offset must therefore be 96 (0x60).
+        let a1 = "0x1111111111111111111111111111111111111111";
+        let a2 = "0x2222222222222222222222222222222222222222";
+        let cd = build_calldata("f(address[2],uint256[])", &[format!("[{a1},{a2}]"), "[5]".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(&b[0..32], encode_address(a1).unwrap().as_slice());
+        assert_eq!(&b[32..64], encode_address(a2).unwrap().as_slice());
+        assert_eq!(U256::from_be_slice(&b[64..96]), U256::from(96)); // offset
+        assert_eq!(U256::from_be_slice(&b[96..128]), U256::from(1)); // len
+        assert_eq!(U256::from_be_slice(&b[128..160]), U256::from(5)); // elem
+    }
+
+    #[test]
+    fn fixed_array_wrong_count_errors() {
+        let e = build_calldata("f(uint256[3])", &["[1,2]".into()]).unwrap_err().to_string();
+        assert!(e.contains("expects 3"), "{e}");
+    }
+
+    #[test]
+    fn encode_bytes_dynamic_array() {
+        // f(bytes[]) with two short byte strings.
+        let cd = build_calldata("f(bytes[])", &["[0x1122,0x3344]".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(32)); // head offset to array
+        // array body starts at b[32..]
+        let arr = &b[32..];
+        assert_eq!(U256::from_be_slice(&arr[0..32]), U256::from(2)); // length
+        assert_eq!(U256::from_be_slice(&arr[32..64]), U256::from(64)); // offset elem0
+        assert_eq!(U256::from_be_slice(&arr[64..96]), U256::from(128)); // offset elem1
+        // elem0: len 2 + data
+        assert_eq!(U256::from_be_slice(&arr[96..128]), U256::from(2));
+        assert_eq!(&arr[128..130], &[0x11, 0x22]);
+        // elem1: len 2 + data
+        assert_eq!(U256::from_be_slice(&arr[160..192]), U256::from(2));
+        assert_eq!(&arr[192..194], &[0x33, 0x44]);
+    }
+
+    #[test]
+    fn encode_string_dynamic_array() {
+        let cd = build_calldata("f(string[])", &["[hi,yo]".into()]).unwrap();
+        let arr = &cd[4 + 32..]; // skip selector + head offset
+        assert_eq!(U256::from_be_slice(&arr[0..32]), U256::from(2)); // length
+        // elem0 "hi"
+        assert_eq!(U256::from_be_slice(&arr[96..128]), U256::from(2));
+        assert_eq!(&arr[128..130], b"hi");
+    }
+
+    #[test]
+    fn encode_static_tuple_inline() {
+        // f((address,uint256)) — static tuple: two words inline, no offset.
+        let a = "0x1111111111111111111111111111111111111111";
+        let cd = build_calldata("f((address,uint256))", &[format!("({a},5)")]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(b.len(), 64);
+        assert_eq!(&b[0..32], encode_address(a).unwrap().as_slice());
+        assert_eq!(U256::from_be_slice(&b[32..64]), U256::from(5));
+    }
+
+    #[test]
+    fn encode_dynamic_tuple_with_bytes() {
+        // f((uint256,bytes)) — tuple is dynamic (bytes), so arg is offset+tail.
+        let cd = build_calldata("f((uint256,bytes))", &["(7,0x1122)".into()]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(32)); // offset to tuple
+        let t = &b[32..];
+        assert_eq!(U256::from_be_slice(&t[0..32]), U256::from(7)); // uint
+        assert_eq!(U256::from_be_slice(&t[32..64]), U256::from(64)); // offset to bytes (within tuple)
+        assert_eq!(U256::from_be_slice(&t[64..96]), U256::from(2)); // bytes len
+        assert_eq!(&t[96..98], &[0x11, 0x22]);
+    }
+
+    #[test]
+    fn encode_mixed_scalar_and_static_tuple() {
+        // f(uint256,(address,uint256)) — both static → all inline, 3 words.
+        let a = "0x2222222222222222222222222222222222222222";
+        let cd = build_calldata("f(uint256,(address,uint256))", &["9".into(), format!("({a},4)")]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(b.len(), 96);
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(9));
+        assert_eq!(&b[32..64], encode_address(a).unwrap().as_slice());
+        assert_eq!(U256::from_be_slice(&b[64..96]), U256::from(4));
+    }
+
+    #[test]
+    fn tuple_with_array_component() {
+        // f((address,bytes32[])) — dynamic tuple containing a static-element array.
+        let a = "0x3333333333333333333333333333333333333333";
+        let proof = format!("[0x{}]", "aa".repeat(32));
+        let cd = build_calldata("claim((address,bytes32[]))", &[format!("({a},{proof})")]).unwrap();
+        let b = &cd[4..];
+        assert_eq!(U256::from_be_slice(&b[0..32]), U256::from(32)); // offset to tuple
+        let t = &b[32..];
+        assert_eq!(&t[0..32], encode_address(a).unwrap().as_slice()); // address inline
+        assert_eq!(U256::from_be_slice(&t[32..64]), U256::from(64)); // offset to array within tuple
+        assert_eq!(U256::from_be_slice(&t[64..96]), U256::from(1)); // array len
+        assert_eq!(&t[96..128], &[0xaau8; 32]); // proof[0]
+    }
+
+    #[test]
+    fn unsupported_array_and_tuple_forms_have_clear_errors() {
+        let nested = encode_parameter("uint256[][]", "x").unwrap_err().to_string();
+        assert!(nested.contains("nested arrays"), "{nested}");
+        let fixed_dyn = encode_parameter("bytes[3]", "x").unwrap_err().to_string();
+        assert!(fixed_dyn.contains("fixed arrays of dynamic elements"), "{fixed_dyn}");
+        let arr_tuple = encode_parameter("(uint256)[]", "x").unwrap_err().to_string();
+        assert!(arr_tuple.contains("arrays of tuples"), "{arr_tuple}");
+        let bad_tuple_val = build_calldata("f((address,uint256))", &["0xabc,5".into()]).unwrap_err().to_string();
+        assert!(bad_tuple_val.contains("wrapped in ()"), "{bad_tuple_val}");
     }
 
     #[test]

@@ -2258,6 +2258,9 @@ code {
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   margin-bottom: 20px;
+  /* size each card to its own content instead of stretching both to a fixed
+     row height; otherwise added content (e.g. the icon) overflows the card */
+  align-items: start;
 }
 
 @media (max-width: 800px) {
@@ -2273,7 +2276,8 @@ code {
   gap: 8px;
   text-align: left;
   padding: 22px 20px;
-  min-height: 140px;
+  min-height: 150px;
+  height: auto;
   border-radius: 12px;
   background: var(--card);
   border: 1px solid var(--border);
@@ -2292,6 +2296,20 @@ code {
 
 .home-launch-card.card-raw {
   border-color: rgba(255, 107, 107, 0.28);
+}
+
+.home-launch-card .hl-ico {
+  display: inline-flex;
+  margin-bottom: 2px;
+  color: var(--muted-2);
+}
+
+.home-launch-card.card-os .hl-ico {
+  color: var(--accent-border);
+}
+
+.home-launch-card.card-raw .hl-ico {
+  color: var(--red);
 }
 
 .home-launch-card .hl-badge {
@@ -2313,14 +2331,14 @@ code {
   font-size: 0.86rem;
   color: var(--muted);
   line-height: 1.4;
-  flex: 1;
+  flex: 0 0 auto;
 }
 
 .home-launch-card .hl-cta {
   font-size: 0.8rem;
   font-weight: 650;
   color: var(--accent-border);
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .qa-grid {
@@ -2329,6 +2347,17 @@ code {
 
 .last-run-panel {
   margin-top: 4px;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-title .panel-ico {
+  display: inline-flex;
+  color: var(--muted-2);
 }
 
 .home-history {
@@ -2487,6 +2516,131 @@ code {
 .modal-actions .primary,
 .modal-actions .danger-btn {
   min-width: 100px;
+}
+
+/* —— Command palette (Ctrl/Cmd+K) —— */
+.cmd-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 6, 10, 0.72);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 1500;
+  padding: 12vh 20px 20px;
+  backdrop-filter: blur(4px);
+}
+
+.cmd-card {
+  width: min(560px, 100%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.cmd-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 1rem;
+  padding: 15px 16px;
+  outline: none;
+}
+
+.cmd-input::placeholder {
+  color: var(--muted-2);
+}
+
+.cmd-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.cmd-item .cmd-ico {
+  display: inline-flex;
+  color: var(--muted-2);
+}
+
+.cmd-item .cmd-sub {
+  margin-left: auto;
+  color: var(--muted-2);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cmd-item.active,
+.cmd-item:hover {
+  background: var(--card-hover);
+}
+
+.cmd-item.active {
+  outline: 1px solid var(--accent-border);
+}
+
+.cmd-empty {
+  padding: 14px 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.cmd-foot {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.cmd-foot span {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+/* —— RPC per-network picker —— */
+.rpc-chain-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+}
+
+.chip-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px 3px 8px;
+  cursor: pointer;
+}
+
+.chip-check input {
+  width: 13px;
+  height: 13px;
 }
 
 /* checkbox accent */
@@ -2784,7 +2938,7 @@ input[type="checkbox"] {
   background: transparent;
 }
 
-/* �� Mission Control overlay (live mint HUD) �� */
+/* —— Mission Control overlay (live mint HUD) —— */
 .mc-overlay {
   position: fixed;
   right: 16px;
@@ -2986,7 +3140,7 @@ input[type="checkbox"] {
   margin: 0;
 }
 
-/* collapsed bar � phase + stats only */
+/* collapsed bar — phase + stats only */
 .mc-overlay.mc-collapsed {
   max-height: none;
 }

@@ -412,7 +412,7 @@ pub async fn run_raw_mint(
             }
         };
 
-        print!("  Simulating...");
+        crate::rprint!("  Simulating...");
         let gas_estimate = match rpc
             .estimate_gas(&addr, &config.contract, config.value, &calldata)
             .await
@@ -621,7 +621,7 @@ pub async fn run_raw_mint(
                 });
                 continue;
             }
-            print!("  Sending...");
+            crate::rprint!("  Sending...");
             let tx_hash = match rpc.race_send(&piece.raw).await {
                 Ok(h) => {
                     crate::rlog!(" OK {}", shorten_hash(&h));
@@ -640,7 +640,7 @@ pub async fn run_raw_mint(
                     continue;
                 }
             };
-            print!("  Receipt...");
+            crate::rprint!("  Receipt...");
             match rpc.wait_for_receipt(&tx_hash, 120).await {
                 Ok(receipt) => {
                     let info = crate::rpc::parse_receipt(&receipt);
@@ -760,7 +760,7 @@ pub async fn run_raw_mint(
             });
             continue;
         };
-        print!("  Receipt {}...", shorten_hash(&piece.tx_hash));
+        crate::rprint!("  Receipt {}...", shorten_hash(&piece.tx_hash));
         match rpc.wait_for_receipt(&piece.tx_hash, 90).await {
             Ok(receipt) => {
                 let info = crate::rpc::parse_receipt(&receipt);

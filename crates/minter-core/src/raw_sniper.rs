@@ -212,14 +212,30 @@ async fn resolve_mint_value(rpc: &RpcClient, config: &RawSniperConfig) -> (U256,
             if matches!(config.preset, SniperPreset::MintBayPublic) {
                 match fetch_mintbay_status(rpc, &config.contract).await {
                     Ok(st) => {
-                        let v = st.mint_value(config.quantity);
-                        (
-                            v,
-                            format!(
-                                "MintBay auto {} wei (phaseType={} minted={}/{})",
-                                v, st.current_phase_type, st.total_minted, st.max_supply
-                            ),
-                        )
+                        // The view fallback in `fetch_mintbay_status` cannot read the
+                        // price fields (both stay zero). Sending an auto value that is
+                        // only the collector fee would underpay and revert, so prefer
+                        // the user's fixed fallback when the price is unknown.
+                        let price_known =
+                            !st.public_mint_price.is_zero() || !st.phase_mint_price.is_zero();
+                        if !price_known && !config.fixed_value.is_zero() {
+                            (
+                                config.fixed_value,
+                                format!(
+                                    "MintBay auto: price unavailable (view fallback) — using fixed {} wei",
+                                    config.fixed_value
+                                ),
+                            )
+                        } else {
+                            let v = st.mint_value(config.quantity);
+                            (
+                                v,
+                                format!(
+                                    "MintBay auto {} wei (phaseType={} minted={}/{})",
+                                    v, st.current_phase_type, st.total_minted, st.max_supply
+                                ),
+                            )
+                        }
                     }
                     Err(e) => (
                         config.fixed_value,
@@ -991,6 +1007,73 @@ pub fn parse_sniper_at_time(raw: Option<&str>) -> Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn u256_to_i64_sat_saturates() {
+        assert_eq!(u256_to_i64_sat(U256::from(1000u64)), 1000);
+        assert_eq!(u256_to_i64_sat(U256::ZERO), 0);
+        assert_eq!(u256_to_i64_sat(U256::from(i64::MAX as u64)), i64::MAX);
+        // Above i64::MAX but within u64, and far beyond u64 — both clamp to i64::MAX.
+        assert_eq!(u256_to_i64_sat(U256::from(u64::MAX)), i64::MAX);
+        assert_eq!(u256_to_i64_sat(U256::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn u256_to_u8_sat_saturates() {
+        assert_eq!(u256_to_u8_sat(U256::from(5u64)), 5);
+        assert_eq!(u256_to_u8_sat(U256::from(255u64)), 255);
+        assert_eq!(u256_to_u8_sat(U256::from(300u64)), 255);
+        assert_eq!(u256_to_u8_sat(U256::MAX), 255);
+    }
+
+    #[test]
+    fn parse_sniper_at_time_forms() {
+        assert_eq!(parse_sniper_at_time(None).unwrap(), None);
+        assert_eq!(parse_sniper_at_time(Some("1700000000")).unwrap(), Some(1_700_000_000));
+        // milliseconds are normalized to seconds
+        assert_eq!(parse_sniper_at_time(Some("1700000000000")).unwrap(), Some(1_700_000_000));
+        assert_eq!(parse_sniper_at_time(Some("  ")).unwrap(), None);
+        assert!(parse_sniper_at_time(Some("not-a-time")).is_err());
+    }
+
+    fn cfg(function: &str, params: Vec<String>, quantity: u64) -> RawSniperConfig {
+        RawSniperConfig {
+            function: function.to_string(),
+            params,
+            quantity,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn build_mint_params_uint256_uses_quantity() {
+        let p = build_mint_params(&cfg("mint(uint256)", vec![], 3)).unwrap();
+        assert_eq!(p, vec!["3"]);
+        // quantity floored to at least 1
+        let p = build_mint_params(&cfg("mint(uint256)", vec![], 0)).unwrap();
+        assert_eq!(p, vec!["1"]);
+    }
+
+    #[test]
+    fn build_mint_params_explicit_params_win() {
+        let p = build_mint_params(&cfg("claimTo(address,uint256)", vec!["0xabc".into(), "2".into()], 9)).unwrap();
+        assert_eq!(p, vec!["0xabc", "2"]);
+    }
+
+    #[test]
+    fn build_mint_params_zero_arg() {
+        let p = build_mint_params(&cfg("claim()", vec![], 5)).unwrap();
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn build_mint_params_fallback_quantity() {
+        // Non-uint, non-zero-arg, no explicit params → default to quantity word.
+        let p = build_mint_params(&cfg("publicMint()", vec![], 4)).unwrap();
+        assert!(p.is_empty(), "zero-arg still wins");
+        let p = build_mint_params(&cfg("weird(bytes32)", vec![], 4)).unwrap();
+        assert_eq!(p, vec!["4"]);
+    }
 
     #[test]
     fn mintbay_public_open_logic() {

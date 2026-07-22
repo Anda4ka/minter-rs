@@ -563,8 +563,12 @@ async fn sweep_eth(
     state: State<'_, Arc<AppState>>,
     input: SweepEthInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    // Share the mint gate: concurrent broadcasts from the same vault reuse nonces.
+    if state.mint_running.swap(true, Ordering::SeqCst) {
+        return Err(minter_core::mint_busy_message().into());
+    }
     let session = state.session.lock().clone();
-    session
+    let result = session
         .sweep_eth(
             &input.chain,
             &input.destination,
@@ -572,7 +576,9 @@ async fn sweep_eth(
             input.confirm.as_deref().unwrap_or(""),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    state.mint_running.store(false, Ordering::SeqCst);
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -590,8 +596,11 @@ async fn sweep_nfts(
     state: State<'_, Arc<AppState>>,
     input: SweepNftsInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    if state.mint_running.swap(true, Ordering::SeqCst) {
+        return Err(minter_core::mint_busy_message().into());
+    }
     let session = state.session.lock().clone();
-    session
+    let result = session
         .sweep_nfts(
             &input.chain,
             &input.contract,
@@ -600,7 +609,9 @@ async fn sweep_nfts(
             input.confirm.as_deref().unwrap_or(""),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    state.mint_running.store(false, Ordering::SeqCst);
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -911,13 +922,16 @@ async fn raw_mint(
     state: State<'_, Arc<AppState>>,
     input: RawMintInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    if state.mint_running.swap(true, Ordering::SeqCst) {
+        return Err(minter_core::mint_busy_message().into());
+    }
     let session = state.session.lock().clone();
     let gas_mult = input
         .gas_multiplier
         .as_deref()
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|m| *m > 0.0);
-    session
+    let result = session
         .raw_mint(
             &input.chain,
             &input.contract,
@@ -934,7 +948,9 @@ async fn raw_mint(
             input.gas_limit,
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    state.mint_running.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]
@@ -976,8 +992,11 @@ async fn disperse(
     state: State<'_, Arc<AppState>>,
     input: DisperseInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    if state.mint_running.swap(true, Ordering::SeqCst) {
+        return Err(minter_core::mint_busy_message().into());
+    }
     let session = state.session.lock().clone();
-    session
+    let result = session
         .disperse(
             &input.chain,
             &input.from_address,
@@ -986,7 +1005,9 @@ async fn disperse(
             input.dry_run.unwrap_or(true),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    state.mint_running.store(false, Ordering::SeqCst);
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -1004,8 +1025,11 @@ async fn multicall(
     state: State<'_, Arc<AppState>>,
     input: MulticallInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
+    if state.mint_running.swap(true, Ordering::SeqCst) {
+        return Err(minter_core::mint_busy_message().into());
+    }
     let session = state.session.lock().clone();
-    session
+    let result = session
         .multicall(
             &input.chain,
             &input.from_address,
@@ -1014,7 +1038,9 @@ async fn multicall(
             input.multicall_address,
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    state.mint_running.store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]

@@ -138,10 +138,8 @@ impl Session {
 
         let settings = Settings::load(&config_path, Some(&env_path));
         let mut env = load_env_file(&env_path);
-        // Settings (config.json) override / fill env map used by mint/RPC helpers
-        for (k, v) in settings.to_env_map() {
-            env.insert(k, v);
-        }
+        // config.json owns connection keys — drop stale .env RPC/Alchemy first
+        settings.apply_connection_to_env(&mut env);
 
         let mut rpc_status = "—".into();
         let mut network_label = "Not selected".into();
@@ -410,9 +408,7 @@ impl Session {
     pub fn reload_env(&mut self) {
         self.settings = Settings::load(&self.config_path, Some(&self.env_path));
         self.env = load_env_file(&self.env_path);
-        for (k, v) in self.settings.to_env_map() {
-            self.env.insert(k, v);
-        }
+        self.settings.apply_connection_to_env(&mut self.env);
         self.dry_run = self.settings.dry_run;
         self.proxy_count = self.settings.proxy_count();
         self.refresh_rpc_label();
@@ -436,10 +432,9 @@ impl Session {
             .save(&self.config_path)
             .context("write config.json")?;
         // Optional: keep .env mirror for CLI tools that still open .env
+        // (also strips empty connection keys from .env)
         let _ = self.settings.save_to_env_file(&self.env_path);
-        for (k, v) in self.settings.to_env_map() {
-            self.env.insert(k, v);
-        }
+        self.settings.apply_connection_to_env(&mut self.env);
         self.proxy_count = self.settings.proxy_count();
         self.refresh_rpc_label();
         Ok(())
@@ -449,9 +444,7 @@ impl Session {
     pub fn apply_settings(&mut self, settings: Settings) {
         self.settings = settings;
         self.dry_run = self.settings.dry_run;
-        for (k, v) in self.settings.to_env_map() {
-            self.env.insert(k, v);
-        }
+        self.settings.apply_connection_to_env(&mut self.env);
         self.proxy_count = self.settings.proxy_count();
         self.refresh_rpc_label();
     }

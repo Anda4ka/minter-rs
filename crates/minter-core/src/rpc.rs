@@ -3,10 +3,64 @@ use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::time::Duration;
 
+/// Default max RPC endpoints to fan out across for a single logical call.
+const RPC_MAX_NODES: usize = 3;
+/// Default per-attempt request timeout for a single endpoint.
+const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default hedge delay: how long to wait for the lead node before also firing
+/// the next endpoint in parallel on a hedged read. Small enough to hide a slow
+/// lead node near T0, large enough not to spam every node on a healthy link.
+const RPC_HEDGE_DELAY: Duration = Duration::from_millis(350);
+
+/// Tunable RPC fan-out / timeout knobs. Defaults match the constants above;
+/// overridable via env / settings keys so fast L2s can tighten timeouts and
+/// slow proxies can loosen them without a code change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpcTuning {
+    pub max_nodes: usize,
+    pub call_timeout: Duration,
+    pub hedge_delay: Duration,
+}
+
+impl Default for RpcTuning {
+    fn default() -> Self {
+        Self {
+            max_nodes: RPC_MAX_NODES,
+            call_timeout: RPC_CALL_TIMEOUT,
+            hedge_delay: RPC_HEDGE_DELAY,
+        }
+    }
+}
+
+impl RpcTuning {
+    /// Read overrides from a key lookup (env or settings). Missing / invalid
+    /// keys keep the default; values are clamped to sane ranges so a bad config
+    /// can't disable fan-out or set a 0 s timeout.
+    ///
+    /// Keys: `RPC_MAX_NODES` (1..=10), `RPC_CALL_TIMEOUT_MS` (500..=60000),
+    /// `RPC_HEDGE_DELAY_MS` (50..=5000).
+    pub fn from_lookup<F: Fn(&str) -> Option<String>>(get: F) -> Self {
+        let mut t = Self::default();
+        if let Some(n) = get("RPC_MAX_NODES").and_then(|s| s.trim().parse::<usize>().ok()) {
+            t.max_nodes = n.clamp(1, 10);
+        }
+        if let Some(ms) = get("RPC_CALL_TIMEOUT_MS").and_then(|s| s.trim().parse::<u64>().ok()) {
+            t.call_timeout = Duration::from_millis(ms.clamp(500, 60_000));
+        }
+        if let Some(ms) = get("RPC_HEDGE_DELAY_MS").and_then(|s| s.trim().parse::<u64>().ok()) {
+            t.hedge_delay = Duration::from_millis(ms.clamp(50, 5_000));
+        }
+        t
+    }
+}
+
+
+
 pub struct RpcClient {
     client: reqwest::Client,
     urls: Vec<String>,
     next_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    tuning: RpcTuning,
 }
 
 impl Clone for RpcClient {
@@ -15,6 +69,7 @@ impl Clone for RpcClient {
             client: self.client.clone(),
             urls: self.urls.clone(),
             next_id: self.next_id.clone(),
+            tuning: self.tuning,
         }
     }
 }
@@ -36,6 +91,7 @@ impl RpcClient {
             client,
             urls,
             next_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            tuning: RpcTuning::from_lookup(|k| std::env::var(k).ok()),
         })
     }
 
@@ -80,13 +136,13 @@ impl RpcClient {
         if !status.is_success() {
             bail!(
                 "RPC {method} HTTP {status} via {short}: {}",
-                crate::truncate_str(&text, 240)
+crate::safe_truncate(&text, 240)
             );
         }
         let data: serde_json::Value = serde_json::from_str(&text).with_context(|| {
             format!(
                 "RPC {method}: bad JSON from {short}: {}",
-                crate::truncate_str(&text, 240)
+crate::safe_truncate(&text, 240)
             )
         })?;
         if let Some(error) = data.get("error") {
@@ -257,14 +313,14 @@ impl RpcClient {
                 "RPC HTTP {} from {}: {}",
                 status,
                 Self::short_url(url),
-                crate::truncate_str(&text, 240)
+crate::safe_truncate(&text, 240)
             );
         }
         let data: serde_json::Value = serde_json::from_str(&text).with_context(|| {
             format!(
                 "failed to parse RPC response from {}: {}",
                 Self::short_url(url),
-                crate::truncate_str(&text, 240)
+crate::safe_truncate(&text, 240)
             )
         })?;
         if let Some(error) = data.get("error") {
@@ -285,13 +341,13 @@ impl RpcClient {
     }
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        let max_urls = self.urls.len().min(3);
+        let max_urls = self.urls.len().min(self.tuning.max_nodes);
         if max_urls == 0 {
             bail!("No RPC URLs configured (method {method})");
         }
         let mut errors: Vec<String> = Vec::new();
         for (i, url) in self.urls.iter().take(max_urls).enumerate() {
-            match tokio::time::timeout(Duration::from_secs(5), self.rpc_call(url, method, params.clone())).await {
+            match tokio::time::timeout(self.tuning.call_timeout, self.rpc_call(url, method, params.clone())).await {
                 Ok(Ok(result)) => return Ok(result),
                 Ok(Err(e)) => {
                     let msg = format!("{} via {}: {}", method, Self::short_url(url), e);
@@ -324,8 +380,102 @@ impl RpcClient {
         bail!("No RPC URLs for method {method}")
     }
 
+    /// Latency-optimized read for idempotent methods (nonce, timestamp, …).
+    ///
+    /// Fires the lead endpoint immediately; if it hasn't answered within
+    /// [`RPC_HEDGE_DELAY`], the next endpoint is fired **in parallel** (and so
+    /// on up to [`RPC_MAX_NODES`]). The first successful response wins and the
+    /// rest are aborted. A fast error on one node triggers the next
+    /// immediately. With a single URL this is identical to a plain timed call.
+    ///
+    /// Safe only for read-only methods: the request may be sent to more than
+    /// one node, so never use this for `eth_sendRawTransaction`.
+    async fn call_hedged(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let urls: Vec<String> = self.urls.iter().take(self.tuning.max_nodes).cloned().collect();
+        if urls.is_empty() {
+            bail!("No RPC URLs configured (method {method})");
+        }
+
+        // One spawnable, self-timed attempt against `urls[idx]`.
+        let client = self.client.clone();
+        let counter = self.next_id.clone();
+        let method_s = method.to_string();
+        let call_timeout = self.tuning.call_timeout;
+        let hedge_delay = self.tuning.hedge_delay;
+        let mk = |idx: usize| {
+            let client = client.clone();
+            let url = urls[idx].clone();
+            let id = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let method = method_s.clone();
+            let params = params.clone();
+            let call_timeout = call_timeout;
+            async move {
+                let res = tokio::time::timeout(
+                    call_timeout,
+                    Self::rpc_call_with_client(client, url.clone(), id, &method, params),
+                )
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("timeout {}ms", call_timeout.as_millis())));
+                (url, res)
+            }
+        };
+
+        let mut set = tokio::task::JoinSet::new();
+        set.spawn(mk(0));
+        let mut spawned = 1usize;
+        let mut errors: Vec<String> = Vec::new();
+
+        loop {
+            if spawned < urls.len() {
+                tokio::select! {
+                    biased;
+                    joined = set.join_next() => {
+                        match joined {
+                            Some(Ok((url, Ok(val)))) => {
+                                let _ = url;
+                                return Ok(val);
+                            }
+                            Some(Ok((url, Err(e)))) => errors.push(format!(
+                                "{} via {}: {}", method, Self::short_url(&url), e
+                            )),
+                            Some(Err(e)) => errors.push(format!("{method} task join: {e}")),
+                            None => {}
+                        }
+                        // Lead attempt already resolved (fast error) — fan out now.
+                        if set.is_empty() && spawned < urls.len() {
+                            set.spawn(mk(spawned));
+                            spawned += 1;
+                        }
+                    }
+                    _ = tokio::time::sleep(hedge_delay) => {
+                        set.spawn(mk(spawned));
+                        spawned += 1;
+                    }
+                }
+            } else {
+                match set.join_next().await {
+                    Some(Ok((_url, Ok(val)))) => return Ok(val),
+                    Some(Ok((url, Err(e)))) => errors.push(format!(
+                        "{} via {}: {}", method, Self::short_url(&url), e
+                    )),
+                    Some(Err(e)) => errors.push(format!("{method} task join: {e}")),
+                    None => break,
+                }
+            }
+        }
+        bail!(
+            "All RPC {method} attempts failed ({} node(s)): {}",
+            spawned,
+            errors.join(" | ")
+        )
+    }
+
     pub async fn chain_id(&self) -> Result<u64> {
-        let result = self.call("eth_chainId", json!([])).await?;
+        let result = self.call_hedged("eth_chainId", json!([])).await?;
         let hex_str = result.as_str().context("chainId not a string")?;
         u64::from_str_radix(hex_str.strip_prefix("0x").unwrap_or(hex_str), 16)
             .context("invalid chainId")
@@ -333,7 +483,7 @@ impl RpcClient {
 
     pub async fn nonce(&self, address: &Address) -> Result<u64> {
         let result = self
-            .call(
+            .call_hedged(
                 "eth_getTransactionCount",
                 json!([format!("{:?}", address), "pending"]),
             )
@@ -345,7 +495,7 @@ impl RpcClient {
 
     pub async fn nonce_latest(&self, address: &Address) -> Result<u64> {
         let result = self
-            .call(
+            .call_hedged(
                 "eth_getTransactionCount",
                 json!([format!("{:?}", address), "latest"]),
             )
@@ -357,7 +507,7 @@ impl RpcClient {
 
     pub async fn block_timestamp(&self) -> Result<u64> {
         let result = self
-            .call("eth_getBlockByNumber", json!(["latest", false]))
+            .call_hedged("eth_getBlockByNumber", json!(["latest", false]))
             .await?;
         let hex_str = result
             .get("timestamp")
@@ -489,8 +639,19 @@ impl RpcClient {
         Ok((base_fee, priority))
     }
 
+    /// Broadcast a signed tx to up to `max_nodes` endpoints in parallel and
+    /// return the first accepted hash. See [`send_raw_transaction_report`] for
+    /// the per-node breakdown.
     pub async fn send_raw_transaction(&self, raw: &Bytes) -> Result<B256> {
-        let urls: Vec<String> = self.urls.iter().take(3).cloned().collect();
+        self.send_raw_transaction_report(raw).await.map(|r| r.hash)
+    }
+
+    /// Like [`send_raw_transaction`] but returns a [`SendReport`] describing
+    /// which endpoint's response was used (`winner`), how many were tried, and
+    /// the errors from the others (`losers`). Useful for latency/observability
+    /// (which node is winning broadcasts) without changing the hash contract.
+    pub async fn send_raw_transaction_report(&self, raw: &Bytes) -> Result<SendReport> {
+        let urls: Vec<String> = self.urls.iter().take(self.tuning.max_nodes).cloned().collect();
         let max_attempts = urls.len();
         if max_attempts == 0 {
             bail!("No RPC URLs configured");
@@ -523,7 +684,7 @@ impl RpcClient {
         }
 
         let mut tasks: Vec<Option<_>> = tasks.into_iter().map(Some).collect();
-        let mut last_error = None;
+        let mut losers: Vec<String> = Vec::new();
         for i in 0..tasks.len() {
             let Some(handle) = tasks[i].take() else {
                 continue;
@@ -532,40 +693,52 @@ impl RpcClient {
                 Ok((url, Ok(result))) => {
                     let hex_str = result.as_str().context("tx hash not a string")?;
                     let hash = hex_str.parse().context("invalid tx hash")?;
-                    crate::rlog!("RPC send OK via {}", Self::short_url(&url));
                     for task in &mut tasks {
                         if let Some(handle) = task.take() {
                             handle.abort();
                         }
                     }
-                    return Ok(hash);
+                    let winner = Self::short_url(&url);
+                    if losers.is_empty() {
+                        crate::rlog!("RPC send OK via {}", winner);
+                    } else {
+                        crate::rlog!(
+                            "RPC send OK via {} (after {} failed: {})",
+                            winner,
+                            losers.len(),
+                            losers.join("; ")
+                        );
+                    }
+                    return Ok(SendReport {
+                        hash,
+                        winner,
+                        nodes_tried: max_attempts,
+                        losers,
+                    });
                 }
                 Ok((url, Err(e))) => {
-                    let msg = format!(
-                        "eth_sendRawTransaction via {}: {}",
-                        Self::short_url(&url),
-                        e
-                    );
+                    let msg = format!("{}: {}", Self::short_url(&url), e);
                     crate::rlog!("RPC send failed: {}", msg);
-                    last_error = Some(msg);
+                    losers.push(msg);
                 }
                 Err(e) => {
-                    let msg = format!("eth_sendRawTransaction task join: {e}");
-                    crate::rlog!("{}", msg);
-                    last_error = Some(msg);
+                    let msg = format!("task join: {e}");
+                    crate::rlog!("RPC send {}", msg);
+                    losers.push(msg);
                 }
             }
         }
         bail!(
-            "All RPC eth_sendRawTransaction attempts failed: {}",
-            last_error.unwrap_or_else(|| "unknown".into())
+            "All RPC eth_sendRawTransaction attempts failed ({} node(s)): {}",
+            max_attempts,
+            losers.join(" | ")
         )
     }
 
     pub async fn transaction_receipt(&self, hash: &B256) -> Result<Option<serde_json::Value>> {
         let hash_hex = format!("0x{}", hex::encode(hash.as_slice()));
         let mut last_error = None;
-        for (attempt, url) in self.urls.iter().take(3).enumerate() {
+        for (attempt, url) in self.urls.iter().take(self.tuning.max_nodes).enumerate() {
             match self
                 .rpc_call(url, "eth_getTransactionReceipt", json!([hash_hex]))
                 .await
@@ -663,6 +836,20 @@ impl RpcClient {
     }
 }
 
+/// Outcome of a parallel `eth_sendRawTransaction` broadcast: which endpoint's
+/// response was used, how many were tried, and the errors from the others.
+#[derive(Debug, Clone)]
+pub struct SendReport {
+    /// Accepted transaction hash.
+    pub hash: B256,
+    /// Short URL of the endpoint whose response we used.
+    pub winner: String,
+    /// Number of endpoints the broadcast fanned out to.
+    pub nodes_tried: usize,
+    /// `"shorturl: error"` for endpoints that errored before the winner.
+    pub losers: Vec<String>,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct ReceiptInfo {
     pub success: bool,
@@ -730,4 +917,141 @@ mod tests {
         assert!(info.success);
         assert_eq!(info.gas_used, 0x5208);
     }
+
+    // —— Hedged reads ——
+    // Minimal HTTP/1.1 JSON-RPC mock: replies with `body` after `delay`.
+    fn spawn_mock(body: String, delay: Duration) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await; // best-effort read of request
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn ok_body(result_hex: &str) -> String {
+        format!("{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"{result_hex}\"}}")
+    }
+
+    #[tokio::test]
+    async fn hedged_uses_fast_node_when_lead_is_slow() {
+        // Lead node stalls 1.5s; second node answers instantly. Hedging should
+        // fire the second after RPC_HEDGE_DELAY and return its value quickly.
+        let slow = spawn_mock(ok_body("0x5"), Duration::from_millis(1500));
+        let fast = spawn_mock(ok_body("0x9"), Duration::ZERO);
+        let rpc = RpcClient::new(vec![slow, fast]);
+        let t = std::time::Instant::now();
+        let n = rpc.nonce(&Address::ZERO).await.unwrap();
+        let elapsed = t.elapsed();
+        assert_eq!(n, 9, "should take the fast node's value");
+        assert!(
+            elapsed < Duration::from_millis(1200),
+            "must not block on the slow lead node (took {elapsed:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn hedged_single_url_returns_value() {
+        let only = spawn_mock(ok_body("0x11"), Duration::ZERO);
+        let rpc = RpcClient::new(vec![only]);
+        assert_eq!(rpc.nonce(&Address::ZERO).await.unwrap(), 0x11);
+    }
+
+    #[tokio::test]
+    async fn hedged_fast_error_fails_over_immediately() {
+        // Lead node returns a JSON-RPC error quickly → fail over to node 2
+        // without waiting for the hedge delay.
+        let bad = spawn_mock(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"boom\"}}".to_string(),
+            Duration::ZERO,
+        );
+        let good = spawn_mock(ok_body("0x7"), Duration::ZERO);
+        let rpc = RpcClient::new(vec![bad, good]);
+        assert_eq!(rpc.nonce(&Address::ZERO).await.unwrap(), 7);
+    }
+
+    #[test]
+    fn tuning_defaults_and_overrides() {
+        use std::collections::HashMap;
+        // No keys → defaults match the constants.
+        let def = RpcTuning::from_lookup(|_| None);
+        assert_eq!(def, RpcTuning::default());
+        assert_eq!(def.max_nodes, RPC_MAX_NODES);
+        assert_eq!(def.call_timeout, RPC_CALL_TIMEOUT);
+        assert_eq!(def.hedge_delay, RPC_HEDGE_DELAY);
+
+        // Valid overrides are applied.
+        let env: HashMap<&str, &str> = [
+            ("RPC_MAX_NODES", "2"),
+            ("RPC_CALL_TIMEOUT_MS", "1500"),
+            ("RPC_HEDGE_DELAY_MS", "120"),
+        ]
+        .into_iter()
+        .collect();
+        let t = RpcTuning::from_lookup(|k| env.get(k).map(|s| s.to_string()));
+        assert_eq!(t.max_nodes, 2);
+        assert_eq!(t.call_timeout, Duration::from_millis(1500));
+        assert_eq!(t.hedge_delay, Duration::from_millis(120));
+
+        // Out-of-range values are clamped, not accepted verbatim.
+        let bad: HashMap<&str, &str> = [
+            ("RPC_MAX_NODES", "999"),
+            ("RPC_CALL_TIMEOUT_MS", "1"),
+            ("RPC_HEDGE_DELAY_MS", "99999"),
+        ]
+        .into_iter()
+        .collect();
+        let c = RpcTuning::from_lookup(|k| bad.get(k).map(|s| s.to_string()));
+        assert_eq!(c.max_nodes, 10);
+        assert_eq!(c.call_timeout, Duration::from_millis(500));
+        assert_eq!(c.hedge_delay, Duration::from_millis(5_000));
+
+        // Garbage → default retained.
+        let g = RpcTuning::from_lookup(|_| Some("notanumber".to_string()));
+        assert_eq!(g, RpcTuning::default());
+    }
+
+    #[tokio::test]
+    async fn send_report_records_winner_and_losers() {
+        // Lead node errors; second node accepts the tx. The report should name
+        // the winner and carry the loser's error.
+        let hash_hex = format!("0x{}", "11".repeat(32));
+        let bad = spawn_mock(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"nope\"}}".to_string(),
+            Duration::ZERO,
+        );
+        let good = spawn_mock(ok_body(&hash_hex), Duration::ZERO);
+        let good_short = RpcClient::short_url(&good);
+        let rpc = RpcClient::new(vec![bad, good]);
+        let raw = Bytes::from(vec![1u8, 2, 3]);
+        let report = rpc.send_raw_transaction_report(&raw).await.unwrap();
+        assert_eq!(report.hash, hash_hex.parse::<B256>().unwrap());
+        assert_eq!(report.winner, good_short);
+        assert_eq!(report.nodes_tried, 2);
+        assert_eq!(report.losers.len(), 1, "the failed lead node is recorded");
+        assert!(report.losers[0].contains("nope"));
+    }
 }
+

@@ -84,38 +84,10 @@ fn maybe_beep(beep: bool, first_confirm: &AtomicBool) {
     }
 }
 
-pub(crate) fn classify_mint_error(msg: &str) -> &'static str {
-    let lower = msg.to_lowercase();
-    // Funds / balance — never retry, never "dry-run OK".
-    if lower.contains("insufficient funds")
-        || lower.contains("insufficient balance")
-        || lower.contains("outoffunds")
-        || lower.contains("out of funds")
-        || lower.contains("out of fund")
-        || lower.contains("exceeds balance")
-        || lower.contains("overshot the sender account's balance")
-    {
-        return "fatal";
-    }
-
-    // Only treat known unrecoverable contract/wallet errors as fatal.
-    // Generic "execution reverted" / SeaDrop NotActive is retryable (phase not
-    // open yet on chain, temporary sold-out, RPC noise, etc.).
-    let fatal_patterns = [
-        "InvalidProof",
-        "PayerNotAllowed",
-        "SignatureAlreadyUsed",
-        "IncorrectPayment",
-        "MintQuantityExceedsMaxMintedPerWallet",
-        "MintQuantityExceedsMaxSupply",
-    ];
-    for pat in &fatal_patterns {
-        if lower.contains(&pat.to_lowercase()) {
-            return "fatal";
-        }
-    }
-    "retryable"
-}
+// Error classification lives in one place (`crate::errors`) so retry / RBF
+// decisions stay consistent across providers and are unit-tested there.
+pub(crate) use crate::errors::classify_mint_error;
+use crate::errors::{is_already_known, is_nonce_too_low, is_underpriced};
 
 /// SeaDrop `NotActive(uint256 current, uint256 start, uint256 end)` — selector `0x13da22f2`.
 pub(crate) const NOT_ACTIVE_SELECTOR: &str = "13da22f2";
@@ -251,21 +223,6 @@ pub(crate) fn estimate_fail_policy(
         0
     };
     (enriched, force, wait_ms)
-}
-
-fn is_already_known(err: &str) -> bool {
-    let lower = err.to_lowercase();
-    lower.contains("already known")
-}
-
-fn is_nonce_too_low(err: &str) -> bool {
-    let lower = err.to_lowercase();
-    lower.contains("nonce too low") || lower.contains("nonce is too low")
-}
-
-fn is_underpriced(err: &str) -> bool {
-    let lower = err.to_lowercase();
-    lower.contains("underpriced") || lower.contains("fee too low")
 }
 
 fn parse_hex_u256(value: &str) -> Option<U256> {
@@ -2995,6 +2952,40 @@ pub async fn run_opensea_mint(
                 );
             }
             Err(e) => log_always(reporter.as_ref(), format!("Export failed: {}", e)),
+        }
+
+        // Structured run metrics (plan #9): wallet outcomes + failure histogram
+        // + total elapsed, assembled from the finished run. Per-phase spans and
+        // precise t0 are a follow-up (they require threading the collector
+        // through the mint loop); this keeps the hot path untouched.
+        let collector = crate::metrics::MetricsCollector::new(
+            "opensea",
+            info.slug.clone(),
+            info.chain.clone(),
+            dry_run,
+            Some(stage_type_owned.clone()),
+        );
+        for w in &results {
+            let mut wm = crate::metrics::WalletMetrics::new(format!("{:?}", w.address));
+            wm.status = w.status.to_string();
+            wm.tx_hash = w
+                .tx_hash
+                .map(|h| format!("0x{}", hex::encode(h.as_slice())));
+            wm.gas_used = w.gas_used;
+            if let Some(err) = w.error.clone() {
+                wm = wm.with_error(err);
+            }
+            collector.upsert_wallet(wm);
+        }
+        let mut metrics = collector.finish();
+        metrics.summary.elapsed_ms = elapsed; // authoritative run duration
+        metrics.spans.done_ms = Some(elapsed);
+        match export::write_run_metrics(&metrics) {
+            Ok(p) => log_always(
+                reporter.as_ref(),
+                format!("Metrics: {}", export::path_display(&p)),
+            ),
+            Err(e) => log_always(reporter.as_ref(), format!("Metrics write failed: {}", e)),
         }
     }
 
