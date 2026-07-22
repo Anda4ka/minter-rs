@@ -1,13 +1,13 @@
 //! OpenSea mint orchestration (auth, phase, calldata, send, RBF).
 //! Shared by CLI and desktop via `MintReporter` + `MintOptions`.
 
-use alloy_primitives::{Address, Bytes, B256, U256};
-use anyhow::{bail, Context, Result};
+use alloy_primitives::{Address, B256, Bytes, U256};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::api::{collect_rpc_urls_for_chain, parse_collection_slug, MintOptions};
+use crate::api::{MintOptions, collect_rpc_urls_for_chain, parse_collection_slug};
 use crate::auth_cache;
 use crate::export;
 use crate::flashbots::{self, BundleTx, FlashbotsClient, FlashbotsConfig, MAINNET_CHAIN_ID};
@@ -183,7 +183,7 @@ pub(crate) fn in_phase_open_lag_window(stage_start_ts: Option<i64>, now_wall: i6
     };
     let elapsed = now_wall - start;
     // Allow 1s clock skew early; window covers ~2 eth blocks of lag.
-    elapsed >= -1 && elapsed <= PHASE_OPEN_LAG_WINDOW_SECS
+    (-1..=PHASE_OPEN_LAG_WINDOW_SECS).contains(&elapsed)
 }
 
 /// Policy after eth_estimateGas failure: always restore calldata; maybe force fixed gas.
@@ -233,7 +233,6 @@ fn parse_hex_u256(value: &str) -> Option<U256> {
     }
 }
 
-
 struct WalletAuth {
     address: alloy_primitives::Address,
     signer: Signer,
@@ -254,7 +253,10 @@ pub(crate) fn parse_tx_calldata_hex(data_hex: &str) -> anyhow::Result<Bytes> {
     if raw.is_empty() || raw == "0x" || raw == "0X" {
         bail!("empty calldata");
     }
-    let hex_body = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")).unwrap_or(raw);
+    let hex_body = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .unwrap_or(raw);
     if hex_body.is_empty() {
         bail!("empty calldata");
     }
@@ -330,7 +332,9 @@ async fn fetch_and_parse_gql(
             &debug_file,
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string()),
         );
-        mint_log(reporter, quiet,
+        mint_log(
+            reporter,
+            quiet,
             format!(
                 "[{}] GQL fetch OK {}ms (saved {})",
                 sign::shorten_address(addr),
@@ -339,7 +343,9 @@ async fn fetch_and_parse_gql(
             ),
         );
     } else {
-        mint_log(reporter, quiet,
+        mint_log(
+            reporter,
+            quiet,
             format!(
                 "[{}] GQL fetch OK {}ms",
                 sign::shorten_address(addr),
@@ -361,7 +367,9 @@ async fn fetch_and_parse_gql(
         .and_then(parse_hex_u256)
         .unwrap_or(*calldata_value);
     if tx_value != *calldata_value {
-        mint_log(reporter, quiet,
+        mint_log(
+            reporter,
+            quiet,
             format!(
                 "[{}] WARN OpenSea tx value differs from selected phase price: gql_value={} parsed_phase_value={}",
                 sign::shorten_address(addr),
@@ -371,14 +379,12 @@ async fn fetch_and_parse_gql(
         );
     }
     let data_hex = tx_data.get("data").and_then(|v| v.as_str()).unwrap_or("");
-    let cd = parse_tx_calldata_hex(data_hex).with_context(|| {
-        format!(
-            "[{}] OpenSea GQL tx data",
-            sign::shorten_address(addr)
-        )
-    })?;
+    let cd = parse_tx_calldata_hex(data_hex)
+        .with_context(|| format!("[{}] OpenSea GQL tx data", sign::shorten_address(addr)))?;
 
-    mint_log(reporter, quiet,
+    mint_log(
+        reporter,
+        quiet,
         format!(
             "[{}] PREPARED t+{}ms (gql={}ms) to={:?} value={} data={} bytes",
             sign::shorten_address(addr),
@@ -437,7 +443,9 @@ async fn fetch_calldata_reauth(
             if !is_auth_error(&err_str) {
                 return Err(e);
             }
-            mint_log(reporter, quiet,
+            mint_log(
+                reporter,
+                quiet,
                 format!(
                     "[{}] {}: {}",
                     sign::shorten_address(addr),
@@ -602,11 +610,17 @@ pub async fn run_opensea_mint(
         "prep",
         format!("Preparing mint for «{slug}»…"),
     );
-    log_always(reporter.as_ref(), format!("Fetching collection info for '{}'...", slug));
+    log_always(
+        reporter.as_ref(),
+        format!("Fetching collection info for '{}'...", slug),
+    );
     let info = match opensea::collection_drop_info(&dummy_session, &slug, &primary_addr).await {
         Ok(i) => i,
         Err(_) => {
-            log_always(reporter.as_ref(), "Collection info requires auth. Authenticating primary wallet...");
+            log_always(
+                reporter.as_ref(),
+                "Collection info requires auth. Authenticating primary wallet...",
+            );
             let mut any_urls = collect_rpc_urls_for_chain(env, Some("ethereum"), &[]);
             if any_urls.is_empty() {
                 any_urls = collect_rpc_urls_for_chain(env, None, &[]);
@@ -620,10 +634,12 @@ pub async fn run_opensea_mint(
             }
             let any_chain_id = any_rpc.chain_id().await.unwrap_or(1);
             match opensea::siwe_auth(&primary_addr, &signers[0], any_chain_id, None).await {
-                Ok(session) => match opensea::collection_drop_info(&session, &slug, &primary_addr).await {
-                    Ok(i) => i,
-                    Err(e) => bail!("Failed collection info: {}", e),
-                },
+                Ok(session) => {
+                    match opensea::collection_drop_info(&session, &slug, &primary_addr).await {
+                        Ok(i) => i,
+                        Err(e) => bail!("Failed collection info: {}", e),
+                    }
+                }
                 Err(e) => bail!("Auth failed: {}", e),
             }
         }
@@ -661,7 +677,10 @@ pub async fn run_opensea_mint(
         log_always(reporter.as_ref(), format!("RPC probe failed: {}", e));
     }
 
-    let actual_chain_id = rpc.chain_id().await.context("Failed to get chain ID from RPC")?;
+    let actual_chain_id = rpc
+        .chain_id()
+        .await
+        .context("Failed to get chain ID from RPC")?;
 
     let use_flashbots = opts.use_flashbots.unwrap_or(false);
     if use_flashbots && actual_chain_id != MAINNET_CHAIN_ID {
@@ -686,7 +705,9 @@ pub async fn run_opensea_mint(
         if actual_chain_id != expected {
             bail!(
                 "Chain mismatch: expected {} (chainId {}), but RPC returned chainId {}. Fix RPC or chain override.",
-                chain_for_rpc, expected, actual_chain_id
+                chain_for_rpc,
+                expected,
+                actual_chain_id
             );
         }
     }
@@ -749,7 +770,10 @@ pub async fn run_opensea_mint(
                 proxy_url.as_deref(),
             ) {
                 Ok(client) => {
-                    log_always(reporter.as_ref(), format!("[{}] {:?} ... CACHED OK", i + 1, addr));
+                    log_always(
+                        reporter.as_ref(),
+                        format!("[{}] {:?} ... CACHED OK", i + 1, addr),
+                    );
                     let session = opensea::AuthSession {
                         access_token: cached_token.to_string(),
                         address: addr_str,
@@ -768,10 +792,15 @@ pub async fn run_opensea_mint(
                     continue;
                 }
                 Err(e) => {
-                    log_always(reporter.as_ref(), format!("[{}] {:?} ... CACHED token but client build failed: {} — re-auth",
-                        i + 1,
-                        addr,
-                        e));
+                    log_always(
+                        reporter.as_ref(),
+                        format!(
+                            "[{}] {:?} ... CACHED token but client build failed: {} — re-auth",
+                            i + 1,
+                            addr,
+                            e
+                        ),
+                    );
                 }
             }
         }
@@ -808,7 +837,13 @@ pub async fn run_opensea_mint(
                 Ok(session) => {
                     log_always(
                         rep.as_ref(),
-                        format!("[{}] {:?} OK ({}ms) via {}", i + 1, addr, elapsed, proxy_short),
+                        format!(
+                            "[{}] {:?} OK ({}ms) via {}",
+                            i + 1,
+                            addr,
+                            elapsed,
+                            proxy_short
+                        ),
                     );
                     (addr, signer, Some(session), true, None, proxy_url)
                 }
@@ -875,27 +910,45 @@ pub async fn run_opensea_mint(
     if auth_ok_count == 0 {
         bail!("All wallets failed authentication");
     }
-    log_always(reporter.as_ref(), format!("Auth: {}/{} wallets OK", auth_ok_count, wallets.len()));
+    log_always(
+        reporter.as_ref(),
+        format!("Auth: {}/{} wallets OK", auth_ok_count, wallets.len()),
+    );
 
-    log_always(reporter.as_ref(), format!("\nRe-fetching collection info with auth for eligibility..."));
+    log_always(
+        reporter.as_ref(),
+        format!("\nRe-fetching collection info with auth for eligibility..."),
+    );
     let primary = wallets.iter().find(|w| w.auth_ok).unwrap();
     let primary_session = primary.session.as_ref().unwrap();
     let info = match opensea::collection_drop_info(primary_session, &slug, &primary.address).await {
         Ok(i) => i,
         Err(e) => {
-            log_always(reporter.as_ref(), format!("Failed to re-fetch collection info: {}", e));
+            log_always(
+                reporter.as_ref(),
+                format!("Failed to re-fetch collection info: {}", e),
+            );
             log_always(reporter.as_ref(), format!("Using unauthenticated data..."));
             info
         }
     };
 
-    log_always(reporter.as_ref(), format!("\nCollection: {} ({})", info.name, info.slug));
-    log_always(reporter.as_ref(), format!("Chain: {} (chainId {})", info.chain, actual_chain_id));
+    log_always(
+        reporter.as_ref(),
+        format!("\nCollection: {} ({})", info.name, info.slug),
+    );
+    log_always(
+        reporter.as_ref(),
+        format!("Chain: {} (chainId {})", info.chain, actual_chain_id),
+    );
     if let Some(ref dt) = info.drop_type {
         log_always(reporter.as_ref(), format!("Drop type: {}", dt));
     }
     if !info.contracts.is_empty() {
-        log_always(reporter.as_ref(), format!("NFT contract: {}", info.contracts[0]));
+        log_always(
+            reporter.as_ref(),
+            format!("NFT contract: {}", info.contracts[0]),
+        );
     }
 
     let stages = &info.stages;
@@ -929,17 +982,30 @@ pub async fn run_opensea_mint(
             price,
             start
         ));
-        log_always(reporter.as_ref(), format!("  {} | {} | {} | {} | {} | {} | {}",
-            i + 1,
-            label,
-            stage.stage_type,
-            eligible,
-            available,
-            price,
-            start));
+        log_always(
+            reporter.as_ref(),
+            format!(
+                "  {} | {} | {} | {} | {} | {} | {}",
+                i + 1,
+                label,
+                stage.stage_type,
+                eligible,
+                available,
+                price,
+                start
+            ),
+        );
     }
-    if stages.iter().any(|stage| stage.stage_type == "SIGNED_PRESALE" && stage.is_eligible.is_none()) {
-        log_always(reporter.as_ref(), format!("  Note: signed phase eligibility is unknown from OpenSea phase list; selected wallet availability is checked after phase selection."));
+    if stages
+        .iter()
+        .any(|stage| stage.stage_type == "SIGNED_PRESALE" && stage.is_eligible.is_none())
+    {
+        log_always(
+            reporter.as_ref(),
+            format!(
+                "  Note: signed phase eligibility is unknown from OpenSea phase list; selected wallet availability is checked after phase selection."
+            ),
+        );
     }
 
     let default_pick = stages
@@ -953,18 +1019,36 @@ pub async fn run_opensea_mint(
             // Comparing against 0 marked every real (past) timestamp as "not started".
             let now = chrono::Utc::now().timestamp();
             let has_started = s.start_time.map(|t| t as i64 <= now).unwrap_or(true);
-            (is_public as usize, !has_started as usize, s.stage_index.unwrap_or(0))
+            (
+                is_public as usize,
+                !has_started as usize,
+                s.stage_index.unwrap_or(0),
+            )
         })
         .map(|(i, _)| i)
-        .unwrap_or_else(|| stages.iter().position(opensea::stage_effective_eligible).unwrap_or(0));
+        .unwrap_or_else(|| {
+            stages
+                .iter()
+                .position(opensea::stage_effective_eligible)
+                .unwrap_or(0)
+        });
     if default_pick > 0 || stages.len() > 1 {
         let rec_stage = &stages[default_pick];
         let rec_available = opensea::available_mint_quantity(&info, rec_stage).unwrap_or(0);
-        log_always(reporter.as_ref(), format!("  Recommended: #{} {} (available={}, fastest={})",
-            default_pick + 1,
-            opensea::stage_label(rec_stage),
-            rec_available,
-            if rec_stage.stage_type == "PUBLIC_SALE" { "local build" } else { "GQL" }));
+        log_always(
+            reporter.as_ref(),
+            format!(
+                "  Recommended: #{} {} (available={}, fastest={})",
+                default_pick + 1,
+                opensea::stage_label(rec_stage),
+                rec_available,
+                if rec_stage.stage_type == "PUBLIC_SALE" {
+                    "local build"
+                } else {
+                    "GQL"
+                }
+            ),
+        );
     }
     let pick = if let Some(idx) = opts.phase_index {
         if idx >= stages.len() {
@@ -980,22 +1064,38 @@ pub async fn run_opensea_mint(
     };
     let _ = (auto_mode, &phase_labels);
     let stage = &stages[pick];
-    log_always(reporter.as_ref(), format!("Selected: {}", opensea::stage_label(stage)));
+    log_always(
+        reporter.as_ref(),
+        format!("Selected: {}", opensea::stage_label(stage)),
+    );
     if let Some(available) = opensea::available_mint_quantity(&info, stage) {
         if available == 0 {
             bail!("Selected phase has no NFTs available for this wallet");
         }
         if quantity > available {
-            log_always(reporter.as_ref(), format!("Requested quantity {} exceeds available {}; using {}",
-                quantity, available, available));
+            log_always(
+                reporter.as_ref(),
+                format!(
+                    "Requested quantity {} exceeds available {}; using {}",
+                    quantity, available, available
+                ),
+            );
             quantity = available;
         } else {
-            log_always(reporter.as_ref(), format!("Available for this wallet in selected phase: {}", available));
+            log_always(
+                reporter.as_ref(),
+                format!("Available for this wallet in selected phase: {}", available),
+            );
         }
         quantity = quantity.min(available).max(1);
     } else {
-        log_always(reporter.as_ref(), format!("Available quantity for selected phase is unknown; using requested {}",
-            quantity));
+        log_always(
+            reporter.as_ref(),
+            format!(
+                "Available quantity for selected phase is unknown; using requested {}",
+                quantity
+            ),
+        );
         quantity = quantity.max(1);
     }
     log_always(reporter.as_ref(), format!("Mint quantity: {}", quantity));
@@ -1166,8 +1266,13 @@ pub async fn run_opensea_mint(
                 gas_params = gas_params.with_priority_gwei(pg);
             }
             _ => {
-                log_always(reporter.as_ref(), format!("Invalid priority fee '{}', keeping env/settings gas params",
-                    priority_input));
+                log_always(
+                    reporter.as_ref(),
+                    format!(
+                        "Invalid priority fee '{}', keeping env/settings gas params",
+                        priority_input
+                    ),
+                );
             }
         }
     }
@@ -1178,27 +1283,31 @@ pub async fn run_opensea_mint(
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(250_000)
         });
-        if gl == 0 {
-            None
-        } else {
-            Some(gl)
-        }
+        if gl == 0 { None } else { Some(gl) }
     };
     let skip_preflight = skip_preflight_flag && fixed_gas_limit.is_some();
     if skip_preflight_flag && fixed_gas_limit.is_none() {
-        log_always(reporter.as_ref(), format!("WARN: SKIP_PREFLIGHT ignored because GAS_LIMIT=0 (estimate mode)"));
+        log_always(
+            reporter.as_ref(),
+            format!("WARN: SKIP_PREFLIGHT ignored because GAS_LIMIT=0 (estimate mode)"),
+        );
     }
-    log_always(reporter.as_ref(), format!("Gas: mode={:?} base_mult={} gas_mult={} priority={} max_retries={} quiet={} skip_preflight={}",
-        gas_params.mode,
-        gas_params.base_fee_multiplier,
-        gas_params.gas_multiplier,
-        gas_params
-            .priority_fee
-            .map(|p| format!("{} gwei", p / U256::from(1_000_000_000u64)))
-            .unwrap_or_else(|| "network".to_string()),
-        max_attempts,
-        quiet,
-        skip_preflight));
+    log_always(
+        reporter.as_ref(),
+        format!(
+            "Gas: mode={:?} base_mult={} gas_mult={} priority={} max_retries={} quiet={} skip_preflight={}",
+            gas_params.mode,
+            gas_params.base_fee_multiplier,
+            gas_params.gas_multiplier,
+            gas_params
+                .priority_fee
+                .map(|p| format!("{} gwei", p / U256::from(1_000_000_000u64)))
+                .unwrap_or_else(|| "network".to_string()),
+            max_attempts,
+            quiet,
+            skip_preflight
+        ),
+    );
 
     let nft_contract = info
         .contracts
@@ -1287,7 +1396,10 @@ pub async fn run_opensea_mint(
 
     let chain_id = actual_chain_id;
 
-    log_always(reporter.as_ref(), format!("\nRefreshing nonces for all wallets..."));
+    log_always(
+        reporter.as_ref(),
+        format!("\nRefreshing nonces for all wallets..."),
+    );
     let mut nonce_handles = Vec::new();
     for w in &wallets {
         if !w.auth_ok {
@@ -1334,9 +1446,12 @@ pub async fn run_opensea_mint(
     log_always(reporter.as_ref(), format!("\nChecking balances..."));
     {
         let before_balance = wallets.iter().filter(|w| w.auth_ok).count();
-        let (base_fee_check, priority_check) = rpc.fee_history().await
+        let (base_fee_check, priority_check) = rpc
+            .fee_history()
+            .await
             .unwrap_or((U256::from(1_000_000_000u64), U256::from(1_000_000_000u64)));
-        let estimated_gas_cost = U256::from(fixed_gas_limit.unwrap_or(250_000)) * (base_fee_check + priority_check);
+        let estimated_gas_cost =
+            U256::from(fixed_gas_limit.unwrap_or(250_000)) * (base_fee_check + priority_check);
         let mut bal_handles = Vec::new();
         for w in &wallets {
             if !w.auth_ok {
@@ -1357,16 +1472,30 @@ pub async fn run_opensea_mint(
                     match bal_result {
                         Ok(bal) => {
                             let needed = mint_value + estimated_gas_cost;
-                            let bal_eth = format!("{:.6}", (bal / U256::from(1e12 as u64)).to::<u128>() as f64 / 1e6);
-                            let need_eth = format!("{:.6}", (needed / U256::from(1e12 as u64)).to::<u128>() as f64 / 1e6);
+                            let bal_eth = format!(
+                                "{:.6}",
+                                (bal / U256::from(1e12 as u64)).to::<u128>() as f64 / 1e6
+                            );
+                            let need_eth = format!(
+                                "{:.6}",
+                                (needed / U256::from(1e12 as u64)).to::<u128>() as f64 / 1e6
+                            );
                             if bal < needed {
                                 let deficit = needed - bal;
-                                let def_eth = format!("{:.6}", (deficit / U256::from(1e12 as u64)).to::<u128>() as f64 / 1e6);
-                                log_always(reporter.as_ref(), format!("  [{}] LOW BALANCE: {} ETH (need {} ETH, deficit {} ETH)",
-                                    sign::shorten_address(&addr),
-                                    bal_eth,
-                                    need_eth,
-                                    def_eth));
+                                let def_eth = format!(
+                                    "{:.6}",
+                                    (deficit / U256::from(1e12 as u64)).to::<u128>() as f64 / 1e6
+                                );
+                                log_always(
+                                    reporter.as_ref(),
+                                    format!(
+                                        "  [{}] LOW BALANCE: {} ETH (need {} ETH, deficit {} ETH)",
+                                        sign::shorten_address(&addr),
+                                        bal_eth,
+                                        need_eth,
+                                        def_eth
+                                    ),
+                                );
                                 // Both live and dry-run: do not count as OK without funds.
                                 // Tx would not succeed (and estimateGas fails with OutOfFunds).
                                 w.auth_ok = false;
@@ -1382,16 +1511,26 @@ pub async fn run_opensea_mint(
                                     )),
                                 );
                             } else {
-                                log_always(reporter.as_ref(), format!("  [{}] balance={} ETH (need {} ETH) OK",
-                                    sign::shorten_address(&addr),
-                                    bal_eth,
-                                    need_eth));
+                                log_always(
+                                    reporter.as_ref(),
+                                    format!(
+                                        "  [{}] balance={} ETH (need {} ETH) OK",
+                                        sign::shorten_address(&addr),
+                                        bal_eth,
+                                        need_eth
+                                    ),
+                                );
                             }
                         }
                         Err(e) => {
-                            log_always(reporter.as_ref(), format!("  [{}] balance check failed: {}",
-                                sign::shorten_address(&addr),
-                                e));
+                            log_always(
+                                reporter.as_ref(),
+                                format!(
+                                    "  [{}] balance check failed: {}",
+                                    sign::shorten_address(&addr),
+                                    e
+                                ),
+                            );
                         }
                     }
                 }
@@ -1402,8 +1541,13 @@ pub async fn run_opensea_mint(
             bail!("No wallets with sufficient balance to mint");
         }
         if funded < before_balance {
-            log_always(reporter.as_ref(), format!("Balance gate: {}/{} wallets remaining after low-balance skip",
-                funded, before_balance));
+            log_always(
+                reporter.as_ref(),
+                format!(
+                    "Balance gate: {}/{} wallets remaining after low-balance skip",
+                    funded, before_balance
+                ),
+            );
         }
     }
 
@@ -1440,10 +1584,7 @@ pub async fn run_opensea_mint(
             "✓ Gas          {} · skip_preflight={} · quiet={}",
             gas_info, skip_preflight, quiet
         ),
-        format!(
-            "✓ Price        {} wei × qty",
-            price_wei
-        ),
+        format!("✓ Price        {} wei × qty", price_wei),
     ];
     let _ = proxy_slots;
     if let Some(ts) = stage_start_ts {
@@ -1485,7 +1626,9 @@ pub async fn run_opensea_mint(
         let mut logged_chain_lag = false;
 
         let use_gql = opts.use_gql.unwrap_or_else(|| {
-            env.get("USE_GQL").map(|v| v == "1" || v == "true").unwrap_or(false)
+            env.get("USE_GQL")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false)
         });
         let should_prefetch = stage_type_owned != "PUBLIC_SALE" || use_gql;
 
@@ -1592,16 +1735,12 @@ pub async fn run_opensea_mint(
                                 Ok(result) => {
                                     log_always(
                                         rep.as_ref(),
-                                        format!(
-                                            "[{}] pre-fetch OK",
-                                            sign::shorten_address(&addr)
-                                        ),
+                                        format!("[{}] pre-fetch OK", sign::shorten_address(&addr)),
                                     );
                                     return (addr, Some(result));
                                 }
                                 Err(_) => {
-                                    tokio::time::sleep(std::time::Duration::from_millis(500))
-                                        .await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                                 }
                             }
                         }
@@ -1639,16 +1778,20 @@ pub async fn run_opensea_mint(
             }
 
             // Tighter poll near open so we don't overshoot by hundreds of ms.
-            let sleep_ms = if left <= 2 { 25 } else if left <= 10 { 50 } else { 200 };
+            let sleep_ms = if left <= 2 {
+                25
+            } else if left <= 10 {
+                50
+            } else {
+                200
+            };
             tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
         }
 
         let fire_lag_ms = fire_lag_ms_from_clock(start_ts, chrono::Utc::now().timestamp_millis());
         log_always(
             reporter.as_ref(),
-            format!(
-                "Phase is open! (wall clock, fire lag ~{fire_lag_ms}ms after start_ts)"
-            ),
+            format!("Phase is open! (wall clock, fire lag ~{fire_lag_ms}ms after start_ts)"),
         );
         // LIVE always fixed-gas (see worker). Dry-run may still estimate.
         if !dry_run {
@@ -1659,8 +1802,7 @@ pub async fn run_opensea_mint(
         }
 
         // Collect prefetched calldata; don't block long if a wallet still retrying.
-        let join_deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(800);
+        let join_deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
         for handle in prefetch_handles {
             let left_ms = join_deadline
                 .saturating_duration_since(std::time::Instant::now())
@@ -1669,11 +1811,8 @@ pub async fn run_opensea_mint(
                 handle.abort();
                 continue;
             }
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(left_ms.max(1)),
-                handle,
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(left_ms.max(1)), handle)
+                .await
             {
                 Ok(Ok((addr, Some(tx_data)))) => {
                     if let Some(w) = wallets.iter_mut().find(|w| w.address == addr) {
@@ -1688,19 +1827,15 @@ pub async fn run_opensea_mint(
             }
         }
     }
-    report_phase(
-        reporter.as_ref(),
-        "fire",
-        "Phase open — sending mints now…",
-    );
+    report_phase(reporter.as_ref(), "fire", "Phase open — sending mints now…");
     log_always(reporter.as_ref(), "Phase open — starting mint workers");
 
     let (base_fee, network_priority) = rpc
         .fee_history()
         .await
         .unwrap_or((U256::from(1_000_000_000u64), U256::from(1_000_000_000u64)));
-    let (max_fee, max_priority_fee) =
-        gas::calculate_fees(&gas_params, base_fee, network_priority).unwrap_or((
+    let (max_fee, max_priority_fee) = gas::calculate_fees(&gas_params, base_fee, network_priority)
+        .unwrap_or((
             base_fee * U256::from(2u64) + network_priority,
             network_priority,
         ));
@@ -1743,7 +1878,9 @@ pub async fn run_opensea_mint(
         let max_fee = max_fee;
         let max_priority_fee = max_priority_fee;
         let use_gql_owned = opts.use_gql.unwrap_or_else(|| {
-            env.get("USE_GQL").map(|v| v == "1" || v == "true").unwrap_or(false)
+            env.get("USE_GQL")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false)
         });
         let initial_cached_tx = w.prefetched_tx.clone();
         let max_attempts = max_attempts;
@@ -2717,10 +2854,7 @@ pub async fn run_opensea_mint(
                         match client.call_bundle(auth, &pieces, target).await {
                             Ok(res) => {
                                 let errs = flashbots::call_bundle_errors(&res);
-                                log_always(
-                                    reporter.as_ref(),
-                                    format!("callBundle result: {res}"),
-                                );
+                                log_always(reporter.as_ref(), format!("callBundle result: {res}"));
                                 for (i, p) in pieces.iter().enumerate() {
                                     if let Some(Some(err)) = errs.get(i) {
                                         if let Some(r) =
@@ -2739,10 +2873,7 @@ pub async fn run_opensea_mint(
                                 }
                             }
                             Err(e) => {
-                                log_always(
-                                    reporter.as_ref(),
-                                    format!("callBundle failed: {e}"),
-                                );
+                                log_always(reporter.as_ref(), format!("callBundle failed: {e}"));
                                 for r in results.iter_mut() {
                                     if r.error.as_deref() == Some("__flashbots_dry__") {
                                         r.status = WalletStatus::Failed;
@@ -2779,10 +2910,7 @@ pub async fn run_opensea_mint(
                                 }
                             }
                             Err(e) => {
-                                log_always(
-                                    reporter.as_ref(),
-                                    format!("sendBundle failed: {e}"),
-                                );
+                                log_always(reporter.as_ref(), format!("sendBundle failed: {e}"));
                                 for r in results.iter_mut() {
                                     if r.error.as_deref() == Some("__flashbots_pending__") {
                                         r.status = WalletStatus::Failed;
@@ -2839,9 +2967,7 @@ pub async fn run_opensea_mint(
                                 }
                                 Err(e) => {
                                     r.status = WalletStatus::Sent;
-                                    r.error = Some(format!(
-                                        "submitted — not included ({e})"
-                                    ));
+                                    r.error = Some(format!("submitted — not included ({e})"));
                                     r.tx_hash = Some(p.tx_hash);
                                 }
                             }
@@ -2849,10 +2975,7 @@ pub async fn run_opensea_mint(
                     }
                 }
                 Err(e) => {
-                    log_always(
-                        reporter.as_ref(),
-                        format!("Flashbots client error: {e}"),
-                    );
+                    log_always(reporter.as_ref(), format!("Flashbots client error: {e}"));
                     for r in results.iter_mut() {
                         if matches!(
                             r.error.as_deref(),
@@ -2880,12 +3003,7 @@ pub async fn run_opensea_mint(
     // Success only after on-chain confirm (or dry-run OK). SENT is not enough.
     let confirmed = results
         .iter()
-        .filter(|r| {
-            matches!(
-                r.status,
-                WalletStatus::Confirmed | WalletStatus::DryRunOk
-            )
-        })
+        .filter(|r| matches!(r.status, WalletStatus::Confirmed | WalletStatus::DryRunOk))
         .count();
     let failed = results
         .iter()
@@ -2994,7 +3112,9 @@ pub async fn run_opensea_mint(
         .map(|r| crate::api::SweepResultRow {
             address: format!("{:?}", r.address),
             status: r.status.to_string(),
-            tx_hash: r.tx_hash.map(|h| format!("0x{}", hex::encode(h.as_slice()))),
+            tx_hash: r
+                .tx_hash
+                .map(|h| format!("0x{}", hex::encode(h.as_slice()))),
             gas_used: r.gas_used,
             block_number: r.block_number,
             error: r.error.clone(),
@@ -3019,10 +3139,10 @@ pub async fn run_opensea_mint(
 #[cfg(test)]
 mod tests {
     use super::{
+        NOT_ACTIVE_CHAIN_WAIT_MAX_SECS, NotActiveInfo, PHASE_OPEN_LAG_WINDOW_SECS,
         classify_mint_error, enrich_mint_rpc_error, estimate_fail_policy, fire_lag_ms_from_clock,
         format_not_active, in_phase_open_lag_window, parse_not_active, parse_tx_calldata_hex,
-        resolve_mint_gas_limit, NotActiveInfo, NOT_ACTIVE_CHAIN_WAIT_MAX_SECS,
-        PHASE_OPEN_LAG_WINDOW_SECS,
+        resolve_mint_gas_limit,
     };
 
     #[test]
@@ -3103,7 +3223,10 @@ mod tests {
 
     #[test]
     fn known_contract_errors_are_fatal() {
-        assert_eq!(classify_mint_error("execution reverted: InvalidProof"), "fatal");
+        assert_eq!(
+            classify_mint_error("execution reverted: InvalidProof"),
+            "fatal"
+        );
         assert_eq!(classify_mint_error("IncorrectPayment"), "fatal");
         assert_eq!(classify_mint_error("MintQuantityExceedsMaxSupply"), "fatal");
         assert_eq!(
@@ -3128,7 +3251,10 @@ mod tests {
     fn temporary_or_unknown_errors_are_retryable() {
         assert_eq!(classify_mint_error("timeout"), "retryable");
         assert_eq!(classify_mint_error("nonce too low"), "retryable");
-        assert_eq!(classify_mint_error("replacement transaction underpriced"), "retryable");
+        assert_eq!(
+            classify_mint_error("replacement transaction underpriced"),
+            "retryable"
+        );
         assert_eq!(classify_mint_error(""), "retryable");
     }
 
@@ -3182,7 +3308,7 @@ mod tests {
         let (enriched, force, wait_ms) =
             estimate_fail_policy(WONKIES_NOT_ACTIVE, Some(start), start + 10);
         assert!(force, "should force fixed gas");
-        assert!(wait_ms >= 150 && wait_ms <= 2_000, "wait_ms={wait_ms}");
+        assert!((150..=2_000).contains(&wait_ms), "wait_ms={wait_ms}");
         assert!(enriched.contains("NotActive"), "{enriched}");
     }
 
@@ -3200,7 +3326,10 @@ mod tests {
     fn phase_open_lag_window() {
         let start = 1_000_000i64;
         assert!(in_phase_open_lag_window(Some(start), start));
-        assert!(in_phase_open_lag_window(Some(start), start + PHASE_OPEN_LAG_WINDOW_SECS));
+        assert!(in_phase_open_lag_window(
+            Some(start),
+            start + PHASE_OPEN_LAG_WINDOW_SECS
+        ));
         assert!(!in_phase_open_lag_window(
             Some(start),
             start + PHASE_OPEN_LAG_WINDOW_SECS + 1

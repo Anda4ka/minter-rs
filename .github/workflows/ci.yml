@@ -1,0 +1,39 @@
+# Minimal CI for minter-core (no Windows GUI required).
+# Push only to https://github.com/Anda4ka/minter-rs
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: fmt · clippy · test (minter-core)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (minter-core)
+        run: cargo clippy -p minter-core --all-targets -- -D warnings
+
+      - name: test (minter-core)
+        run: cargo test -p minter-core --lib

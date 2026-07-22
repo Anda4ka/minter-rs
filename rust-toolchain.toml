@@ -1,0 +1,6 @@
+# Pinned toolchain for local + CI (P0 hygiene).
+# https://github.com/Anda4ka/minter-rs
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -5,30 +5,33 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use alloy_primitives::Address;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use zeroize::Zeroizing;
 
 use crate::amount;
 use crate::auth_cache::AuthCache;
-use crate::opensea;
 use crate::disperse::{self, DisperseConfig};
 use crate::flashbots::FlashbotsConfig;
-use crate::multicall::{self, MulticallConfig, MulticallStep, MULTICALL3};
+use crate::multicall::{self, MULTICALL3, MulticallConfig, MulticallStep};
+use crate::opensea;
 use crate::progress::MintReporter;
 use crate::raw_mint::{self, RawMintConfig};
 use crate::raw_sniper::{self, RawSniperConfig, SniperPreset, ValueMode};
 use crate::rpc::RpcClient;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use crate::settings::Settings;
 use crate::sweep::{self, SweepConfig, SweepEthConfig};
 use crate::types::{GasMode, GasParams, Signer, max_retries_from_env};
 use crate::vault::Vault;
 use crate::{BURNER_WARNING, NO_TELEMETRY};
 use alloy_primitives::U256;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// Shared session state for any UI.
-#[derive(Debug, Clone)]
+///
+/// **Security:** do not `#[derive(Debug)]` — password and private keys must never
+/// appear in logs via `{:?}`. See manual [`Debug`] impl below.
+#[derive(Clone)]
 pub struct Session {
     vault_path: PathBuf,
     /// Primary settings store (`config.json`).
@@ -46,6 +49,43 @@ pub struct Session {
     pub burner_accepted: bool,
     pub last_drop: String,
     pub last_contract: String,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print password, private keys, Alchemy key, or env values.
+        f.debug_struct("Session")
+            .field("vault_path", &self.vault_path)
+            .field("config_path", &self.config_path)
+            .field("env_path", &self.env_path)
+            .field(
+                "password",
+                &if self.password.is_some() {
+                    "[set]"
+                } else {
+                    "[none]"
+                },
+            )
+            .field("signers", &format_args!("[{}]", self.signers.len()))
+            .field(
+                "alchemy",
+                &if self.settings.alchemy_api_key.trim().is_empty() {
+                    "unset"
+                } else {
+                    "set"
+                },
+            )
+            .field("has_rpc", &self.settings.has_rpc())
+            .field("env_entries", &self.env.len())
+            .field("dry_run", &self.dry_run)
+            .field("network_label", &self.network_label)
+            .field("rpc_status", &self.rpc_status)
+            .field("proxy_count", &self.proxy_count)
+            .field("burner_accepted", &self.burner_accepted)
+            .field("last_drop", &self.last_drop)
+            .field("last_contract", &self.last_contract)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -338,19 +378,14 @@ impl Session {
             Some(c) => self.rpc_client_for_chain(c)?,
             None => self.rpc_client()?,
         };
-        let filter: Option<std::collections::HashSet<String>> =
-            wallet_addresses.and_then(|v| {
-                let set: std::collections::HashSet<String> = v
-                    .into_iter()
-                    .map(|a| normalize_address(&a))
-                    .filter(|a| a.len() > 2)
-                    .collect();
-                if set.is_empty() {
-                    None
-                } else {
-                    Some(set)
-                }
-            });
+        let filter: Option<std::collections::HashSet<String>> = wallet_addresses.and_then(|v| {
+            let set: std::collections::HashSet<String> = v
+                .into_iter()
+                .map(|a| normalize_address(&a))
+                .filter(|a| a.len() > 2)
+                .collect();
+            if set.is_empty() { None } else { Some(set) }
+        });
         let mut rows = Vec::new();
         for s in &self.signers {
             let addr = s.address();
@@ -494,9 +529,7 @@ impl Session {
             ],
         };
         let proxy_url = if via_proxy {
-            self.proxy_manager()
-                .get(0)
-                .map(|s| s.to_string())
+            self.proxy_manager().get(0).map(|s| s.to_string())
         } else {
             None
         };
@@ -525,25 +558,23 @@ impl Session {
             let mut best: Option<NetworkProbeRow> = None;
             for url in urls.iter().take(3) {
                 let short = short_url(url);
-                let client = match RpcClient::new_with_proxy(
-                    vec![url.clone()],
-                    proxy_url.as_deref(),
-                ) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        out.push(NetworkProbeRow {
-                            chain: chain.clone(),
-                            url_short: short,
-                            ok: false,
-                            chain_id: None,
-                            latency_ms: None,
-                            via_proxy,
-                            proxy_label: proxy_label.clone(),
-                            error: Some(e.to_string()),
-                        });
-                        continue;
-                    }
-                };
+                let client =
+                    match RpcClient::new_with_proxy(vec![url.clone()], proxy_url.as_deref()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            out.push(NetworkProbeRow {
+                                chain: chain.clone(),
+                                url_short: short,
+                                ok: false,
+                                chain_id: None,
+                                latency_ms: None,
+                                via_proxy,
+                                proxy_label: proxy_label.clone(),
+                                error: Some(e.to_string()),
+                            });
+                            continue;
+                        }
+                    };
                 let start = Instant::now();
                 match client.chain_id().await {
                     Ok(id) => {
@@ -599,9 +630,7 @@ impl Session {
         if urls.is_empty() {
             self.rpc_status = "—".into();
             self.network_label = "Not selected".into();
-            bail!(
-                "No RPC configured — open Settings and set Alchemy API key or custom RPC URLs"
-            );
+            bail!("No RPC configured — open Settings and set Alchemy API key or custom RPC URLs");
         }
         let mut out = Vec::new();
         for url in urls.iter().take(5) {
@@ -718,9 +747,7 @@ impl Session {
         }
         let urls = collect_rpc_urls_for_chain(&self.env, Some(chain), &[]);
         if urls.is_empty() {
-            bail!(
-                "No RPC for network '{chain}' — set Alchemy or custom RPC in Settings"
-            );
+            bail!("No RPC for network '{chain}' — set Alchemy or custom RPC in Settings");
         }
         Ok(RpcClient::new(urls))
     }
@@ -925,19 +952,14 @@ impl Session {
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
-        let filter: Option<std::collections::HashSet<String>> =
-            wallet_addresses.and_then(|v| {
-                let set: std::collections::HashSet<String> = v
-                    .into_iter()
-                    .map(|a| normalize_address(&a))
-                    .filter(|a| a.len() > 2)
-                    .collect();
-                if set.is_empty() {
-                    None
-                } else {
-                    Some(set)
-                }
-            });
+        let filter: Option<std::collections::HashSet<String>> = wallet_addresses.and_then(|v| {
+            let set: std::collections::HashSet<String> = v
+                .into_iter()
+                .map(|a| normalize_address(&a))
+                .filter(|a| a.len() > 2)
+                .collect();
+            if set.is_empty() { None } else { Some(set) }
+        });
         let chain_id = self.resolve_chain_id(None).await;
         let proxies = self.proxy_manager();
         let pw = self.password.as_ref().map(|z| z.as_str());
@@ -974,9 +996,13 @@ impl Session {
             handles.push(tokio::spawn(async move {
                 let _p = sem.acquire().await.ok();
                 let start = Instant::now();
-                let result =
-                    opensea::siwe_auth(&addr, &signer, chain_id, proxy.as_deref()).await;
-                (addr, proxy_short, start.elapsed().as_millis() as u64, result)
+                let result = opensea::siwe_auth(&addr, &signer, chain_id, proxy.as_deref()).await;
+                (
+                    addr,
+                    proxy_short,
+                    start.elapsed().as_millis() as u64,
+                    result,
+                )
             }));
         }
         for h in handles {
@@ -1087,9 +1113,7 @@ impl Session {
 
     /// OpenSea eligibility stages for primary wallet + slug.
     pub async fn check_eligibility(&self, slug: &str) -> Result<EligibilityResult> {
-        let report = self
-            .check_eligibility_wallets(slug, None)
-            .await?;
+        let report = self.check_eligibility_wallets(slug, None).await?;
         let row = report
             .wallets
             .into_iter()
@@ -1126,19 +1150,14 @@ impl Session {
             bail!("Collection slug required");
         }
 
-        let filter: Option<std::collections::HashSet<String>> =
-            wallet_addresses.and_then(|v| {
-                let set: std::collections::HashSet<String> = v
-                    .into_iter()
-                    .map(|a| normalize_address(&a))
-                    .filter(|a| a.len() > 2)
-                    .collect();
-                if set.is_empty() {
-                    None
-                } else {
-                    Some(set)
-                }
-            });
+        let filter: Option<std::collections::HashSet<String>> = wallet_addresses.and_then(|v| {
+            let set: std::collections::HashSet<String> = v
+                .into_iter()
+                .map(|a| normalize_address(&a))
+                .filter(|a| a.len() > 2)
+                .collect();
+            if set.is_empty() { None } else { Some(set) }
+        });
 
         let selected: Vec<(usize, Signer)> = self
             .signers
@@ -1335,21 +1354,21 @@ impl Session {
         }
 
         // Export: CSV + one .txt per WL phase + not_eligible.txt (no PUBLIC_SALE as eligible).
-        let (export_dir, export_csv, export_not_eligible) =
-            match export_wl_report(&slug, &wallets) {
-                Ok(p) => {
-                    crate::rlog!("WL export → {}", p.dir.display());
-                    (
-                        Some(p.dir.display().to_string()),
-                        Some(p.csv.display().to_string()),
-                        Some(p.not_eligible.display().to_string()),
-                    )
-                }
-                Err(e) => {
-                    crate::rlog!("WL export failed: {e}");
-                    (None, None, None)
-                }
-            };
+        let (export_dir, export_csv, export_not_eligible) = match export_wl_report(&slug, &wallets)
+        {
+            Ok(p) => {
+                crate::rlog!("WL export → {}", p.dir.display());
+                (
+                    Some(p.dir.display().to_string()),
+                    Some(p.csv.display().to_string()),
+                    Some(p.not_eligible.display().to_string()),
+                )
+            }
+            Err(e) => {
+                crate::rlog!("WL export failed: {e}");
+                (None, None, None)
+            }
+        };
 
         Ok(WalletEligibilityReport {
             slug,
@@ -1384,9 +1403,7 @@ impl Session {
         let pw = self.password.as_ref().map(|z| z.as_str());
         let mut cache = AuthCache::load(pw);
 
-        let cached_token = cache
-            .get(&addr_str, chain_id)
-            .map(|t| t.to_string());
+        let cached_token = cache.get(&addr_str, chain_id).map(|t| t.to_string());
         let auth = if let Some(token) = cached_token {
             let cookie_jar = Arc::new(reqwest::cookie::Jar::default());
             match opensea::build_client_with_cookie_jar_and_proxy(
@@ -1485,8 +1502,7 @@ impl Session {
             if let Ok((base, prio)) = rpc.fee_history().await {
                 row.fees_ms = Some(start.elapsed().as_millis() as u64);
                 row.base_fee_gwei = Some((base / U256::from(1_000_000_000u64)).to::<u128>() as u64);
-                row.priority_gwei =
-                    Some((prio / U256::from(1_000_000_000u64)).to::<u128>() as u64);
+                row.priority_gwei = Some((prio / U256::from(1_000_000_000u64)).to::<u128>() as u64);
             }
             if let Some(signer) = self.signers.first() {
                 let addr = signer.address();
@@ -1597,19 +1613,14 @@ impl Session {
                 bail!("Flashbots bundle is only supported on Ethereum mainnet");
             }
         }
-        let filter: Option<std::collections::HashSet<String>> =
-            wallet_addresses.and_then(|v| {
-                let set: std::collections::HashSet<String> = v
-                    .into_iter()
-                    .map(|a| normalize_address(&a))
-                    .filter(|a| a.len() > 2)
-                    .collect();
-                if set.is_empty() {
-                    None
-                } else {
-                    Some(set)
-                }
-            });
+        let filter: Option<std::collections::HashSet<String>> = wallet_addresses.and_then(|v| {
+            let set: std::collections::HashSet<String> = v
+                .into_iter()
+                .map(|a| normalize_address(&a))
+                .filter(|a| a.len() > 2)
+                .collect();
+            if set.is_empty() { None } else { Some(set) }
+        });
         let selected: Vec<Signer> = self
             .signers
             .iter()
@@ -1720,13 +1731,8 @@ impl Session {
                             None
                         }
                     };
-                    let seconds_to_start = phase_start.and_then(|s| {
-                        if s > wall {
-                            Some(s - wall)
-                        } else {
-                            None
-                        }
-                    });
+                    let seconds_to_start =
+                        phase_start.and_then(|s| if s > wall { Some(s - wall) } else { None });
                     let value_eth = amount::wei_to_eth_string(value);
                     let fee_eth = amount::wei_to_eth_string(st.collector_fee);
                     let per_eth = amount::wei_to_eth_string(per);
@@ -1778,9 +1784,7 @@ impl Session {
                     let full = format!("{e:#}");
                     Ok(RawProbeRow {
                         ok: false,
-                        summary: format!(
-                            "Probe failed (check Network=Robinhood + RPC). {full}"
-                        ),
+                        summary: format!("Probe failed (check Network=Robinhood + RPC). {full}"),
                         phase_type: None,
                         open: false,
                         value_eth: None,
@@ -1801,7 +1805,10 @@ impl Session {
             match rpc.get_code(&contract).await {
                 Ok(code) if !code.is_empty() => Ok(RawProbeRow {
                     ok: true,
-                    summary: format!("Contract OK · code {} bytes · set price manually", code.len()),
+                    summary: format!(
+                        "Contract OK · code {} bytes · set price manually",
+                        code.len()
+                    ),
                     phase_type: None,
                     open: false,
                     value_eth: None,
@@ -1872,11 +1879,7 @@ impl Session {
                     .map(|a| normalize_address(&a))
                     .filter(|a| a.len() > 2)
                     .collect();
-                if set.is_empty() {
-                    None
-                } else {
-                    Some(set)
-                }
+                if set.is_empty() { None } else { Some(set) }
             });
         let selected: Vec<Signer> = self
             .signers
@@ -1918,15 +1921,13 @@ impl Session {
         };
         let qty = input.quantity.unwrap_or(1).max(1);
         let function = match preset {
-            SniperPreset::MintBayPublic | SniperPreset::SimpleMintUint => {
-                input
-                    .function
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("mint(uint256)")
-                    .to_string()
-            }
+            SniperPreset::MintBayPublic | SniperPreset::SimpleMintUint => input
+                .function
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("mint(uint256)")
+                .to_string(),
             SniperPreset::Custom => {
                 let f = input.function.as_deref().unwrap_or("").trim();
                 if f.is_empty() {
@@ -1937,11 +1938,9 @@ impl Session {
         };
         let at_time = raw_sniper::parse_sniper_at_time(input.at_time.as_deref())?;
         // Timeout: with at_time default 5 min; without default 120 min unless specified
-        let timeout_secs = input.timeout_secs.unwrap_or(if at_time.is_some() {
-            300
-        } else {
-            7200
-        });
+        let timeout_secs = input
+            .timeout_secs
+            .unwrap_or(if at_time.is_some() { 300 } else { 7200 });
 
         let rpc = self.rpc_client_for_chain(chain)?;
         if let Some(expected) = Self::expected_chain_id(chain) {
@@ -2027,20 +2026,11 @@ impl Session {
                 .parse()
                 .with_context(|| format!("call #{}: invalid target", i + 1))?;
             let allow_failure = s.allow_failure.unwrap_or(false);
-            let label = s
-                .label
-                .clone()
-                .unwrap_or_else(|| format!("call{}", i + 1));
+            let label = s.label.clone().unwrap_or_else(|| format!("call{}", i + 1));
             let value_eth = s.value_eth.as_deref().unwrap_or("0");
             let step = if let Some(ref data) = s.calldata {
                 if !data.trim().is_empty() {
-                    multicall::step_from_calldata(
-                        target,
-                        data,
-                        value_eth,
-                        allow_failure,
-                        label,
-                    )?
+                    multicall::step_from_calldata(target, data, value_eth, allow_failure, label)?
                 } else if let Some(ref fn_sig) = s.function {
                     multicall::step_from_function(
                         target,
@@ -2344,7 +2334,7 @@ fn export_wl_report(
     slug: &str,
     wallets: &[WalletEligibilityRow],
 ) -> anyhow::Result<crate::export::WlExportPaths> {
-    use crate::export::{wl_stage_file_key, write_wl_eligibility_export, WlCsvRow};
+    use crate::export::{WlCsvRow, wl_stage_file_key, write_wl_eligibility_export};
     use std::collections::BTreeMap;
 
     let mut csv_rows: Vec<WlCsvRow> = Vec::new();
@@ -2382,6 +2372,34 @@ fn export_wl_report(
 
     let stage_wallets: Vec<(String, Vec<String>)> = by_stage.into_iter().collect();
     write_wl_eligibility_export(slug, &csv_rows, &stage_wallets, &not_eligible)
+}
+
+#[cfg(test)]
+mod session_debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_never_prints_password_or_env_secrets() {
+        let mut s = Session::default_paths();
+        s.password = Some(Zeroizing::new("super-secret-vault-pw".into()));
+        s.settings.alchemy_api_key = "alchemy_secret_key_xyz".into();
+        s.env
+            .insert("ALCHEMY_API_KEY".into(), "alchemy_secret_key_xyz".into());
+        s.env
+            .insert("RPC_URL".into(), "https://evil.example/v2/secret".into());
+        let dbg = format!("{s:?}");
+        assert!(
+            !dbg.contains("super-secret-vault-pw"),
+            "password leaked in Debug: {dbg}"
+        );
+        assert!(
+            !dbg.contains("alchemy_secret_key_xyz"),
+            "alchemy key leaked: {dbg}"
+        );
+        assert!(!dbg.contains("evil.example"), "RPC URL leaked: {dbg}");
+        assert!(dbg.contains("[set]") || dbg.contains("password"), "{dbg}");
+        assert!(dbg.contains("signers"), "{dbg}");
+    }
 }
 
 #[cfg(test)]
@@ -2515,7 +2533,8 @@ mod rpc_collect_tests {
 
         let base = collect_rpc_urls_for_chain(&env, Some("base"), &[]);
         assert!(
-            base.iter().any(|u| u.contains("base-mainnet.g.alchemy.com")),
+            base.iter()
+                .any(|u| u.contains("base-mainnet.g.alchemy.com")),
             "expected base alchemy from extracted key, got {base:?}"
         );
         assert!(
@@ -2528,9 +2547,10 @@ mod rpc_collect_tests {
         assert!(!arb.iter().any(|u| u.contains("eth-mainnet")));
 
         let poly = collect_rpc_urls_for_chain(&env, Some("polygon"), &[]);
-        assert!(poly
-            .iter()
-            .any(|u| u.contains("polygon-mainnet.g.alchemy.com")));
+        assert!(
+            poly.iter()
+                .any(|u| u.contains("polygon-mainnet.g.alchemy.com"))
+        );
 
         let op = collect_rpc_urls_for_chain(&env, Some("optimism"), &[]);
         assert!(op.iter().any(|u| u.contains("opt-mainnet.g.alchemy.com")));
@@ -2544,7 +2564,8 @@ mod rpc_collect_tests {
         let env = HashMap::new();
         let base = collect_rpc_urls_for_chain(&env, Some("base"), &[]);
         assert!(
-            base.iter().any(|u| u.contains("base.org") || u.contains("base.")),
+            base.iter()
+                .any(|u| u.contains("base.org") || u.contains("base.")),
             "expected public base RPC, got {base:?}"
         );
         let rh = collect_rpc_urls_for_chain(&env, Some("robinhood"), &[]);
@@ -2554,17 +2575,14 @@ mod rpc_collect_tests {
     #[test]
     fn extract_alchemy_key_from_url_ok() {
         assert_eq!(
-            extract_alchemy_key_from_url(
-                "https://eth-mainnet.g.alchemy.com/v2/AbCdEf123?foo=1"
-            )
-            .as_deref(),
+            extract_alchemy_key_from_url("https://eth-mainnet.g.alchemy.com/v2/AbCdEf123?foo=1")
+                .as_deref(),
             Some("AbCdEf123")
         );
         // Public Alchemy hosts have no key path — ignore
-        assert!(extract_alchemy_key_from_url(
-            "https://base-mainnet.g.alchemy.com/public"
-        )
-        .is_none());
+        assert!(
+            extract_alchemy_key_from_url("https://base-mainnet.g.alchemy.com/public").is_none()
+        );
     }
 
     #[test]
@@ -2657,7 +2675,11 @@ fn recommended_phase_index(info: &opensea::CollectionInfo) -> usize {
             // Comparing against 0 marked every real (past) timestamp as "not started".
             let now = chrono::Utc::now().timestamp();
             let has_started = s.start_time.map(|t| t as i64 <= now).unwrap_or(true);
-            (is_public as usize, !has_started as usize, s.stage_index.unwrap_or(0))
+            (
+                is_public as usize,
+                !has_started as usize,
+                s.stage_index.unwrap_or(0),
+            )
         })
         .map(|(i, _)| i)
         .unwrap_or_else(|| {
@@ -2673,13 +2695,9 @@ fn stage_rows_from(stages: &[opensea::StageInfo], recommended: Option<usize>) ->
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let start_time = s.start_time.and_then(|t| {
-                if t > 0.0 {
-                    Some(t as i64)
-                } else {
-                    None
-                }
-            });
+            let start_time = s
+                .start_time
+                .and_then(|t| if t > 0.0 { Some(t as i64) } else { None });
             StageRow {
                 index: i,
                 label: opensea::stage_label(s),
@@ -2980,11 +2998,7 @@ fn extract_alchemy_key_from_url(url: &str) -> Option<String> {
     let marker = "/v2/";
     let idx = lower.find(marker)?;
     let rest = &url[idx + marker.len()..];
-    let key = rest
-        .split(['?', '#', '/'])
-        .next()
-        .unwrap_or("")
-        .trim();
+    let key = rest.split(['?', '#', '/']).next().unwrap_or("").trim();
     if key.is_empty() || key == "YOUR_ALCHEMY_KEY" {
         None
     } else {
