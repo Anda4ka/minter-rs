@@ -132,9 +132,9 @@ pub use progress::{MintEvent, MintReporter, NullReporter};
 pub use raw_sniper::{RawSniperConfig, SniperPreset, ValueMode};
 pub use safety_policy::{
     FeeRefreshMode, MULTI_WALLET_PROXY_WARN_THRESHOLD, auth_concurrency_after_rate_limit,
-    default_auth_concurrency, is_rate_limit_error, live_confirm_required, live_confirm_word_ok,
-    no_proxy_multi_wallet_message, rate_limit_actionable_message, should_refresh_fees_at_fire,
-    should_warn_no_proxy,
+    default_auth_concurrency, ensure_live_confirm, is_rate_limit_error, live_confirm_rejected_message,
+    live_confirm_required, live_confirm_word_ok, no_proxy_multi_wallet_message,
+    rate_limit_actionable_message, should_refresh_fees_at_fire, should_warn_no_proxy,
 };
 pub use settings::Settings;
 pub use types::*;

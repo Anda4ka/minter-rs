@@ -370,7 +370,9 @@ struct SettingsDto {
 impl SettingsDto {
     fn from_session(s: &Session) -> Self {
         Self {
-            alchemy_api_key: s.settings.alchemy_api_key.clone(),
+            // Never send the full Alchemy secret into the webview IPC surface.
+            // Save still accepts a new key; blank keeps the stored one.
+            alchemy_api_key: String::new(),
             alchemy_masked: s.settings.alchemy_masked(),
             rpc_urls: s.settings.rpc_urls.clone(),
             rpc_url_ethereum: s.settings.rpc_url_ethereum.clone(),
@@ -701,7 +703,7 @@ async fn run_mint(
         skip_estimate_on_open: Some(input.skip_estimate_on_open.unwrap_or(true)),
         use_flashbots: input.use_flashbots,
     };
-    // Confirm string ignored by core (mint starts without typed CONFIRM).
+    // Typed LIVE — enforced in core when require_live_confirm && !dry_run.
     let confirm = input.confirm.unwrap_or_default();
     // Reset one-shot first-confirm gate for this run
     state.mint_first_confirm.store(false, Ordering::SeqCst);
@@ -983,6 +985,7 @@ struct DisperseInput {
     to_addresses: Vec<String>,
     amount_eth: String,
     dry_run: Option<bool>,
+    confirm: Option<String>,
 }
 
 #[tauri::command]
@@ -1001,6 +1004,7 @@ async fn disperse(
             input.to_addresses,
             &input.amount_eth,
             input.dry_run.unwrap_or(true),
+            input.confirm.as_deref().unwrap_or(""),
         )
         .await
         .map_err(|e| e.to_string());
@@ -1016,6 +1020,7 @@ struct MulticallInput {
     steps: Vec<minter_core::MulticallStepInput>,
     dry_run: Option<bool>,
     multicall_address: Option<String>,
+    confirm: Option<String>,
 }
 
 #[tauri::command]
@@ -1034,6 +1039,7 @@ async fn multicall(
             input.steps,
             input.dry_run.unwrap_or(true),
             input.multicall_address,
+            input.confirm.as_deref().unwrap_or(""),
         )
         .await
         .map_err(|e| e.to_string());

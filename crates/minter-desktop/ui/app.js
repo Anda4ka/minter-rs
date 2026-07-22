@@ -352,6 +352,46 @@ function openConfirmModal(opts) {
   });
 }
 
+/**
+ * Fail-closed LIVE gate for money-moving actions.
+ * Returns { ok, confirm } — confirm is "LIVE" when the word was accepted.
+ * On IPC/modal failure: ok=false (never proceed live without a clean gate).
+ * @param {{ dryRun: boolean, title?: string, body?: string, lines?: string[], okLabel?: string }} opts
+ * @returns {Promise<{ ok: boolean, confirm: string }>}
+ */
+async function ensureLiveConfirm(opts) {
+  const dryRun = !!opts.dryRun;
+  if (dryRun) {
+    return { ok: true, confirm: "" };
+  }
+  try {
+    const needLive = await invoke("live_confirm_required", { dryRun: false });
+    if (!needLive) {
+      return { ok: true, confirm: "" };
+    }
+    const okLive = await openConfirmModal({
+      title: opts.title || t("tasks.liveTitle") || "LIVE",
+      body:
+        opts.body ||
+        t("tasks.liveBody") ||
+        "This spends real gas / mint price. Type LIVE to start.",
+      lines: opts.lines || [],
+      requireWord: "LIVE",
+      okLabel: opts.okLabel || t("tasks.liveOk") || "Start LIVE",
+    });
+    if (!okLive) {
+      return { ok: false, confirm: "" };
+    }
+    return { ok: true, confirm: "LIVE" };
+  } catch (e) {
+    console.warn("live confirm check failed", e);
+    if (typeof showToast === "function") {
+      showToast(String(e), "err");
+    }
+    return { ok: false, confirm: "" };
+  }
+}
+
 function closeModal(ok) {
   hide($("modal-overlay"));
   const r = modalResolve;
@@ -1503,13 +1543,28 @@ $("btn-sweep-eth")?.addEventListener("click", async () => {
     $("sweep-eth-out").textContent = t("sweep.needDest") || "Destination required";
     return;
   }
+  const liveGate = await ensureLiveConfirm({
+    dryRun: !!dry,
+    title: t("tasks.liveTitle") || "LIVE Sweep ETH",
+    body: t("tasks.liveBody") || "Type LIVE to sweep ETH.",
+    lines: [`Chain: ${chain}`, `To: ${to}`],
+  });
+  if (!liveGate.ok) {
+    $("sweep-eth-out").textContent = "Cancelled";
+    return;
+  }
   $("sweep-eth-out").textContent = dry
     ? `Dry-run Sweep ETH (${chain})…`
     : `LIVE Sweep ETH (${chain})…`;
   $("btn-sweep-eth").disabled = true;
   try {
     const rows = await invoke("sweep_eth", {
-      input: { chain, destination: to, dryRun: !!dry, confirm: "" },
+      input: {
+        chain,
+        destination: to,
+        dryRun: !!dry,
+        confirm: liveGate.confirm,
+      },
     });
     $("sweep-eth-out").textContent = formatSweepRows(rows);
   } catch (e) {
@@ -1532,6 +1587,16 @@ $("btn-sweep-nft")?.addEventListener("click", async () => {
     $("sweep-nft-out").textContent = t("sweep.needContractDest") || "Contract + destination required";
     return;
   }
+  const liveGate = await ensureLiveConfirm({
+    dryRun: !!dry,
+    title: t("tasks.liveTitle") || "LIVE Sweep NFTs",
+    body: t("tasks.liveBody") || "Type LIVE to sweep NFTs.",
+    lines: [`Chain: ${chain}`, `Contract: ${contract}`, `To: ${to}`],
+  });
+  if (!liveGate.ok) {
+    $("sweep-nft-out").textContent = "Cancelled";
+    return;
+  }
   $("sweep-nft-out").textContent = dry
     ? `Dry-run Sweep NFTs (${chain})…`
     : `LIVE Sweep NFTs (${chain})…`;
@@ -1543,7 +1608,7 @@ $("btn-sweep-nft")?.addEventListener("click", async () => {
         contract,
         destination: to,
         dryRun: !!dry,
-        confirm: "",
+        confirm: liveGate.confirm,
       },
     });
     $("sweep-nft-out").textContent = formatSweepRows(rows);
@@ -2543,6 +2608,20 @@ $("btn-raw-mint")?.addEventListener("click", async () => {
   }
   const valueEth = rawEffectiveValueEth();
   const gas = rawGasInput();
+  const liveGate = await ensureLiveConfirm({
+    dryRun: !!dry,
+    title: t("tasks.liveTitle") || "LIVE Raw Mint",
+    body: t("tasks.liveBody") || "Type LIVE to broadcast.",
+    lines: [
+      `${chain} · ${wallets.length} wallet(s)`,
+      contract,
+      `${fn} · ${valueEth} ETH`,
+    ],
+  });
+  if (!liveGate.ok) {
+    setRawStatus("Cancelled", null);
+    return;
+  }
   setRawStatus(
     dry ? `Dry-run ×${wallets.length}…` : `LIVE once ×${wallets.length}…`,
     "is-run"
@@ -2558,7 +2637,7 @@ $("btn-raw-mint")?.addEventListener("click", async () => {
         params,
         valueEth,
         dryRun: !!dry,
-        confirm: "",
+        confirm: liveGate.confirm,
         walletAddresses: wallets,
         useFlashbots,
         priorityFeeGwei: gas.priorityFeeGwei,
@@ -2656,23 +2735,22 @@ $("btn-raw-sniper")?.addEventListener("click", async () => {
     ? `fire unix ${atTime} (${formatUnixLocal(atTime)}) · T−5s pre-sign`
     : "NO timestamp → pre-sign now & blast immediately";
 
-  if (!dry) {
-    const ok = await openConfirmModal({
-      title: t("raw.confirmTitle") || "Start pre-sign race?",
-      body: "",
-      lines: [
-        `PRE-SIGN RACE · ${chain} · ${wallets.length} wallets · ${preset === "custom" ? fn : "mint(uint256)"} ×${qty}`,
-        `pay ${payHint}`,
-        gasHint,
-        contract,
-        fireLabel,
-      ],
-      okLabel: t("raw.confirmGo") || "Arm",
-    });
-    if (!ok) {
-      setRawStatus(t("raw.statusIdle") || "Cancelled", null);
-      return;
-    }
+  const liveGate = await ensureLiveConfirm({
+    dryRun: !!dry,
+    title: t("raw.confirmTitle") || "Start pre-sign race?",
+    body: t("tasks.liveBody") || "Type LIVE to arm the live race.",
+    lines: [
+      `PRE-SIGN RACE · ${chain} · ${wallets.length} wallets · ${preset === "custom" ? fn : "mint(uint256)"} ×${qty}`,
+      `pay ${payHint}`,
+      gasHint,
+      contract,
+      fireLabel,
+    ],
+    okLabel: t("raw.confirmGo") || "Arm LIVE",
+  });
+  if (!liveGate.ok) {
+    setRawStatus(t("raw.statusIdle") || "Cancelled", null);
+    return;
   }
 
   await attachRawSniperEvents();
@@ -2735,6 +2813,7 @@ $("btn-raw-sniper")?.addEventListener("click", async () => {
         valueMode,
         valueEth,
         dryRun: dry,
+        confirm: liveGate.confirm,
         atTime,
         timeoutSecs,
         walletAddresses: wallets,
@@ -3003,6 +3082,20 @@ $("btn-disperse")?.addEventListener("click", async () => {
     if (out) out.textContent = t("disperse.needAmount") || "Enter amount > 0";
     return;
   }
+  const liveGate = await ensureLiveConfirm({
+    dryRun: !!dry,
+    title: t("tasks.liveTitle") || "LIVE Disperse",
+    body: t("tasks.liveBody") || "Type LIVE to send ETH.",
+    lines: [
+      `Chain: ${chain}`,
+      `From: ${from}`,
+      `${to.length} destination(s) × ${amountEth} ETH`,
+    ],
+  });
+  if (!liveGate.ok) {
+    if (out) out.textContent = "Cancelled";
+    return;
+  }
   if (out) {
     out.textContent = dry
       ? `Dry-run disperse: ${from.slice(0, 10)}… → ${to.length} wallet(s) × ${amountEth} ETH…`
@@ -3017,6 +3110,7 @@ $("btn-disperse")?.addEventListener("click", async () => {
         toAddresses: to,
         amountEth,
         dryRun: dry,
+        confirm: liveGate.confirm,
       },
     });
     if (out) out.textContent = formatSweepRows(rows);
@@ -3146,6 +3240,20 @@ $("btn-multicall")?.addEventListener("click", async () => {
     return;
   }
   const helper = ($("mc-helper")?.value || "").trim();
+  const liveGate = await ensureLiveConfirm({
+    dryRun: !!dry,
+    title: t("tasks.liveTitle") || "LIVE Multicall",
+    body: t("tasks.liveBody") || "Type LIVE to broadcast the batch.",
+    lines: [
+      `Chain: ${chain}`,
+      `From: ${shortAddr(from)}`,
+      `${steps.length} call(s)`,
+    ],
+  });
+  if (!liveGate.ok) {
+    if (out) out.textContent = "Cancelled";
+    return;
+  }
   if (out) {
     out.textContent = dry
       ? `Dry-run multicall: ${steps.length} call(s) from ${shortAddr(from)}…`
@@ -3160,6 +3268,7 @@ $("btn-multicall")?.addEventListener("click", async () => {
         steps,
         dryRun: dry,
         multicallAddress: helper || null,
+        confirm: liveGate.confirm,
       },
     });
     if (out) out.textContent = formatSweepRows(rows);
@@ -5034,33 +5143,26 @@ async function startMintTask(taskId, opts = {}) {
     console.warn("proxy warn check failed", e);
   }
 
-  // M4: LIVE confirm (skip for dry-run; Tasks path is always live)
-  try {
-    const needLive = await invoke("live_confirm_required", { dryRun: false });
-    if (needLive) {
-      const okLive = await openConfirmModal({
-        title: t("tasks.liveTitle") || "LIVE mint",
-        body:
-          t("tasks.liveBody") ||
-          "This spends real gas / mint price. Type LIVE to start.",
-        lines: [
-          `Task: ${task.name}`,
-          `Slug: ${task.slug}`,
-          `Wallets: ${runWallets.length}`,
-          `Gas: ${gasLabel}`,
-        ],
-        requireWord: "LIVE",
-        okLabel: t("tasks.liveOk") || "Start LIVE",
-      });
-      if (!okLive) {
-        task.status = "ready";
-        renderTaskList();
-        if (!fromQueue) setTimeout(() => processQueue(), 0);
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn("live confirm check failed", e);
+  // LIVE confirm — fail-closed; core also enforces when require_live_confirm is on.
+  const liveGate = await ensureLiveConfirm({
+    dryRun: false,
+    title: t("tasks.liveTitle") || "LIVE mint",
+    body:
+      t("tasks.liveBody") ||
+      "This spends real gas / mint price. Type LIVE to start.",
+    lines: [
+      `Task: ${task.name}`,
+      `Slug: ${task.slug}`,
+      `Wallets: ${runWallets.length}`,
+      `Gas: ${gasLabel}`,
+    ],
+    okLabel: t("tasks.liveOk") || "Start LIVE",
+  });
+  if (!liveGate.ok) {
+    task.status = "ready";
+    renderTaskList();
+    if (!fromQueue) setTimeout(() => processQueue(), 0);
+    return;
   }
 
   activeTaskId = task.id;
@@ -5097,6 +5199,7 @@ async function startMintTask(taskId, opts = {}) {
         quantity: task.quantity,
         dryRun: false,
         phaseIndex: task.phaseIndex,
+        confirm: liveGate.confirm,
         walletAddresses: runWallets,
         chainOverride: task.chainOverride === "auto" ? null : task.chainOverride,
         gasLimit,

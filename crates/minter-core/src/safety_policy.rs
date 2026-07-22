@@ -51,6 +51,31 @@ pub fn live_confirm_word_ok(word: &str) -> bool {
     word.trim().eq_ignore_ascii_case("LIVE")
 }
 
+/// Operator-facing error when a live run starts without a valid LIVE word.
+pub fn live_confirm_rejected_message() -> &'static str {
+    "LIVE confirm required: type LIVE to start a live run (or enable dry-run / disable \
+     \"Require type LIVE\" in Settings)."
+}
+
+/// Enforce typed LIVE for live runs when the setting is on.
+///
+/// - dry-run → always Ok
+/// - `require_live_confirm == false` → always Ok
+/// - otherwise → word must be LIVE (case-insensitive)
+pub fn ensure_live_confirm(
+    require_live_confirm: bool,
+    dry_run: bool,
+    confirm: &str,
+) -> Result<(), String> {
+    if !live_confirm_required(require_live_confirm, dry_run) {
+        return Ok(());
+    }
+    if live_confirm_word_ok(confirm) {
+        return Ok(());
+    }
+    Err(live_confirm_rejected_message().to_string())
+}
+
 /// When to re-fetch fees and re-sign raw sniper txs at fire time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -127,6 +152,14 @@ mod tests {
         assert!(live_confirm_word_ok("LIVE"));
         assert!(live_confirm_word_ok(" live "));
         assert!(!live_confirm_word_ok("OK"));
+
+        assert!(ensure_live_confirm(true, true, "").is_ok());
+        assert!(ensure_live_confirm(false, false, "").is_ok());
+        assert!(ensure_live_confirm(true, false, "LIVE").is_ok());
+        assert!(ensure_live_confirm(true, false, " live ").is_ok());
+        let err = ensure_live_confirm(true, false, "").unwrap_err();
+        assert!(err.contains("LIVE confirm required"));
+        assert!(ensure_live_confirm(true, false, "OK").is_err());
     }
 
     #[test]

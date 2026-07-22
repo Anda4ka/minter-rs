@@ -1909,6 +1909,8 @@ pub async fn run_opensea_mint(
             let mut last_error = String::new();
             let mut max_fee = max_fee;
             let mut max_priority_fee = max_priority_fee;
+            // Cap underpriced/RBF fee escalation: never exceed 4× fee at worker start.
+            let fee_ceiling = max_fee.saturating_mul(U256::from(4u64)).max(max_fee);
             // Product rule: LIVE OpenSea mint is always fixed-gas / fast.
             // No separate "sniper mode". Dry-run still estimates unless skip flags.
             let wall_at_spawn = chrono::Utc::now().timestamp();
@@ -2620,9 +2622,53 @@ pub async fn run_opensea_mint(
                             continue;
                         } else if is_underpriced(&err_str) {
                             // Same calldata next attempt; only gas bumps (×1.15).
+                            // Sleep like nonce-too-low so we do not hammer RPC; cap fee at 4× start.
                             cached_tx = Some((tx.to, tx.value, tx.data.clone()));
-                            max_fee = gas::bump_fee_bps(max_fee, 11_500);
-                            max_priority_fee = gas::bump_fee_bps(max_priority_fee, 11_500);
+                            let next_fee = gas::bump_fee_bps(max_fee, 11_500);
+                            let next_prio = gas::bump_fee_bps(max_priority_fee, 11_500);
+                            if next_fee > fee_ceiling {
+                                let msg = format!(
+                                    "underpriced fee bump would exceed 4× start ceiling ({} gwei)",
+                                    fee_ceiling / U256::from(1_000_000_000u64)
+                                );
+                                report_wallet(
+                                    reporter.as_ref(),
+                                    &addr,
+                                    Some(WalletStatus::Failed),
+                                    None,
+                                    None,
+                                    Some(msg.clone()),
+                                );
+                                break (
+                                    addr,
+                                    MintResult {
+                                        address: addr,
+                                        tx_hash: None,
+                                        status: WalletStatus::Failed,
+                                        gas_used: None,
+                                        block_number: None,
+                                        error: Some(msg),
+                                    },
+                                );
+                            }
+                            max_fee = next_fee;
+                            max_priority_fee = next_prio;
+                            log_always(
+                                reporter.as_ref(),
+                                format!(
+                                    "[{}] underpriced — bump gas ×1.15 → {} gwei (prio {} gwei), retry",
+                                    sign::shorten_address(&addr),
+                                    max_fee / U256::from(1_000_000_000u64),
+                                    max_priority_fee / U256::from(1_000_000_000u64)
+                                ),
+                            );
+                            let delay_ms = if burst_idx < burst_delays.len() {
+                                burst_delays[burst_idx]
+                            } else {
+                                100
+                            };
+                            burst_idx += 1;
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                             continue;
                         } else {
                             report_wallet(reporter.as_ref(),
@@ -2669,9 +2715,28 @@ pub async fn run_opensea_mint(
                             break Ok(r);
                         }
                         Err(_) if rbf_count < MAX_RBF => {
+                            let next_fee = gas::bump_fee_bps(max_fee, RBF_BUMP_BPS);
+                            let next_prio = gas::bump_fee_bps(max_priority_fee, RBF_BUMP_BPS);
+                            if next_fee > fee_ceiling {
+                                log_always(
+                                    reporter.as_ref(),
+                                    format!(
+                                        "[{}] RBF stopped — fee would exceed 4× start ceiling; waiting on existing candidates",
+                                        sign::shorten_address(&addr)
+                                    ),
+                                );
+                                // Final wait without more fee bumps (do not burn RBF slots).
+                                match rpc.wait_for_any_receipt(&candidate_hashes, 75).await {
+                                    Ok((h, r)) => {
+                                        mined_hash = h;
+                                        break Ok(r);
+                                    }
+                                    Err(e) => break Err(e),
+                                }
+                            }
                             rbf_count += 1;
-                            max_fee = gas::bump_fee_bps(max_fee, RBF_BUMP_BPS);
-                            max_priority_fee = gas::bump_fee_bps(max_priority_fee, RBF_BUMP_BPS);
+                            max_fee = next_fee;
+                            max_priority_fee = next_prio;
                             log_always(reporter.as_ref(), format!("[{}] RBF #{} ({}s pending) gas->{} gwei candidates={}",
                                 sign::shorten_address(&addr),
                                 rbf_count,

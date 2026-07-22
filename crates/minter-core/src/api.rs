@@ -233,6 +233,16 @@ impl Session {
         !self.signers.is_empty()
     }
 
+    /// Fail closed for live spends when Settings.require_live_confirm is on.
+    fn gate_live(&self, dry_run: bool, confirm: &str) -> Result<()> {
+        crate::safety_policy::ensure_live_confirm(
+            self.settings.require_live_confirm,
+            dry_run,
+            confirm,
+        )
+        .map_err(|e| anyhow::anyhow!(e))
+    }
+
     pub fn rpc_configured(&self) -> bool {
         let s = self.rpc_status.to_lowercase();
         !s.is_empty()
@@ -766,14 +776,15 @@ impl Session {
     }
 
     /// Sweep native ETH from all vault wallets to `destination` on a chosen chain.
-    /// `confirm` is ignored (kept for API stability; no typed CONFIRM gate).
+    /// Live runs require typed `LIVE` when `require_live_confirm` is on.
     pub async fn sweep_eth(
         &self,
         chain: &str,
         destination: &str,
         dry_run: bool,
-        _confirm: &str,
+        confirm: &str,
     ) -> Result<Vec<SweepResultRow>> {
+        self.gate_live(dry_run, confirm)?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -804,15 +815,16 @@ impl Session {
     }
 
     /// Sweep ERC-721 NFTs from all vault wallets to `destination` on a chosen chain.
-    /// `confirm` is ignored (kept for API stability; no typed CONFIRM gate).
+    /// Live runs require typed `LIVE` when `require_live_confirm` is on.
     pub async fn sweep_nfts(
         &self,
         chain: &str,
         contract: &str,
         destination: &str,
         dry_run: bool,
-        _confirm: &str,
+        confirm: &str,
     ) -> Result<Vec<SweepResultRow>> {
+        self.gate_live(dry_run, confirm)?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -866,14 +878,15 @@ impl Session {
         }
     }
 
-    /// Run OpenSea mint (sniper path). No typed CONFIRM — Start runs live immediately.
-    /// `confirm` is ignored (kept for API stability).
+    /// Run OpenSea mint (sniper path).
+    /// Live runs require typed `LIVE` when `require_live_confirm` is on.
     pub async fn run_opensea_mint(
         &self,
         opts: MintOptions,
-        _confirm: &str,
+        confirm: &str,
         reporter: std::sync::Arc<dyn crate::progress::MintReporter>,
     ) -> Result<crate::mint::MintRunSummary> {
+        self.gate_live(opts.dry_run, confirm)?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -895,14 +908,15 @@ impl Session {
     }
 
     /// OpenSea mint with optional cancel flag (desktop Stop button).
-    /// No typed CONFIRM — Start runs live immediately. `confirm` is ignored.
+    /// Live runs require typed `LIVE` when `require_live_confirm` is on.
     pub async fn run_opensea_mint_cancellable(
         &self,
         opts: MintOptions,
-        _confirm: &str,
+        confirm: &str,
         reporter: std::sync::Arc<dyn crate::progress::MintReporter>,
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<crate::mint::MintRunSummary> {
+        self.gate_live(opts.dry_run, confirm)?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -1593,7 +1607,7 @@ impl Session {
         params: Vec<String>,
         value_eth: &str,
         dry_run: bool,
-        _confirm: &str,
+        confirm: &str,
         wallet_addresses: Option<Vec<String>>,
         use_flashbots: bool,
         priority_fee_gwei: Option<&str>,
@@ -1601,6 +1615,7 @@ impl Session {
         gas_multiplier: Option<f64>,
         gas_limit: Option<u64>,
     ) -> Result<Vec<SweepResultRow>> {
+        self.gate_live(dry_run, confirm)?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -1859,12 +1874,15 @@ impl Session {
     }
 
     /// Raw sniper: pre-sign race — clock fire at `at_time`, blast send (no estimate at T0).
+    /// Live runs require typed `LIVE` when `require_live_confirm` is on (`input.confirm`).
     pub async fn raw_sniper(
         &self,
         input: RawSniperInput,
         cancel: Arc<AtomicBool>,
         reporter: Option<Arc<dyn MintReporter>>,
     ) -> Result<Vec<SweepResultRow>> {
+        let dry_run = input.dry_run.unwrap_or(false);
+        self.gate_live(dry_run, input.confirm.as_deref().unwrap_or(""))?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -1978,7 +1996,7 @@ impl Session {
                 input.max_fee_gwei.as_deref(),
                 gas_mult,
             ),
-            dry_run: input.dry_run.unwrap_or(false),
+            dry_run,
             at_time,
             timeout_secs,
             concurrency: input.concurrency.unwrap_or(64).max(1) as usize,
@@ -1993,6 +2011,7 @@ impl Session {
     }
 
     /// One-wallet Multicall3 batch (several calls, one tx).
+    /// Live runs require typed `LIVE` when `require_live_confirm` is on.
     pub async fn multicall(
         &self,
         chain: &str,
@@ -2000,7 +2019,9 @@ impl Session {
         steps: Vec<MulticallStepInput>,
         dry_run: bool,
         multicall_address: Option<String>,
+        confirm: &str,
     ) -> Result<Vec<SweepResultRow>> {
+        self.gate_live(dry_run, confirm)?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -2091,6 +2112,7 @@ impl Session {
     }
 
     /// Disperse native coin from one vault wallet to many destinations (fixed amount each).
+    /// Live runs require typed `LIVE` when `require_live_confirm` is on.
     pub async fn disperse(
         &self,
         chain: &str,
@@ -2098,7 +2120,9 @@ impl Session {
         to_addresses: Vec<String>,
         amount_eth: &str,
         dry_run: bool,
+        confirm: &str,
     ) -> Result<Vec<SweepResultRow>> {
+        self.gate_live(dry_run, confirm)?;
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -2203,6 +2227,9 @@ pub struct RawSniperInput {
     pub value_mode: Option<String>,
     pub value_eth: Option<String>,
     pub dry_run: Option<bool>,
+    /// Typed LIVE confirmation for live runs (when require_live_confirm is on).
+    #[serde(default)]
+    pub confirm: Option<String>,
     pub at_time: Option<String>,
     pub timeout_secs: Option<u64>,
     pub wallet_addresses: Option<Vec<String>>,
