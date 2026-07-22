@@ -3,20 +3,64 @@ use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::time::Duration;
 
-/// Max RPC endpoints to fan out across for a single logical call.
+/// Default max RPC endpoints to fan out across for a single logical call.
 const RPC_MAX_NODES: usize = 3;
-/// Per-attempt request timeout for a single endpoint.
+/// Default per-attempt request timeout for a single endpoint.
 const RPC_CALL_TIMEOUT: Duration = Duration::from_secs(5);
-/// For hedged reads: how long to wait for the lead node before also firing the
-/// next endpoint in parallel. Small enough to hide a slow lead node near T0,
-/// large enough not to spam every node on a healthy connection.
+/// Default hedge delay: how long to wait for the lead node before also firing
+/// the next endpoint in parallel on a hedged read. Small enough to hide a slow
+/// lead node near T0, large enough not to spam every node on a healthy link.
 const RPC_HEDGE_DELAY: Duration = Duration::from_millis(350);
+
+/// Tunable RPC fan-out / timeout knobs. Defaults match the constants above;
+/// overridable via env / settings keys so fast L2s can tighten timeouts and
+/// slow proxies can loosen them without a code change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpcTuning {
+    pub max_nodes: usize,
+    pub call_timeout: Duration,
+    pub hedge_delay: Duration,
+}
+
+impl Default for RpcTuning {
+    fn default() -> Self {
+        Self {
+            max_nodes: RPC_MAX_NODES,
+            call_timeout: RPC_CALL_TIMEOUT,
+            hedge_delay: RPC_HEDGE_DELAY,
+        }
+    }
+}
+
+impl RpcTuning {
+    /// Read overrides from a key lookup (env or settings). Missing / invalid
+    /// keys keep the default; values are clamped to sane ranges so a bad config
+    /// can't disable fan-out or set a 0 s timeout.
+    ///
+    /// Keys: `RPC_MAX_NODES` (1..=10), `RPC_CALL_TIMEOUT_MS` (500..=60000),
+    /// `RPC_HEDGE_DELAY_MS` (50..=5000).
+    pub fn from_lookup<F: Fn(&str) -> Option<String>>(get: F) -> Self {
+        let mut t = Self::default();
+        if let Some(n) = get("RPC_MAX_NODES").and_then(|s| s.trim().parse::<usize>().ok()) {
+            t.max_nodes = n.clamp(1, 10);
+        }
+        if let Some(ms) = get("RPC_CALL_TIMEOUT_MS").and_then(|s| s.trim().parse::<u64>().ok()) {
+            t.call_timeout = Duration::from_millis(ms.clamp(500, 60_000));
+        }
+        if let Some(ms) = get("RPC_HEDGE_DELAY_MS").and_then(|s| s.trim().parse::<u64>().ok()) {
+            t.hedge_delay = Duration::from_millis(ms.clamp(50, 5_000));
+        }
+        t
+    }
+}
+
 
 
 pub struct RpcClient {
     client: reqwest::Client,
     urls: Vec<String>,
     next_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    tuning: RpcTuning,
 }
 
 impl Clone for RpcClient {
@@ -25,6 +69,7 @@ impl Clone for RpcClient {
             client: self.client.clone(),
             urls: self.urls.clone(),
             next_id: self.next_id.clone(),
+            tuning: self.tuning,
         }
     }
 }
@@ -46,6 +91,7 @@ impl RpcClient {
             client,
             urls,
             next_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            tuning: RpcTuning::from_lookup(|k| std::env::var(k).ok()),
         })
     }
 
@@ -295,13 +341,13 @@ impl RpcClient {
     }
 
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        let max_urls = self.urls.len().min(3);
+        let max_urls = self.urls.len().min(self.tuning.max_nodes);
         if max_urls == 0 {
             bail!("No RPC URLs configured (method {method})");
         }
         let mut errors: Vec<String> = Vec::new();
         for (i, url) in self.urls.iter().take(max_urls).enumerate() {
-            match tokio::time::timeout(Duration::from_secs(5), self.rpc_call(url, method, params.clone())).await {
+            match tokio::time::timeout(self.tuning.call_timeout, self.rpc_call(url, method, params.clone())).await {
                 Ok(Ok(result)) => return Ok(result),
                 Ok(Err(e)) => {
                     let msg = format!("{} via {}: {}", method, Self::short_url(url), e);
@@ -349,7 +395,7 @@ impl RpcClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let urls: Vec<String> = self.urls.iter().take(RPC_MAX_NODES).cloned().collect();
+        let urls: Vec<String> = self.urls.iter().take(self.tuning.max_nodes).cloned().collect();
         if urls.is_empty() {
             bail!("No RPC URLs configured (method {method})");
         }
@@ -358,19 +404,22 @@ impl RpcClient {
         let client = self.client.clone();
         let counter = self.next_id.clone();
         let method_s = method.to_string();
+        let call_timeout = self.tuning.call_timeout;
+        let hedge_delay = self.tuning.hedge_delay;
         let mk = |idx: usize| {
             let client = client.clone();
             let url = urls[idx].clone();
             let id = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let method = method_s.clone();
             let params = params.clone();
+            let call_timeout = call_timeout;
             async move {
                 let res = tokio::time::timeout(
-                    RPC_CALL_TIMEOUT,
+                    call_timeout,
                     Self::rpc_call_with_client(client, url.clone(), id, &method, params),
                 )
                 .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("timeout {}s", RPC_CALL_TIMEOUT.as_secs())));
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("timeout {}ms", call_timeout.as_millis())));
                 (url, res)
             }
         };
@@ -402,7 +451,7 @@ impl RpcClient {
                             spawned += 1;
                         }
                     }
-                    _ = tokio::time::sleep(RPC_HEDGE_DELAY) => {
+                    _ = tokio::time::sleep(hedge_delay) => {
                         set.spawn(mk(spawned));
                         spawned += 1;
                     }
@@ -591,7 +640,7 @@ impl RpcClient {
     }
 
     pub async fn send_raw_transaction(&self, raw: &Bytes) -> Result<B256> {
-        let urls: Vec<String> = self.urls.iter().take(3).cloned().collect();
+        let urls: Vec<String> = self.urls.iter().take(self.tuning.max_nodes).cloned().collect();
         let max_attempts = urls.len();
         if max_attempts == 0 {
             bail!("No RPC URLs configured");
@@ -666,7 +715,7 @@ impl RpcClient {
     pub async fn transaction_receipt(&self, hash: &B256) -> Result<Option<serde_json::Value>> {
         let hash_hex = format!("0x{}", hex::encode(hash.as_slice()));
         let mut last_error = None;
-        for (attempt, url) in self.urls.iter().take(3).enumerate() {
+        for (attempt, url) in self.urls.iter().take(self.tuning.max_nodes).enumerate() {
             match self
                 .rpc_call(url, "eth_getTransactionReceipt", json!([hash_hex]))
                 .await
@@ -904,6 +953,47 @@ mod tests {
         let good = spawn_mock(ok_body("0x7"), Duration::ZERO);
         let rpc = RpcClient::new(vec![bad, good]);
         assert_eq!(rpc.nonce(&Address::ZERO).await.unwrap(), 7);
+    }
+
+    #[test]
+    fn tuning_defaults_and_overrides() {
+        use std::collections::HashMap;
+        // No keys → defaults match the constants.
+        let def = RpcTuning::from_lookup(|_| None);
+        assert_eq!(def, RpcTuning::default());
+        assert_eq!(def.max_nodes, RPC_MAX_NODES);
+        assert_eq!(def.call_timeout, RPC_CALL_TIMEOUT);
+        assert_eq!(def.hedge_delay, RPC_HEDGE_DELAY);
+
+        // Valid overrides are applied.
+        let env: HashMap<&str, &str> = [
+            ("RPC_MAX_NODES", "2"),
+            ("RPC_CALL_TIMEOUT_MS", "1500"),
+            ("RPC_HEDGE_DELAY_MS", "120"),
+        ]
+        .into_iter()
+        .collect();
+        let t = RpcTuning::from_lookup(|k| env.get(k).map(|s| s.to_string()));
+        assert_eq!(t.max_nodes, 2);
+        assert_eq!(t.call_timeout, Duration::from_millis(1500));
+        assert_eq!(t.hedge_delay, Duration::from_millis(120));
+
+        // Out-of-range values are clamped, not accepted verbatim.
+        let bad: HashMap<&str, &str> = [
+            ("RPC_MAX_NODES", "999"),
+            ("RPC_CALL_TIMEOUT_MS", "1"),
+            ("RPC_HEDGE_DELAY_MS", "99999"),
+        ]
+        .into_iter()
+        .collect();
+        let c = RpcTuning::from_lookup(|k| bad.get(k).map(|s| s.to_string()));
+        assert_eq!(c.max_nodes, 10);
+        assert_eq!(c.call_timeout, Duration::from_millis(500));
+        assert_eq!(c.hedge_delay, Duration::from_millis(5_000));
+
+        // Garbage → default retained.
+        let g = RpcTuning::from_lookup(|_| Some("notanumber".to_string()));
+        assert_eq!(g, RpcTuning::default());
     }
 }
 
