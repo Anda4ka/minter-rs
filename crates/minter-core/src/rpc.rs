@@ -639,7 +639,18 @@ impl RpcClient {
         Ok((base_fee, priority))
     }
 
+    /// Broadcast a signed tx to up to `max_nodes` endpoints in parallel and
+    /// return the first accepted hash. See [`send_raw_transaction_report`] for
+    /// the per-node breakdown.
     pub async fn send_raw_transaction(&self, raw: &Bytes) -> Result<B256> {
+        self.send_raw_transaction_report(raw).await.map(|r| r.hash)
+    }
+
+    /// Like [`send_raw_transaction`] but returns a [`SendReport`] describing
+    /// which endpoint's response was used (`winner`), how many were tried, and
+    /// the errors from the others (`losers`). Useful for latency/observability
+    /// (which node is winning broadcasts) without changing the hash contract.
+    pub async fn send_raw_transaction_report(&self, raw: &Bytes) -> Result<SendReport> {
         let urls: Vec<String> = self.urls.iter().take(self.tuning.max_nodes).cloned().collect();
         let max_attempts = urls.len();
         if max_attempts == 0 {
@@ -673,7 +684,7 @@ impl RpcClient {
         }
 
         let mut tasks: Vec<Option<_>> = tasks.into_iter().map(Some).collect();
-        let mut last_error = None;
+        let mut losers: Vec<String> = Vec::new();
         for i in 0..tasks.len() {
             let Some(handle) = tasks[i].take() else {
                 continue;
@@ -682,33 +693,45 @@ impl RpcClient {
                 Ok((url, Ok(result))) => {
                     let hex_str = result.as_str().context("tx hash not a string")?;
                     let hash = hex_str.parse().context("invalid tx hash")?;
-                    crate::rlog!("RPC send OK via {}", Self::short_url(&url));
                     for task in &mut tasks {
                         if let Some(handle) = task.take() {
                             handle.abort();
                         }
                     }
-                    return Ok(hash);
+                    let winner = Self::short_url(&url);
+                    if losers.is_empty() {
+                        crate::rlog!("RPC send OK via {}", winner);
+                    } else {
+                        crate::rlog!(
+                            "RPC send OK via {} (after {} failed: {})",
+                            winner,
+                            losers.len(),
+                            losers.join("; ")
+                        );
+                    }
+                    return Ok(SendReport {
+                        hash,
+                        winner,
+                        nodes_tried: max_attempts,
+                        losers,
+                    });
                 }
                 Ok((url, Err(e))) => {
-                    let msg = format!(
-                        "eth_sendRawTransaction via {}: {}",
-                        Self::short_url(&url),
-                        e
-                    );
+                    let msg = format!("{}: {}", Self::short_url(&url), e);
                     crate::rlog!("RPC send failed: {}", msg);
-                    last_error = Some(msg);
+                    losers.push(msg);
                 }
                 Err(e) => {
-                    let msg = format!("eth_sendRawTransaction task join: {e}");
-                    crate::rlog!("{}", msg);
-                    last_error = Some(msg);
+                    let msg = format!("task join: {e}");
+                    crate::rlog!("RPC send {}", msg);
+                    losers.push(msg);
                 }
             }
         }
         bail!(
-            "All RPC eth_sendRawTransaction attempts failed: {}",
-            last_error.unwrap_or_else(|| "unknown".into())
+            "All RPC eth_sendRawTransaction attempts failed ({} node(s)): {}",
+            max_attempts,
+            losers.join(" | ")
         )
     }
 
@@ -811,6 +834,20 @@ impl RpcClient {
     pub async fn race_send(&self, raw: &Bytes) -> Result<B256> {
         self.send_raw_transaction(raw).await
     }
+}
+
+/// Outcome of a parallel `eth_sendRawTransaction` broadcast: which endpoint's
+/// response was used, how many were tried, and the errors from the others.
+#[derive(Debug, Clone)]
+pub struct SendReport {
+    /// Accepted transaction hash.
+    pub hash: B256,
+    /// Short URL of the endpoint whose response we used.
+    pub winner: String,
+    /// Number of endpoints the broadcast fanned out to.
+    pub nodes_tried: usize,
+    /// `"shorturl: error"` for endpoints that errored before the winner.
+    pub losers: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -994,6 +1031,27 @@ mod tests {
         // Garbage → default retained.
         let g = RpcTuning::from_lookup(|_| Some("notanumber".to_string()));
         assert_eq!(g, RpcTuning::default());
+    }
+
+    #[tokio::test]
+    async fn send_report_records_winner_and_losers() {
+        // Lead node errors; second node accepts the tx. The report should name
+        // the winner and carry the loser's error.
+        let hash_hex = format!("0x{}", "11".repeat(32));
+        let bad = spawn_mock(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"nope\"}}".to_string(),
+            Duration::ZERO,
+        );
+        let good = spawn_mock(ok_body(&hash_hex), Duration::ZERO);
+        let good_short = RpcClient::short_url(&good);
+        let rpc = RpcClient::new(vec![bad, good]);
+        let raw = Bytes::from(vec![1u8, 2, 3]);
+        let report = rpc.send_raw_transaction_report(&raw).await.unwrap();
+        assert_eq!(report.hash, hash_hex.parse::<B256>().unwrap());
+        assert_eq!(report.winner, good_short);
+        assert_eq!(report.nodes_tried, 2);
+        assert_eq!(report.losers.len(), 1, "the failed lead node is recorded");
+        assert!(report.losers[0].contains("nope"));
     }
 }
 
