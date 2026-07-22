@@ -31,6 +31,7 @@ pub mod api;
 pub mod auth_cache;
 pub mod errors;
 pub mod export;
+pub mod metrics;
 pub mod gas;
 pub mod mint;
 pub mod mint_ops;
