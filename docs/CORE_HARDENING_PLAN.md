@@ -20,7 +20,10 @@
 | 2 | Hedged‑чтения RPC (латентность у T0) | `rpc.rs`, `mint.rs` | средний | ✅ `docs/CORE_STAGE2_HEDGED_READS.md` |
 | 3 | Детерминированная целочисленная математика газа | `gas.rs`, `types.rs` | низкий | ✅ `docs/CORE_STAGE3_INT_FEE_MATH.md` |
 | 4 | Именованные константы + конфиг фанаута/таймаутов RPC | `rpc.rs`, `settings.rs` | низкий | ✅ `docs/CORE_STAGE4_RPC_TUNING.md` |
-| 5 | Наблюдаемость отправки tx (per‑node исход) | `rpc.rs`, `progress.rs` | низкий | ⬜ |
+| 5 | Наблюдаемость отправки tx (per‑node исход) | `rpc.rs`, `progress.rs` | низкий | ✅ `docs/CORE_STAGE5_SEND_OBSERVABILITY.md` |
+
+> **Все 5 этапов реализованы.** Тесты ядра: 123 → 141. Каждый этап — отдельный PR
+> в стеке (`#4 → #5 → #6 → #7 → #8`), с пояснительной запиской в `docs/`.
 
 ---
 
