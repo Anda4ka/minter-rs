@@ -168,7 +168,10 @@
               </div>
 
               <div class="panel last-run-panel">
-                <h3 data-i18n="home.lastMint">Last mint run</h3>
+                <h3 class="panel-title">
+                  <span class="panel-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5h-2v6l5 3 1-1.7-4-2.3V7z"/></svg></span>
+                  <span data-i18n="home.lastMint">Last mint run</span>
+                </h3>
                 <div id="home-history" class="home-history"></div>
                 <pre id="home-last-mint" class="code" data-i18n="home.noMint">No mint run in this session yet.</pre>
               </div>
@@ -828,6 +831,19 @@
                   <button id="btn-probe" data-i18n="rpc.probeUrls">Probe URL list</button>
                   <button id="btn-latency" data-i18n="rpc.latency">Deep latency</button>
                 </div>
+                <div class="rpc-chain-picker" id="rpc-chain-picker" aria-label="Networks to ping">
+                  <span class="muted small" data-i18n="rpc.pingWhich">Ping:</span>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="ethereum" checked /> Ethereum</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="base" checked /> Base</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="polygon" checked /> Polygon</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="arbitrum" checked /> Arbitrum</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="optimism" checked /> Optimism</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="robinhood" checked /> Robinhood</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="blast" /> Blast</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="zora" /> Zora</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="apechain" /> ApeChain</label>
+                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="monad" /> Monad</label>
+                </div>
                 <div class="table-wrap" id="rpc-net-wrap">
                   <table class="data-table" id="rpc-net-table">
                     <thead>
@@ -1101,6 +1117,14 @@
           </table>
         </div>
         <div id="mc-log" class="mc-log code"></div>
+      </div>
+    </div>
+
+    <div id="cmd-palette" class="cmd-overlay hidden" role="dialog" aria-modal="true" aria-label="Command palette">
+      <div class="cmd-card">
+        <input type="text" id="cmd-input" class="cmd-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="cmd.placeholder" placeholder="Jump to a page or action…" />
+        <ul id="cmd-list" class="cmd-list" role="listbox"></ul>
+        <div class="cmd-foot muted small"><span>↑↓</span> select · <span>↵</span> open · <span>Esc</span> close</div>
       </div>
     </div>
 
