@@ -5,6 +5,7 @@
 
 <!-- Badges -->
 <p align="center">
+  <a href="https://github.com/Anda4ka/minter-rs/actions/workflows/ci.yml"><img src="https://github.com/Anda4ka/minter-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/engine-Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/desktop-Tauri%202-0a101c?style=flat-square&logo=tauri&logoColor=57c06b" alt="Tauri 2">
   <img src="https://img.shields.io/badge/platform-Windows-0a101c?style=flat-square&logo=windows&logoColor=white" alt="Windows">
@@ -25,12 +26,26 @@
   <a href="#-features">Features</a> ·
   <a href="#-how-it-mints">How it mints</a> ·
   <a href="#-build--run">Build &amp; run</a> ·
-  <a href="#-docs">Docs</a> ·
+  <a href="#-configure">Configure</a> ·
   <a href="#-safety">Safety</a>
 </p>
 
 > [!WARNING]
 > **Burner wallets only.** Never import long-term funds. Live mint spends real gas and mint price, and there is **no mint guarantee** — OpenSea rate limits, RPC quality, and phase timing are outside the app's control.
+
+<br>
+
+## ⚡ Quick start
+
+Build and run from source in one command (Windows, from the repo root):
+
+```powershell
+git clone https://github.com/Anda4ka/minter-rs
+cd minter-rs
+cargo run -p minter-desktop --release
+```
+
+**First run:** open **Settings** → paste your **Alchemy API key** → **Proxies** → paste your list → **Check Connection**. **Dry Run is ON by default** — flip to LIVE only when you're ready (type `LIVE`). Prerequisites in [Build &amp; run](#-build--run) · first-run setup in [Configure](#-configure).
 
 <br>
 
@@ -44,6 +59,8 @@ MINTER is a **self-contained desktop app**: a Rust engine (`minter-core`) wrappe
 - **Encrypted at rest** — AES-256-GCM vault, PBKDF2 (600k), atomic writes, `Zeroizing` in memory.
 - **Confirm-based success** — a broadcast (`SENT`) is never counted as a win; only a block-confirmed receipt is.
 - **Two mint paths** — OpenSea SeaDrop drops, and raw contract sniping with proxy/ABI discovery.
+
+> 📖 Full step-by-step operator guide (RU): **[`USER_GUIDE.md`](USER_GUIDE.md)**.
 
 <br>
 
@@ -86,52 +103,51 @@ MINTER is a **self-contained desktop app**: a Rust engine (`minter-core`) wrappe
 <h2 id="-build--run"></h2>
 <img src=".github/assets/section-build.svg" width="100%" alt="Build and run — Windows, PowerShell">
 
-**Run the shipped app** — everything lives in `Public\`, next to the exe:
+**Prerequisites (Windows):** **Rust** (stable — [rustup.rs](https://rustup.rs)) · **MSVC C++ build tools** ("Desktop development with C++") · **WebView2** (preinstalled on Windows 10/11). _No Node.js — the UI is static and served by Tauri._
+
+**Build & run — one command** (from the repo root):
 
 ```powershell
-.\Public\minter-desktop.exe
+cargo run -p minter-desktop --release
 ```
 
-**Rebuild after code changes** (release into `Public\`):
+**Optimized binary** → `target\release\minter-desktop.exe`:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
-.\Public\minter-desktop.exe
-# optional: free disk space
-Remove-Item -Recurse -Force target
+cargo build -p minter-desktop --release
 ```
 
-**Test / check:**
+**Tests:** `cargo test -p minter-core`
 
-```powershell
-cargo test -p minter-core
-cargo check -p minter-core -p minter-desktop
-```
-
-| Path | Role |
-|------|------|
-| `Public\` | **Shipped / daily runtime** (exe + config, vault, tasks, proxies, results, logs) |
-| `crates\` | Source — `minter-core` (engine) + `minter-desktop` (Tauri GUI) |
-| `target\` | Cargo build cache only — **not required to run** |
-
-> Runtime data under `Public\` (`keys.vault`, `config.json`, `.env`, `auth_cache.bin`, logs, results) is **gitignored** — never commit or push secrets. Canonical repository: **[`Anda4ka/minter-rs`](https://github.com/Anda4ka/minter-rs)**, branch `main` — push product updates only here.
+> The app writes its data (vault, `config.json`, results, logs) **next to the exe** — those are gitignored; never share them.
 
 <br>
 
 <!-- 05 -->
-<h2 id="-docs"></h2>
-<img src=".github/assets/section-docs.svg" width="100%" alt="Docs — deeper reference">
+<h2 id="-configure"></h2>
+<img src=".github/assets/section-configure.svg" width="100%" alt="Configure — first run">
 
-| Doc | Audience |
-|-----|----------|
-| [`ЗАПУСК.md`](ЗАПУСК.md) | Quick start (RU) |
-| [`Public/ИНСТРУКЦИЯ.md`](Public/ИНСТРУКЦИЯ.md) | Full end-user guide (RU) |
-| [`Public/README.txt`](Public/README.txt) | Quick reference (EN) |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules &amp; flows |
-| [`docs/UI_PLAN.md`](docs/UI_PLAN.md) | Operator UI (balances, RPC, Mission Control, Raw) |
-| [`docs/AUDIT_2026_07_24.md`](docs/AUDIT_2026_07_24.md) | Latest code + security + correctness audit |
-| [`docs/RISK_MITIGATION_PLAN.md`](docs/RISK_MITIGATION_PLAN.md) | Residual risks |
-| [`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) | Planned features |
+Set connection details in the **Settings** UI (saved to `config.json` next to the exe).
+
+**First run**
+
+1. **Unlock / create the vault** — set a password, then import burner keys (paste or file).
+2. **RPC** — in **Settings**, paste your **Alchemy API key** (private key; multi-chain URLs are built for you). Advanced: set explicit `rpc_url_ethereum` / `rpc_url_base` / `rpc_urls`.
+3. **Proxies** — on the **Proxies** page, paste one per line (formats below). Multi-wallet OpenSea without proxies often hits HTTP 429.
+4. **Check Connection** — **Ping networks** to confirm RPC + proxies are healthy.
+5. **Dry Run is ON by default** — do a dry pass first; switch to LIVE only when ready (type `LIVE`).
+
+**Proxy formats**
+
+```text
+host:port
+host:port:user:pass
+user:pass@host:port
+http://user:pass@host:port
+socks5://host:port
+```
+
+Prefer env / headless config? Copy [`.env.example`](.env.example) → `.env` (`ALCHEMY_API_KEY`, `RPC_URL(S)_<CHAIN>`). `config.json` (Settings) takes precedence; empty fields + **Save** clear stale `.env` keys.
 
 <br>
 
@@ -145,6 +161,7 @@ cargo check -p minter-core -p minter-desktop
 - **No mint guarantee** — OpenSea rate limits, RPC quality, and phase timing are outside the app's control.
 - **Keep `LIVE` confirm + idle-lock on** — type `LIVE` to start a live run; the vault auto-locks when idle.
 - **Never redistribute** `keys.vault`, a real `config.json`, or `auth_cache.bin`.
+- **No warranty** — provided **as-is**, without warranty of any kind. **You are solely responsible** for your use, your funds, and compliance with any applicable terms and laws.
 
 <br>
 
@@ -152,7 +169,7 @@ cargo check -p minter-core -p minter-desktop
 
 <p align="center">
   <sub>
-    <b>MINTER</b> · Rust + Tauri 2 · <a href="https://x.com/AndarkFomo">X @AndarkFomo</a> · <a href="https://t.me/grassfoundationn">Telegram</a><br>
+    <b>MINTER</b> · Rust + Tauri 2 · <a href="https://x.com/AndarkFomo">X @AndarkFomo</a> · <a href="https://t.me/grassfoundationn">Telegram</a> · <a href="USER_GUIDE.md">User guide</a><br>
     Licensed under <b>MIT OR Apache-2.0</b>
   </sub>
 </p>
