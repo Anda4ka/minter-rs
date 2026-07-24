@@ -6,6 +6,30 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
+/// RAII guard for the money-path busy flag.
+/// Clears `mint_running` on drop (including panic unwind) so the UI cannot stick "busy forever".
+struct MintBusyGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl MintBusyGuard {
+    /// Try to acquire the busy flag. Err if another money path is already running.
+    fn try_acquire(flag: &Arc<AtomicBool>) -> Result<Self, String> {
+        if flag.swap(true, Ordering::SeqCst) {
+            return Err(minter_core::mint_busy_message().into());
+        }
+        Ok(Self {
+            flag: Arc::clone(flag),
+        })
+    }
+}
+
+impl Drop for MintBusyGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Forwards mint progress to the webview as `mint-event`.
 struct TauriMintReporter {
     app: AppHandle,
@@ -86,7 +110,8 @@ pub struct AppState {
     pub session: Mutex<Session>,
     /// Shared cancel flag for in-flight mint (Stop button).
     pub mint_cancel: Arc<AtomicBool>,
-    pub mint_running: AtomicBool,
+    /// Money-path busy flag (Arc so MintBusyGuard can clear on drop across await).
+    pub mint_running: Arc<AtomicBool>,
     /// Shared across reporter for one-shot first confirm per run.
     pub mint_first_confirm: Arc<AtomicBool>,
 }
@@ -96,7 +121,7 @@ impl Default for AppState {
         Self {
             session: Mutex::new(Session::default_paths()),
             mint_cancel: Arc::new(AtomicBool::new(false)),
-            mint_running: AtomicBool::new(false),
+            mint_running: Arc::new(AtomicBool::new(false)),
             mint_first_confirm: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -565,12 +590,9 @@ async fn sweep_eth(
     state: State<'_, Arc<AppState>>,
     input: SweepEthInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
-    // Share the mint gate: concurrent broadcasts from the same vault reuse nonces.
-    if state.mint_running.swap(true, Ordering::SeqCst) {
-        return Err(minter_core::mint_busy_message().into());
-    }
+    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
     let session = state.session.lock().clone();
-    let result = session
+    session
         .sweep_eth(
             &input.chain,
             &input.destination,
@@ -578,9 +600,7 @@ async fn sweep_eth(
             input.confirm.as_deref().unwrap_or(""),
         )
         .await
-        .map_err(|e| e.to_string());
-    state.mint_running.store(false, Ordering::SeqCst);
-    result
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -598,11 +618,9 @@ async fn sweep_nfts(
     state: State<'_, Arc<AppState>>,
     input: SweepNftsInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
-    if state.mint_running.swap(true, Ordering::SeqCst) {
-        return Err(minter_core::mint_busy_message().into());
-    }
+    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
     let session = state.session.lock().clone();
-    let result = session
+    session
         .sweep_nfts(
             &input.chain,
             &input.contract,
@@ -611,9 +629,7 @@ async fn sweep_nfts(
             input.confirm.as_deref().unwrap_or(""),
         )
         .await
-        .map_err(|e| e.to_string());
-    state.mint_running.store(false, Ordering::SeqCst);
-    result
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,9 +664,7 @@ async fn run_mint(
     state: State<'_, Arc<AppState>>,
     input: RunMintInput,
 ) -> Result<minter_core::MintRunSummary, String> {
-    if state.mint_running.swap(true, Ordering::SeqCst) {
-        return Err(minter_core::mint_busy_message().into());
-    }
+    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
     let session = state.session.lock().clone();
     let dry_run = input.dry_run.unwrap_or(session.dry_run);
     let wallets = input.wallet_addresses.and_then(|v| {
@@ -675,7 +689,6 @@ async fn run_mint(
             Ok(None) => None,
             Ok(Some(ts)) => Some(ts.to_string()),
             Err(e) => {
-                state.mint_running.store(false, Ordering::SeqCst);
                 return Err(e);
             }
         }
@@ -715,23 +728,22 @@ async fn run_mint(
     });
     let cancel = state.mint_cancel.clone();
     cancel.store(false, Ordering::SeqCst);
-    let result = session
+    session
         .run_opensea_mint_cancellable(opts, &confirm, reporter, cancel)
-        .await;
-    state.mint_running.store(false, Ordering::SeqCst);
-    result.map_err(|e| {
-        let s = e.to_string();
-        let lower = s.to_lowercase();
-        if lower.contains("chain")
-            && (lower.contains("mismatch") || lower.contains("wrong network"))
-        {
-            minter_core::chain_mismatch_message("collection", "RPC")
-        } else if lower.contains("401") || lower.contains("unauthorized") {
-            format!("{} ({s})", minter_core::reauth_required_message())
-        } else {
-            s
-        }
-    })
+        .await
+        .map_err(|e| {
+            let s = e.to_string();
+            let lower = s.to_lowercase();
+            if lower.contains("chain")
+                && (lower.contains("mismatch") || lower.contains("wrong network"))
+            {
+                minter_core::chain_mismatch_message("collection", "RPC")
+            } else if lower.contains("401") || lower.contains("unauthorized") {
+                format!("{} ({s})", minter_core::reauth_required_message())
+            } else {
+                s
+            }
+        })
 }
 
 #[tauri::command]
@@ -922,16 +934,14 @@ async fn raw_mint(
     state: State<'_, Arc<AppState>>,
     input: RawMintInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
-    if state.mint_running.swap(true, Ordering::SeqCst) {
-        return Err(minter_core::mint_busy_message().into());
-    }
+    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
     let session = state.session.lock().clone();
     let gas_mult = input
         .gas_multiplier
         .as_deref()
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|m| *m > 0.0);
-    let result = session
+    session
         .raw_mint(
             &input.chain,
             &input.contract,
@@ -948,9 +958,7 @@ async fn raw_mint(
             input.gas_limit,
         )
         .await
-        .map_err(|e| e.to_string());
-    state.mint_running.store(false, Ordering::SeqCst);
-    result
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -959,9 +967,7 @@ async fn raw_sniper(
     state: State<'_, Arc<AppState>>,
     input: minter_core::RawSniperInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
-    if state.mint_running.swap(true, Ordering::SeqCst) {
-        return Err(minter_core::mint_busy_message().into());
-    }
+    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
     let session = state.session.lock().clone();
     state.mint_first_confirm.store(false, Ordering::SeqCst);
     let beep = session.settings.beep;
@@ -972,9 +978,10 @@ async fn raw_sniper(
     });
     let cancel = state.mint_cancel.clone();
     cancel.store(false, Ordering::SeqCst);
-    let result = session.raw_sniper(input, cancel, Some(reporter)).await;
-    state.mint_running.store(false, Ordering::SeqCst);
-    result.map_err(|e| e.to_string())
+    session
+        .raw_sniper(input, cancel, Some(reporter))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -993,11 +1000,9 @@ async fn disperse(
     state: State<'_, Arc<AppState>>,
     input: DisperseInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
-    if state.mint_running.swap(true, Ordering::SeqCst) {
-        return Err(minter_core::mint_busy_message().into());
-    }
+    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
     let session = state.session.lock().clone();
-    let result = session
+    session
         .disperse(
             &input.chain,
             &input.from_address,
@@ -1007,9 +1012,7 @@ async fn disperse(
             input.confirm.as_deref().unwrap_or(""),
         )
         .await
-        .map_err(|e| e.to_string());
-    state.mint_running.store(false, Ordering::SeqCst);
-    result
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1028,11 +1031,9 @@ async fn multicall(
     state: State<'_, Arc<AppState>>,
     input: MulticallInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
-    if state.mint_running.swap(true, Ordering::SeqCst) {
-        return Err(minter_core::mint_busy_message().into());
-    }
+    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
     let session = state.session.lock().clone();
-    let result = session
+    session
         .multicall(
             &input.chain,
             &input.from_address,
@@ -1042,9 +1043,7 @@ async fn multicall(
             input.confirm.as_deref().unwrap_or(""),
         )
         .await
-        .map_err(|e| e.to_string());
-    state.mint_running.store(false, Ordering::SeqCst);
-    result
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
