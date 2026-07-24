@@ -1,8 +1,13 @@
 [package]
 name = "minter-desktop"
 version = "0.1.0"
-description = "Minter desktop (Tauri)"
+description = "MINTER desktop — OpenSea drop minter & raw sniper (Tauri 2, Windows)"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Anda4ka/minter-rs"
+homepage = "https://github.com/Anda4ka/minter-rs"
+authors = ["Andark <andarx4nok@gmail.com>"]
+readme = "../../../README.md"
 
 [lib]
 name = "minter_desktop_lib"
