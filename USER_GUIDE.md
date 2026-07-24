@@ -1,12 +1,15 @@
-# MINTER — инструкция «как для идиота»
+# MINTER — инструкция оператора
 
 Полный гайд: **что это**, **как запустить**, **что нажимать по порядку**, **что нельзя**.  
 Версия приложения: **0.1.0** (внизу слева в сайдбаре будет `v0.1.0`).  
-Обновление гайда: **2026-07-23** (LIVE fixed-gas, NotActive logs, config wins over `.env`).
+Обновление гайда: **2026-07-25** (public launch: Releases, EN guide, packaging).
+
+Краткий гайд на английском: [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md).
 
 **Создатель:** [X @AndarkFomo](https://x.com/AndarkFomo) · [Telegram](https://t.me/grassfoundationn)
 
-**Исходники:** [github.com/Anda4ka/minter-rs](https://github.com/Anda4ka/minter-rs)
+**Исходники:** [github.com/Anda4ka/minter-rs](https://github.com/Anda4ka/minter-rs)  
+**Релизы (exe):** [Releases](https://github.com/Anda4ka/minter-rs/releases)
 
 ---
 
@@ -31,18 +34,22 @@
 
 Поток LIVE: **Start → prep/auth → wait open → fixed gas send → receipt → CONFIRMED = ok**.
 
+Не аффилирован с OpenSea. Нет гарантии mint. Вы отвечаете за ключи, средства и соблюдение правил площадок / закона.
+
 ---
 
 ## 1. Что в папке
 
-### Файлы программы
+### Из релиза (zip с GitHub Releases)
 
 | Файл | Зачем |
 |------|--------|
 | **`minter-desktop.exe`** | Сама программа |
-| `USER_GUIDE.md` | Этот файл |
+| `USER_GUIDE.md` | Этот файл (RU) |
+| `OPERATOR_GUIDE.md` | Краткий EN |
+| `LICENSE-*`, `SECURITY.md`, `README.md` | Лицензия и безопасность |
 
-### После первого запуска (создаёт сама, не шарьте)
+### После первого запуска (создаёт сама, **не шарьте**)
 
 | Файл / папка | Что внутри |
 |--------------|------------|
@@ -60,10 +67,21 @@
 
 ## 2. Запуск
 
-1. Папка, например `C:\Minter\` — положите файлы программы (exe + эта инструкция).  
-2. **Двойной клик** `minter-desktop.exe`.  
-3. SmartScreen («неизвестный издатель») → **Подробнее** → **Выполнить в любом случае**.  
-4. Откроется окно **MINTER** (тёмная тема, слева меню).
+### Из релиза
+
+1. Скачайте zip с [Releases](https://github.com/Anda4ka/minter-rs/releases), проверьте SHA256 при наличии.  
+2. Распакуйте, например в `C:\Minter\`.  
+3. **Двойной клик** `minter-desktop.exe`.  
+4. SmartScreen («неизвестный издатель») → **Подробнее** → **Выполнить в любом случае** (сборка может быть без code signing).  
+5. Откроется окно **MINTER** (тёмная тема, слева меню).
+
+### Из исходников
+
+```powershell
+git clone https://github.com/Anda4ka/minter-rs
+cd minter-rs
+cargo run -p minter-desktop --release
+```
 
 ---
 
@@ -310,8 +328,9 @@ Robinhood (chainId **4663**) — elevated; Flashbots **не** для этой с
 C:\Minter\
   minter-desktop.exe
   USER_GUIDE.md
-  config.json          ← после Save (секреты!)
-  keys.vault           ← после import (секреты!)
+  OPERATOR_GUIDE.md      ← из релиза / docs
+  config.json            ← после Save (секреты!)
+  keys.vault             ← после import (секреты!)
   tasks.json
   wallet_meta.json
   proxies.txt
@@ -323,7 +342,8 @@ C:\Minter\
 
 - Пароль vault **не** лежит открытым текстом.  
 - **Не шарьте** `keys.vault` / свой `config.json` / `auth_cache.bin` / `results`.  
-- Если делитесь программой — только exe + эта инструкция, без секретов.
+- Если делитесь программой — только exe + docs из релиза, без секретов.  
+- Уязвимости с утечкой ключей — только private report: [`SECURITY.md`](SECURITY.md).
 
 ---
 
@@ -349,22 +369,27 @@ C:\Minter\
 1. Программа **не** гарантирует mint.  
 2. OpenSea / RPC / прокси / timing — внешние риски.  
 3. Gas / revert / OutOfFunds — нормальная часть sniper UX.  
-4. Вы отвечаете за ключи и средства.
+4. Вы отвечаете за ключи и средства.  
+5. Не аффилированы с OpenSea.
 
 ---
 
 ## 10. Для разработчиков (rebuild)
 
-Исходники в репозитории. Продукт для запуска — **только эта папка** (`Public\`):
+Исходники: https://github.com/Anda4ka/minter-rs
 
 ```powershell
-# из корня репо
+# из корня репо — локальная папка Public\ (gitignored)
 powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
-# обновляет Public\minter-desktop.exe
-# папка target\ — кэш сборки, для запуска не нужна
+# опционально safe zip без секретов:
+powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1 -MakeZip
 ```
 
-### Settings (safety, 2026-07)
+Официальные бинарники — через **GitHub Releases** (push tag `v*`, workflow `release.yml`).  
+Папка `target\` — кэш сборки, для раздачи не нужна.  
+`Public\` в git **не** коммитится.
+
+### Settings (safety)
 
 | Опция | Смысл |
 |-------|--------|
@@ -373,6 +398,8 @@ powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
 | **Raw sniper fee refresh** | mainnetOnly / always / never |
 
 При multi-wallet без прокси Start покажет warning (429 risk).
+
+Контрибьют: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
