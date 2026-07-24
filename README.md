@@ -1,170 +1,158 @@
-# MINTER
+<!-- Hero -->
+<p align="center">
+  <img src=".github/assets/hero.svg" width="100%" alt="MINTER — OpenSea drop mints and raw contract sniping. Rust engine, Tauri 2 desktop, Windows. Pipeline: wait, sign, send, confirmed.">
+</p>
 
-Local Windows desktop app for **OpenSea drop mints** and **raw contract sniping**.  
-Multi-wallet, encrypted vault, proxies, task queue, results export.
+<!-- Badges -->
+<p align="center">
+  <img src="https://img.shields.io/badge/engine-Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/desktop-Tauri%202-0a101c?style=flat-square&logo=tauri&logoColor=57c06b" alt="Tauri 2">
+  <img src="https://img.shields.io/badge/platform-Windows-0a101c?style=flat-square&logo=windows&logoColor=white" alt="Windows">
+  <img src="https://img.shields.io/badge/wallets-burner%20only-cf4b2f?style=flat-square" alt="Burner wallets only">
+  <img src="https://img.shields.io/badge/telemetry-none-3fa652?style=flat-square" alt="No telemetry">
+  <img src="https://img.shields.io/badge/core%20tests-190%20passing-3fa652?style=flat-square" alt="190 core tests passing">
+  <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3fa652?style=flat-square" alt="License MIT or Apache-2.0">
+</p>
 
-**Stack:** Rust (`minter-core`) + Tauri 2 (`minter-desktop`).  
-**No cloud, no telemetry.** Keys stay on this machine.
+<p align="center">
+  <b>A local Windows desktop tool for OpenSea drop mints and raw-contract sniping.</b><br>
+  Multi-wallet, encrypted vault, proxies, task queue, results export — with one rule that shapes everything:<br>
+  <b>success is an on-chain <code>CONFIRMED</code> receipt, not a broadcast.</b>
+</p>
 
-> **Burner wallets only.** Never import long-term funds.
+<p align="center">
+  <a href="#-overview">Overview</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-how-it-mints">How it mints</a> ·
+  <a href="#-build--run">Build &amp; run</a> ·
+  <a href="#-docs">Docs</a> ·
+  <a href="#-safety">Safety</a>
+</p>
 
----
+> [!WARNING]
+> **Burner wallets only.** Never import long-term funds. Live mint spends real gas and mint price, and there is **no mint guarantee** — OpenSea rate limits, RPC quality, and phase timing are outside the app's control.
 
-## Repository (canonical)
+<br>
 
-| | |
-|--|--|
-| **GitHub** | **https://github.com/Anda4ka/minter-rs** |
-| **Default branch** | `main` |
-| **Push policy** | **Push only to this repository.** Do not push product updates to other remotes (`MINTER`, `Minter-privat`, etc.) unless explicitly intended for those repos. |
+<!-- 01 -->
+<h2 id="-overview"></h2>
+<img src=".github/assets/section-overview.svg" width="100%" alt="Overview — what it is">
+
+MINTER is a **self-contained desktop app**: a Rust engine (`minter-core`) wrapped in a Tauri 2 GUI (`minter-desktop`). You import burner keys into an encrypted vault, pick a drop (by OpenSea slug/URL or raw contract address), and fire from many wallets at phase open.
+
+- **No cloud, no telemetry** — keys, config, tasks and results stay on the machine.
+- **Encrypted at rest** — AES-256-GCM vault, PBKDF2 (600k), atomic writes, `Zeroizing` in memory.
+- **Confirm-based success** — a broadcast (`SENT`) is never counted as a win; only a block-confirmed receipt is.
+- **Two mint paths** — OpenSea SeaDrop drops, and raw contract sniping with proxy/ABI discovery.
+
+<br>
+
+<!-- 02 -->
+<h2 id="-features"></h2>
+<img src=".github/assets/section-features.svg" width="100%" alt="Features — what it does">
+
+| Area | What you get |
+|------|--------------|
+| **Vault** | AES-GCM encrypted keys, password-protected, atomic writes, memory zeroized on lock |
+| **Wallets** | Import, A/B/C groups, **balances by network**, per-wallet sticky proxy |
+| **OpenSea drops** | Slug/URL resolve, phase picker, WL / eligibility export |
+| **Tasks** | slug → phase → wallets → **Start** (LIVE; type `LIVE` to confirm by default) |
+| **Mission Control** | Live HUD on OpenSea Start — phase, stats, per-wallet rows, mirrored log |
+| **OpenSea mint** | Wall-clock phase open → **fixed-gas** send (no estimate gate on LIVE) → on-chain confirm |
+| **Raw Mint** | Multi-wallet pre-sign race · Discover (EIP-1167/1967 proxy + 4byte) · simple `mint(uint256)` |
+| **RPC** | Private Alchemy multi-chain (your key only) · **Ping networks** (+ via proxy) · latency |
+| **Proxies** | HTTP / SOCKS, health checks, sticky wallet mapping |
+| **Results** | JSON / CSV export, run history, explorer links, full mint logs |
+| **UI** | Dark-only, EN / RU, phase banner, first-confirm badge + optional beep |
+
+<br>
+
+<!-- 03 -->
+<h2 id="-how-it-mints"></h2>
+<img src=".github/assets/section-flow.svg" width="100%" alt="How it mints — success equals on-chain confirm">
+
+<p align="center">
+  <img src=".github/assets/flow.svg" width="100%" alt="OpenSea live mint flow: unlock, auth (SIWE + cache), wait open (wall-clock), fixed gas + sign, race send (multi-RPC), CONFIRMED. Raw sniper flow: resolve calldata + value, pre-sign all at T minus 5s, clock fire, blast parallel send, receipts off hot-path.">
+</p>
+
+**The rule:** `SENT` = broadcast only. **A mint is a win only after block confirmation.** Receipts are polled across all RBF replacement hashes, so a fee bump can't lose the result.
+
+- **OpenSea LIVE** opens on the **wall clock** (not `block.timestamp`), sends with **fixed gas** (no `eth_estimateGas` gate on live), and decodes SeaDrop `NotActive` (`0x13da22f2`) near open for clear logs.
+- **Raw sniper** resolves calldata + value, **pre-signs** every wallet at T−5s, fires on a millisecond clock, and blasts in parallel — receipts are kept off the hot path. On mainnet, fees are re-signed at fire.
+
+<br>
+
+<!-- 04 -->
+<h2 id="-build--run"></h2>
+<img src=".github/assets/section-build.svg" width="100%" alt="Build and run — Windows, PowerShell">
+
+**Run the shipped app** — everything lives in `Public\`, next to the exe:
 
 ```powershell
-# remote name can be "origin" or "viktor" — URL must be minter-rs
-git remote -v
-# expected: … github.com/Anda4ka/minter-rs.git …
-
-git push origin main
-# or, if remote is named viktor:
-git push viktor main
+.\Public\minter-desktop.exe
 ```
 
-Local runtime data under `Public\` (`keys.vault`, `config.json`, `.env`, logs, results) is **gitignored** — never commit or push secrets.
-
----
-
-## Runtime product
-
-The only app you run day-to-day:
-
-```text
-Public\minter-desktop.exe
-```
-
-Config, vault, tasks, proxies, results and logs live **next to the exe** in `Public\`.
-
-| Path | Role |
-|------|------|
-| `Public\` | **Shipped / daily runtime** |
-| `target\` | Cargo build cache only — **not required to run** |
-| `crates\` | Source — rebuild when you change code |
-
-After code changes:
+**Rebuild after code changes** (release into `Public\`):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
 .\Public\minter-desktop.exe
-# optional: Remove-Item -Recurse -Force target
+# optional: free disk space
+Remove-Item -Recurse -Force target
 ```
 
----
-
-## Features
-
-- **Encrypted vault** — AES-GCM, password-protected, atomic writes  
-- **Wallets** — import, A/B/C groups, **balance by network**, per-wallet proxy  
-- **OpenSea drops** — slug/URL, phase picker, WL / eligibility export  
-- **Tasks (OpenSea)** — slug → phase → wallets → **Start** (LIVE; type `LIVE` by default)  
-- **Mission Control** — live HUD on OpenSea Start (phase, stats, wallets, log)  
-- **OpenSea mint** — wall-clock phase open → **fixed gas** send (no estimate gate on LIVE) → **on-chain confirm**  
-- **Raw Mint** — multi-wallet pre-sign race; Discover (proxy EIP-1167/1967 + 4byte); Simple `mint(uint256)`  
-- **RPC** — private Alchemy multi-chain (own API key only), **Ping networks** (+ via proxy), latency  
-- **Proxies** — HTTP/SOCKS, health checks, sticky wallet mapping  
-- **Results** — JSON/CSV, run history, explorer links, full mint logs  
-- **UI** — dark-only, EN/RU, phase banner, first-confirm badge + optional beep  
-
-### OpenSea mint flow
-
-```text
-Start → auth / prep → wait phase open (wall clock)
-     → LIVE: fixed gas → sign + send
-     → wait receipt (RBF multi-hash) → CONFIRMED = success
-```
-
-`SENT` = broadcast only. **Success is only after block confirmation.**  
-SeaDrop `NotActive` near open is decoded in logs; LIVE does not block on `eth_estimateGas`.
-
----
-
-## Stack
-
-| Crate | Role |
-|-------|------|
-| `minter-core` | Engine: mint, vault, OpenSea, RPC, gas, sniper, export |
-| `minter-desktop` | Tauri GUI + commands |
-
-See `docs/ARCHITECTURE.md` for module map.
-
----
-
-## Build & test
+**Test / check:**
 
 ```powershell
-# Release into Public\
-powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
-
-# Unit tests
 cargo test -p minter-core
-
-# Check only
 cargo check -p minter-core -p minter-desktop
 ```
 
----
+| Path | Role |
+|------|------|
+| `Public\` | **Shipped / daily runtime** (exe + config, vault, tasks, proxies, results, logs) |
+| `crates\` | Source — `minter-core` (engine) + `minter-desktop` (Tauri GUI) |
+| `target\` | Cargo build cache only — **not required to run** |
 
-## Documentation
+> Runtime data under `Public\` (`keys.vault`, `config.json`, `.env`, `auth_cache.bin`, logs, results) is **gitignored** — never commit or push secrets. Canonical repository: **[`Anda4ka/minter-rs`](https://github.com/Anda4ka/minter-rs)**, branch `main` — push product updates only here.
+
+<br>
+
+<!-- 05 -->
+<h2 id="-docs"></h2>
+<img src=".github/assets/section-docs.svg" width="100%" alt="Docs — deeper reference">
 
 | Doc | Audience |
 |-----|----------|
 | [`ЗАПУСК.md`](ЗАПУСК.md) | Quick start (RU) |
 | [`Public/ИНСТРУКЦИЯ.md`](Public/ИНСТРУКЦИЯ.md) | Full end-user guide (RU) |
 | [`Public/README.txt`](Public/README.txt) | Quick reference (EN) |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules & flows |
-| [`docs/UI_PLAN.md`](docs/UI_PLAN.md) | Operator UI (balances, RPC, MC, Raw) |
-| [`docs/CODE_AUDIT.md`](docs/CODE_AUDIT.md) | Code audit (post P0–P2) |
-| [`docs/BUGFIX_PLAN.md`](docs/BUGFIX_PLAN.md) | Runtime bugfix status |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Modules &amp; flows |
+| [`docs/UI_PLAN.md`](docs/UI_PLAN.md) | Operator UI (balances, RPC, Mission Control, Raw) |
+| [`docs/AUDIT_2026_07_24.md`](docs/AUDIT_2026_07_24.md) | Latest code + security + correctness audit |
 | [`docs/RISK_MITIGATION_PLAN.md`](docs/RISK_MITIGATION_PLAN.md) | Residual risks |
 | [`docs/IMPROVEMENT_PLAN.md`](docs/IMPROVEMENT_PLAN.md) | Planned features |
 
-### Recent updates (2026-07)
+<br>
 
-**OpenSea / product**
+<!-- 06 -->
+<h2 id="-safety"></h2>
+<img src=".github/assets/section-safety.svg" width="100%" alt="Safety — read before going live">
 
-- LIVE mint: **fixed gas by default** (no sniper preset required)  
-- SeaDrop **NotActive** (`0x13da22f2`) decoded in logs  
-- **config.json** owns RPC/Alchemy — empty fields + Save clear stale `.env`  
+- **Local only** — keys never leave the machine (local vault / RPC / OpenSea SIWE only).
+- **Burner wallets only** — never import long-term funds.
+- **Live mint spends real value** — gas + mint price, every time.
+- **No mint guarantee** — OpenSea rate limits, RPC quality, and phase timing are outside the app's control.
+- **Keep `LIVE` confirm + idle-lock on** — type `LIVE` to start a live run; the vault auto-locks when idle.
+- **Never redistribute** `keys.vault`, a real `config.json`, or `auth_cache.bin`.
 
-**Core hardening** (merged engine work)
-
-- Error taxonomy · hedged RPC reads · integer fee/gas math · send observability  
-- Metrics export · ABI completeness (raw path) · concurrency gate on money paths  
-
-**Operator UI / RPC**
-
-- Wallet balances **by chain** (incl. Robinhood)  
-- **Ping networks** (multi-chain, optional via proxy); private Alchemy only  
-- Command palette / hotkeys · persisted network selectors  
-- **Mission Control** overlay on OpenSea LIVE  
-
-Risk plan: [`docs/RISK_MITIGATION_PLAN.md`](docs/RISK_MITIGATION_PLAN.md) · UI: [`docs/UI_PLAN.md`](docs/UI_PLAN.md)
+<br>
 
 ---
 
-## Safety
-
-- Local only — keys never leave the machine  
-- Live mint spends real gas / mint price  
-- OpenSea rate limits, RPC quality, and phase timing are outside the app’s control  
-- No mint guarantee  
-- Do **not** redistribute `keys.vault`, real `config.json`, or `auth_cache.bin`
-
----
-
-## Author
-
-[X @AndarkFomo](https://x.com/AndarkFomo) · [Telegram](https://t.me/grassfoundationn)
-
----
-
-## License
-
-MIT OR Apache-2.0
+<p align="center">
+  <sub>
+    <b>MINTER</b> · Rust + Tauri 2 · <a href="https://x.com/AndarkFomo">X @AndarkFomo</a> · <a href="https://t.me/grassfoundationn">Telegram</a><br>
+    Licensed under <b>MIT OR Apache-2.0</b>
+  </sub>
+</p>
