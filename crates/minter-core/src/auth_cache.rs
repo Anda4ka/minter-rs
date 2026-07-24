@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 use crate::types::{VAULT_IV_LEN, VAULT_KDF_ITERATIONS, VAULT_SALT_LEN};
 
@@ -23,7 +24,8 @@ const TOKEN_TTL_SECS: i64 = 3000;
 pub struct AuthCache {
     tokens: HashMap<String, CachedToken>,
     path: PathBuf,
-    password: Option<String>,
+    /// Vault password for encrypt-at-rest; zeroized on drop.
+    password: Option<Zeroizing<String>>,
     /// True when in-memory tokens differ from last successful disk flush.
     dirty: bool,
 }
@@ -51,7 +53,7 @@ impl AuthCache {
         Self {
             tokens,
             path,
-            password: password.map(|s| s.to_string()),
+            password: password.map(|s| Zeroizing::new(s.to_string())),
             dirty: false,
         }
     }
@@ -99,7 +101,7 @@ impl AuthCache {
             return Ok(false);
         };
         let json = serde_json::to_vec(&self.tokens).context("serialize auth cache")?;
-        let blob = Self::encrypt_tokens(&json, pw);
+        let blob = Self::encrypt_tokens(&json, pw.as_str());
         if let Some(parent) = self.path.parent() {
             if !parent.as_os_str().is_empty() {
                 let _ = std::fs::create_dir_all(parent);

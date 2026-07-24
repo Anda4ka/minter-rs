@@ -465,7 +465,9 @@ async fn fetch_calldata_reauth(
                 .await
                 .map_err(|ae| anyhow::anyhow!("re-auth failed: {}", ae))?;
             *session = Some(new_sess);
-            let sess = session.as_ref().unwrap();
+            let sess = session.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("internal: session missing after re-auth")
+            })?;
             fetch_and_parse_gql(
                 reporter,
                 sess,
@@ -919,8 +921,13 @@ pub async fn run_opensea_mint(
         reporter.as_ref(),
         format!("\nRe-fetching collection info with auth for eligibility..."),
     );
-    let primary = wallets.iter().find(|w| w.auth_ok).unwrap();
-    let primary_session = primary.session.as_ref().unwrap();
+    let primary = wallets
+        .iter()
+        .find(|w| w.auth_ok)
+        .ok_or_else(|| anyhow::anyhow!("internal: auth_ok_count>0 but no auth_ok wallet"))?;
+    let primary_session = primary.session.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("internal: auth_ok wallet missing OpenSea session")
+    })?;
     let info = match opensea::collection_drop_info(primary_session, &slug, &primary.address).await {
         Ok(i) => i,
         Err(e) => {
@@ -2444,19 +2451,22 @@ pub async fn run_opensea_mint(
 
                 // Public dry-run stops before sign. Flashbots dry-run signs for eth_callBundle.
                 if dry_run_w && !use_flashbots_w {
-                    let gas_cost_eth = (gas_limit as f64 * max_fee.to::<u128>() as f64) / 1e18;
-                    let price_eth = (calldata_value.to::<u128>() as f64) / 1e18;
-                    let total_eth = gas_cost_eth + price_eth;
+                    // Display-only costs via saturating wei math (no to::<u128>() panic).
+                    let gas_cost_wei = max_fee.saturating_mul(U256::from(gas_limit));
+                    let total_cost_wei = gas_cost_wei.saturating_add(calldata_value);
+                    let gas_cost_s = crate::amount::wei_to_eth_string(gas_cost_wei);
+                    let price_s = crate::amount::wei_to_eth_string(calldata_value);
+                    let total_s = crate::amount::wei_to_eth_string(total_cost_wei);
                     log_always(reporter.as_ref(), format!("\n[{}] DRY RUN REPORT t+{}ms",
                         sign::shorten_address(&addr),
                         mint_started_at.elapsed().as_millis(),));
                     log_always(reporter.as_ref(), format!("  Contract:    {:?}", to_addr));
-                    log_always(reporter.as_ref(), format!("  Value:       {} ETH ({} wei)", price_eth, tx_value));
+                    log_always(reporter.as_ref(), format!("  Value:       {} ETH ({} wei)", price_s, tx_value));
                     log_always(reporter.as_ref(), format!("  Gas limit:   {}", gas_limit));
                     log_always(reporter.as_ref(), format!("  Max fee:     {} gwei", max_fee / U256::from(1_000_000_000u64)));
                     log_always(reporter.as_ref(), format!("  Priority:    {} gwei", max_priority_fee / U256::from(1_000_000_000u64)));
-                    log_always(reporter.as_ref(), format!("  Gas cost:    ~{:.6} ETH", gas_cost_eth));
-                    log_always(reporter.as_ref(), format!("  Total cost:  ~{:.6} ETH", total_eth));
+                    log_always(reporter.as_ref(), format!("  Gas cost:    ~{} ETH", gas_cost_s));
+                    log_always(reporter.as_ref(), format!("  Total cost:  ~{} ETH", total_s));
                     log_always(reporter.as_ref(), format!("  Calldata:    {} bytes", calldata.len()));
                     log_always(reporter.as_ref(), format!("  Nonce:       {}", nonce));
                     log_always(reporter.as_ref(), format!("  Chain:       {} (id={})", chain_id, chain_id));
@@ -2465,7 +2475,7 @@ pub async fn run_opensea_mint(
                     report_wallet(reporter.as_ref(),
                         &addr,
                         Some(WalletStatus::DryRunOk),
-                        Some(format!("~{:.4} ETH total (sim OK, no broadcast)", total_eth)),
+                        Some(format!("~{} ETH total (sim OK, no broadcast)", total_s)),
                         None,
                         None,
                     );
