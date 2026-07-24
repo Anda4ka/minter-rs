@@ -2,12 +2,11 @@
 
 Полный гайд: **что это**, **как запустить**, **что нажимать по порядку**, **что нельзя**.  
 Версия приложения: **0.1.0** (внизу слева в сайдбаре будет `v0.1.0`).  
-Обновление гайда: **2026-07-23** (LIVE fixed-gas, NotActive logs, config wins over `.env`, repo = minter-rs only).
+Обновление гайда: **2026-07-23** (LIVE fixed-gas, NotActive logs, config wins over `.env`).
 
 **Создатель:** [X @AndarkFomo](https://x.com/AndarkFomo) · [Telegram](https://t.me/grassfoundationn)
 
-**Исходники / единственный git для push:** [github.com/Anda4ka/minter-rs](https://github.com/Anda4ka/minter-rs) · ветка **`main`**.  
-Другие репозитории (`MINTER`, private forks) — **не** куда пушить основной продукт, если не решено отдельно.
+**Исходники:** [github.com/Anda4ka/minter-rs](https://github.com/Anda4ka/minter-rs)
 
 ---
 
@@ -41,10 +40,7 @@
 | Файл | Зачем |
 |------|--------|
 | **`minter-desktop.exe`** | Сама программа |
-| `config.example.json` | Пример настроек |
-| `proxies.example.txt` | Пример прокси |
-| `ИНСТРУКЦИЯ.md` | Этот файл |
-| `README.txt` | Кратко EN |
+| `USER_GUIDE.md` | Этот файл |
 
 ### После первого запуска (создаёт сама, не шарьте)
 
@@ -64,7 +60,7 @@
 
 ## 2. Запуск
 
-1. Папка, например `C:\Minter\` — положите файлы программы (exe + examples + эта инструкция).  
+1. Папка, например `C:\Minter\` — положите файлы программы (exe + эта инструкция).  
 2. **Двойной клик** `minter-desktop.exe`.  
 3. SmartScreen («неизвестный издатель») → **Подробнее** → **Выполнить в любом случае**.  
 4. Откроется окно **MINTER** (тёмная тема, слева меню).
@@ -313,10 +309,7 @@ Robinhood (chainId **4663**) — elevated; Flashbots **не** для этой с
 ```
 C:\Minter\
   minter-desktop.exe
-  config.example.json
-  proxies.example.txt
-  README.txt
-  ИНСТРУКЦИЯ.md
+  USER_GUIDE.md
   config.json          ← после Save (секреты!)
   keys.vault           ← после import (секреты!)
   tasks.json
@@ -330,7 +323,7 @@ C:\Minter\
 
 - Пароль vault **не** лежит открытым текстом.  
 - **Не шарьте** `keys.vault` / свой `config.json` / `auth_cache.bin` / `results`.  
-- Если делитесь программой — только exe + examples + эта инструкция, без секретов (см. `README.txt`).
+- Если делитесь программой — только exe + эта инструкция, без секретов.
 
 ---
 
@@ -386,6 +379,6 @@ powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
 **Итог:**  
 папка → `minter-desktop.exe` → Unlock → Wallets → Settings/RPC → Task (фаза + кошельки) → **Start** (type **LIVE**) → wait open → fixed gas send → **CONFIRMED** → results / logs.
 
-Исходники / push: **https://github.com/Anda4ka/minter-rs** (`main` only).
+Исходники: **https://github.com/Anda4ka/minter-rs**
 
 Удачи. Не миньте с main wallet.
