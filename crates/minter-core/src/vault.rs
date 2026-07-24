@@ -89,13 +89,14 @@ impl Vault {
                 self.path.display()
             )
         })?;
-        let plaintext = self.decrypt(&blob, password)?;
-        let entries: Vec<VaultEntry> = serde_json::from_slice(&plaintext).with_context(|| {
-            format!(
-                "Vault file {} could not be parsed (corrupted?)",
-                self.path.display()
-            )
-        })?;
+        let plaintext = zeroize::Zeroizing::new(self.decrypt(&blob, password)?);
+        let entries: Vec<VaultEntry> =
+            serde_json::from_slice(plaintext.as_slice()).with_context(|| {
+                format!(
+                    "Vault file {} could not be parsed (corrupted?)",
+                    self.path.display()
+                )
+            })?;
         Ok(entries)
     }
 
@@ -180,8 +181,10 @@ impl Vault {
     }
 
     fn write_entries(&self, entries: &[VaultEntry], password: &str) -> Result<()> {
-        let json = serde_json::to_vec(entries).context("failed to serialize entries")?;
-        let encrypted = self.encrypt(&json, password);
+        let json = zeroize::Zeroizing::new(
+            serde_json::to_vec(entries).context("failed to serialize entries")?,
+        );
+        let encrypted = self.encrypt(json.as_slice(), password);
         self.atomic_write(&encrypted)
             .context("failed to write vault atomically")?;
         Ok(())
@@ -253,11 +256,17 @@ impl Vault {
             // First-run: no vault yet → empty key set (Session creates on add).
             return Ok(vec![]);
         }
-        let entries = self.read_entries(password)?;
-        Ok(entries
+        let mut entries = self.read_entries(password)?;
+        let keys: Vec<zeroize::Zeroizing<String>> = entries
             .iter()
             .map(|e| zeroize::Zeroizing::new(e.key.clone()))
-            .collect())
+            .collect();
+        // Scrub the plaintext key copies left in the intermediate entries (audit L7).
+        use zeroize::Zeroize;
+        for e in &mut entries {
+            e.key.zeroize();
+        }
+        Ok(keys)
     }
 
     /// Import private keys from free-form text (one key per line; `#` comments ok).

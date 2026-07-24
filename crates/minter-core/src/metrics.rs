@@ -205,7 +205,7 @@ impl MetricsCollector {
 
     /// Set a named span duration. Unknown names are ignored (forward-compatible).
     pub fn mark_span(&self, name: &str, ms: u64) {
-        let mut m = self.inner.lock().unwrap();
+        let mut m = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let s = &mut m.spans;
         match name {
             "auth" => s.auth_ms = Some(ms),
@@ -222,7 +222,7 @@ impl MetricsCollector {
     }
 
     pub fn set_open_signal(&self, kind: impl Into<String>, open_ts: Option<i64>, fire_lag_ms: i64) {
-        let mut m = self.inner.lock().unwrap();
+        let mut m = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         m.open_signal = Some(OpenSignalMetrics {
             kind: kind.into(),
             open_ts,
@@ -232,7 +232,7 @@ impl MetricsCollector {
 
     /// Insert or replace the metrics for a wallet (matched by address).
     pub fn upsert_wallet(&self, w: WalletMetrics) {
-        let mut m = self.inner.lock().unwrap();
+        let mut m = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = m.wallets.iter_mut().find(|x| x.address == w.address) {
             *existing = w;
         } else {
@@ -242,7 +242,7 @@ impl MetricsCollector {
 
     /// Snapshot the current metrics with a freshly computed summary.
     pub fn finish(&self) -> RunMetrics {
-        let mut m = self.inner.lock().unwrap().clone();
+        let mut m = self.inner.lock().unwrap_or_else(|e| e.into_inner()).clone();
         m.summary = Self::summarize(&m.wallets, self.elapsed_ms());
         if m.spans.done_ms.is_none() {
             m.spans.done_ms = Some(self.elapsed_ms());

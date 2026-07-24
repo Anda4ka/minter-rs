@@ -327,7 +327,12 @@ async fn fetch_and_parse_gql(
 
     let gql_ms = gql_start.elapsed().as_millis();
     if std::env::var("DEBUG").ok().as_deref() == Some("1") {
-        let debug_file = format!("debug_gql_{}_{}.json", sign::shorten_address(addr), attempt);
+        let _ = std::fs::create_dir_all("logs");
+        let debug_file = format!(
+            "logs/debug_gql_{}_{}.json",
+            sign::shorten_address(addr),
+            attempt
+        );
         let _ = std::fs::write(
             &debug_file,
             serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string()),
@@ -366,6 +371,43 @@ async fn fetch_and_parse_gql(
         .and_then(|v| v.as_str())
         .and_then(parse_hex_u256)
         .unwrap_or(*calldata_value);
+    // Trust boundary (audit M3): OpenSea returns `to`/`value` for the mint tx.
+    // Reject a zero `to`, warn if `to` isn't the collection contract or the known
+    // SeaDrop, and hard-cap `value` so an anomalous response can't cause a gross
+    // overpay. Normal fee overhead (value >= phase price) is still allowed.
+    if to_addr == alloy_primitives::Address::ZERO {
+        anyhow::bail!(
+            "[{}] OpenSea returned a zero `to` address for the mint tx",
+            sign::shorten_address(addr)
+        );
+    }
+    let expected_seadrop = DEFAULT_SEADROP_ADDRESS
+        .parse::<alloy_primitives::Address>()
+        .ok();
+    let expected_nft = nft_contract
+        .trim()
+        .parse::<alloy_primitives::Address>()
+        .ok();
+    if Some(to_addr) != expected_seadrop && expected_nft.is_some() && Some(to_addr) != expected_nft
+    {
+        mint_log(
+            reporter,
+            quiet,
+            format!(
+                "[{}] WARN OpenSea tx `to`={:?} is neither the collection contract nor the known SeaDrop",
+                sign::shorten_address(addr),
+                to_addr
+            ),
+        );
+    }
+    if !calldata_value.is_zero() && tx_value > calldata_value.saturating_mul(U256::from(4u64)) {
+        anyhow::bail!(
+            "[{}] OpenSea tx value {} exceeds 4x expected phase price {} — refusing (possible bad response)",
+            sign::shorten_address(addr),
+            tx_value,
+            calldata_value
+        );
+    }
     if tx_value != *calldata_value {
         mint_log(
             reporter,
@@ -465,9 +507,9 @@ async fn fetch_calldata_reauth(
                 .await
                 .map_err(|ae| anyhow::anyhow!("re-auth failed: {}", ae))?;
             *session = Some(new_sess);
-            let sess = session.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("internal: session missing after re-auth")
-            })?;
+            let sess = session
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("internal: session missing after re-auth"))?;
             fetch_and_parse_gql(
                 reporter,
                 sess,
@@ -925,9 +967,10 @@ pub async fn run_opensea_mint(
         .iter()
         .find(|w| w.auth_ok)
         .ok_or_else(|| anyhow::anyhow!("internal: auth_ok_count>0 but no auth_ok wallet"))?;
-    let primary_session = primary.session.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("internal: auth_ok wallet missing OpenSea session")
-    })?;
+    let primary_session = primary
+        .session
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("internal: auth_ok wallet missing OpenSea session"))?;
     let info = match opensea::collection_drop_info(primary_session, &slug, &primary.address).await {
         Ok(i) => i,
         Err(e) => {
@@ -2912,7 +2955,7 @@ pub async fn run_opensea_mint(
             );
         } else {
             let fb_cfg = FlashbotsConfig::from_env(env);
-            match FlashbotsClient::new(fb_cfg) {
+            match FlashbotsClient::new(fb_cfg, actual_chain_id) {
                 Ok(client) => {
                     let auth = &signers[0];
                     let current = rpc.block_number().await.unwrap_or(0);

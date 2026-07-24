@@ -477,6 +477,6 @@ mod tests {
     fn from_text_skips_empty_not_all() {
         let pm = ProxyManager::from_text("host:8080\n\n# comment\nbad::::too:many:colons:maybe\n");
         // "bad::::..." with splitn(4) still parses as 4 parts
-        assert!(pm.len() >= 1, "at least host:8080");
+        assert!(!pm.is_empty(), "at least host:8080");
     }
 }

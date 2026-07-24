@@ -1340,6 +1340,15 @@ $("btn-latency").addEventListener("click", async () => {
 async function loadProxiesPage() {
   const s = await invoke("get_settings");
   $("set-proxy").value = s.proxyUrl || "";
+  // Proxy credentials are masked by default; wire the reveal toggle once (audit L4).
+  const proxyRevealTgl = document.getElementById("proxy-reveal-tgl");
+  if (proxyRevealTgl && !proxyRevealTgl.dataset.wired) {
+    proxyRevealTgl.dataset.wired = "1";
+    proxyRevealTgl.addEventListener("change", (e) => {
+      const ta = document.getElementById("set-proxy");
+      if (ta) ta.style.webkitTextSecurity = e.target.checked ? "none" : "disc";
+    });
+  }
   const proxyLines = (s.proxyUrl || "")
     .split(/\r?\n/)
     .map((l) => l.trim())

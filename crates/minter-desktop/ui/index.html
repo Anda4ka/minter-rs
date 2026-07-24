@@ -876,7 +876,10 @@
                 </div>
                 <p class="muted">One proxy per line. Saved with Settings → config.json + proxies.txt.</p>
                 <label>Proxy list
-                  <textarea id="set-proxy" rows="12" spellcheck="false" placeholder="host:port:user:pass&#10;socks5://host:port&#10;http://user:pass@host:port"></textarea>
+                  <textarea id="set-proxy" rows="12" spellcheck="false" style="-webkit-text-security:disc" placeholder="host:port:user:pass&#10;socks5://host:port&#10;http://user:pass@host:port"></textarea>
+                </label>
+                <label class="muted small" style="display:inline-flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer">
+                  <input type="checkbox" id="proxy-reveal-tgl" style="width:auto;margin:0"> Show proxy credentials
                 </label>
                 <div class="row actions">
                   <button id="btn-pick-proxies" type="button">Import file…</button>

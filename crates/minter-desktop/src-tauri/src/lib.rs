@@ -1174,7 +1174,29 @@ fn save_wallet_meta(state: State<'_, Arc<AppState>>, file: WalletMetaFile) -> Re
 /// Read a text file chosen by the user (proxies import helper).
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    // Restrict this IPC file-read primitive to small text-like files so a UI
+    // bug / XSS can't turn it into arbitrary local file exfiltration (e.g.
+    // reading config.json for the Alchemy key) — audit L5.
+    let p = std::path::Path::new(&path);
+    let ext_ok = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "txt" | "csv" | "json" | "md" | "text" | "list"
+            )
+        })
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err("Only .txt/.csv/.json/.md/.list text files can be read".into());
+    }
+    match std::fs::metadata(p) {
+        Ok(m) if m.len() > 8 * 1024 * 1024 => return Err("File too large (max 8 MB)".into()),
+        Ok(_) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    std::fs::read_to_string(p).map_err(|e| e.to_string())
 }
 
 /// tasks.json next to config.json (no secrets — addresses + params only).

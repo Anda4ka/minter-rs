@@ -91,7 +91,32 @@ pub struct FlashbotsClient {
 }
 
 impl FlashbotsClient {
-    pub fn new(config: FlashbotsConfig) -> Result<Self> {
+    /// Build a Flashbots client. `chain_id` MUST be Ethereum mainnet: bundles
+    /// only make sense there, and this internal gate means a future caller can't
+    /// accidentally ship an L2/testnet bundle (or leak signed txs + a wallet-signed
+    /// auth header) to the mainnet relay (audit N2).
+    pub fn new(config: FlashbotsConfig, chain_id: u64) -> Result<Self> {
+        if chain_id != MAINNET_CHAIN_ID {
+            bail!(
+                "Flashbots bundles are Ethereum-mainnet only (chainId {MAINNET_CHAIN_ID}); refusing on chainId {chain_id}"
+            );
+        }
+        // Relay-URL allowlist (audit N1): warn loudly when pointed at a non-default
+        // relay so a mistyped/tampered FLASHBOTS_RELAY_URL can't silently send
+        // signed bundle txs + a wallet-signed auth header to an unknown host.
+        let relay = config.relay_url.trim_end_matches('/');
+        const KNOWN_RELAYS: [&str; 4] = [
+            "https://relay.flashbots.net",
+            "https://rpc.beaverbuild.org",
+            "https://rsync-builder.xyz",
+            "https://relay.securerpc.com",
+        ];
+        if !KNOWN_RELAYS.iter().any(|k| relay.eq_ignore_ascii_case(k)) {
+            crate::rlog!(
+                "WARN Flashbots relay is non-default ({relay}); signed bundle txs + a wallet-signed \
+                 auth header will be sent there — verify FLASHBOTS_RELAY_URL (audit N1)"
+            );
+        }
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()

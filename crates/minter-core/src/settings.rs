@@ -699,7 +699,14 @@ fn mask_secret(s: &str) -> String {
     if t.len() <= 4 {
         return "****".to_string();
     }
-    format!("…{}", &t[t.len() - 4..])
+    // Char-based tail (never byte-slice a &str: a non-ASCII trailing byte would
+    // panic on a non-char-boundary index — the same class safe_truncate fixed) (audit L8).
+    let tail: String = {
+        let mut c: Vec<char> = t.chars().rev().take(4).collect();
+        c.reverse();
+        c.into_iter().collect()
+    };
+    format!("…{}", tail)
 }
 
 fn load_simple_env(path: &Path) -> HashMap<String, String> {

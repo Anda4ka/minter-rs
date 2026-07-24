@@ -49,10 +49,15 @@ pub async fn run_disperse(
         }
     };
 
-    let (base_fee, network_priority) = rpc
-        .fee_history()
-        .await
-        .unwrap_or((U256::from(1_000_000_000u64), U256::from(1_000_000_000u64)));
+    let (base_fee, network_priority) = match rpc.fee_history().await {
+        Ok(f) => f,
+        Err(e) => {
+            crate::rlog!(
+                "WARN fee_history failed ({e}) — falling back to 1 gwei base/priority for disperse (audit M6)"
+            );
+            (U256::from(1_000_000_000u64), U256::from(1_000_000_000u64))
+        }
+    };
     let (max_fee, max_priority_fee) =
         match gas::calculate_fees(&config.gas, base_fee, network_priority) {
             Ok(f) => f,
@@ -78,7 +83,7 @@ pub async fn run_disperse(
         .iter()
         .copied()
         .find(|d| *d != from_addr)
-        .unwrap_or(destinations[0]);
+        .unwrap_or_else(|| destinations[0]);
     let gas_limit = gas::resolve_native_transfer_gas(
         rpc,
         &from_addr,
@@ -90,7 +95,10 @@ pub async fn run_disperse(
     .await;
     let n = destinations.len() as u64;
     let gas_cost_one = max_fee * U256::from(gas_limit);
-    let total_need = config.amount * U256::from(n) + gas_cost_one * U256::from(n);
+    let total_need = config
+        .amount
+        .saturating_mul(U256::from(n))
+        .saturating_add(gas_cost_one.saturating_mul(U256::from(n)));
 
     crate::rlog!("\nDisperse Summary:");
     crate::rlog!("  From:        {:?}", from_addr);
@@ -98,7 +106,7 @@ pub async fn run_disperse(
     crate::rlog!("  Amount each: {} ETH", fmt_eth(config.amount));
     crate::rlog!(
         "  Total value: {} ETH",
-        fmt_eth(config.amount * U256::from(n))
+        fmt_eth(config.amount.saturating_mul(U256::from(n)))
     );
     crate::rlog!("  Chain ID:    {}", chain_id);
     crate::rlog!(
@@ -357,6 +365,9 @@ pub fn parse_destinations(raw: &[String]) -> Result<Vec<Address>> {
             continue;
         }
         let addr: Address = t.parse().with_context(|| format!("invalid address: {t}"))?;
+        if addr == Address::ZERO {
+            bail!("destination is the zero address (0x0): refusing to burn funds — {t}");
+        }
         let key = format!("{:?}", addr).to_lowercase();
         if seen.insert(key) {
             out.push(addr);
@@ -391,4 +402,31 @@ async fn try_send_native(
     };
     let (raw, _hash) = sign_transaction(from, &tx).map_err(|e| format!("sign: {e}"))?;
     rpc.race_send(&raw).await.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_destinations_rejects_zero_address() {
+        // A normal address is accepted.
+        let ok = parse_destinations(&["0x000000000000000000000000000000000000dead".to_string()]);
+        assert!(ok.is_ok(), "valid address should parse");
+        // The zero address is refused so a typo can't burn funds (audit M2).
+        let zero = parse_destinations(&["0x0000000000000000000000000000000000000000".to_string()]);
+        let err = zero.unwrap_err().to_string();
+        assert!(
+            err.contains("zero address"),
+            "expected zero-address refusal, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_destinations_dedups_and_rejects_empty() {
+        let a = "0x000000000000000000000000000000000000dead".to_string();
+        let out = parse_destinations(&[a.clone(), a.clone()]).unwrap();
+        assert_eq!(out.len(), 1, "duplicate destinations are deduped");
+        assert!(parse_destinations(&[]).is_err(), "empty list is refused");
+    }
 }
