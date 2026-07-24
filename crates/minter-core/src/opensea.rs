@@ -113,6 +113,17 @@ pub struct AuthSession {
     pub cookie_jar: Arc<reqwest::cookie::Jar>,
 }
 
+// Redacting Debug so the SIWE bearer token can never leak via an accidental
+// `{:?}` (audit L14 — parity with VaultEntry). Deriving Debug would print it.
+impl std::fmt::Debug for AuthSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthSession")
+            .field("address", &self.address)
+            .field("access_token", &"[redacted]")
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StageInfo {
     pub stage_type: String,
@@ -1181,7 +1192,7 @@ pub fn build_public_mint_tx(
     Ok(json!({
         "to": seadrop_address.unwrap_or(DEFAULT_SEADROP_ADDRESS),
         "data": format!("0x{}", hex::encode(data)),
-        "value": format!("0x{:x}", price_wei * U256::from(quantity)),
+        "value": format!("0x{:x}", price_wei.saturating_mul(U256::from(quantity))),
     }))
 }
 

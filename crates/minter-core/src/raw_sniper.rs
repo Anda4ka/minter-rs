@@ -435,10 +435,19 @@ pub async fn run_raw_sniper(
         Ok(_) => return fail_all(signers, "RPC returned invalid chain id 0"),
         Err(e) => return fail_all(signers, format!("chain id: {e}")),
     };
-    let (base_fee, network_priority) = rpc
-        .fee_history()
-        .await
-        .unwrap_or((U256::from(1_000_000_000u64), U256::from(1_000_000_000u64)));
+    let (base_fee, network_priority) = match rpc.fee_history().await {
+        Ok(f) => f,
+        Err(e) => {
+            report(
+                &reporter,
+                MintEvent::message(format!(
+                    "WARN fee_history failed at prep ({e}) — falling back to 1 gwei base/priority; \
+                     tx may be underpriced, esp. on L2 where fees aren't refreshed at fire (audit M6)"
+                )),
+            );
+            (U256::from(1_000_000_000u64), U256::from(1_000_000_000u64))
+        }
+    };
     let (mut max_fee, mut max_priority_fee) =
         match gas::calculate_fees(&config.gas, base_fee, network_priority) {
             Ok(f) => f,

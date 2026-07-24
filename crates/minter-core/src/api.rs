@@ -795,6 +795,9 @@ impl Session {
             .trim()
             .parse()
             .context("invalid destination address")?;
+        if dest == Address::ZERO {
+            bail!("destination is the zero address (0x0) — refusing to burn funds (audit M2)");
+        }
         let rpc = self.rpc_client_for_chain(chain)?;
         if let Some(expected) = Self::expected_chain_id(chain) {
             let actual = rpc.chain_id().await.unwrap_or(0);
@@ -839,6 +842,9 @@ impl Session {
             .trim()
             .parse()
             .context("invalid destination address")?;
+        if dest == Address::ZERO {
+            bail!("destination is the zero address (0x0) — refusing to burn NFTs (audit M2)");
+        }
         let rpc = self.rpc_client_for_chain(chain)?;
         if let Some(expected) = Self::expected_chain_id(chain) {
             let actual = rpc.chain_id().await.unwrap_or(0);

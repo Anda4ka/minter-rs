@@ -73,6 +73,16 @@ impl Clone for RpcClient {
 }
 
 impl RpcClient {
+    /// Build a direct (non-proxied) RPC client.
+    ///
+    /// PRODUCT DECISION (audit M1, 2026-07-24): JSON-RPC traffic
+    /// (`eth_sendRawTransaction`, nonce, balance, receipts) is intentionally sent
+    /// **direct**. Proxies are applied only to OpenSea SIWE auth (per-wallet,
+    /// where IP-based 429 rate-limits matter). RPC here is a single shared
+    /// multi-URL race client per run, so per-wallet sticky proxying isn't possible
+    /// without a refactor, and routing the race through one proxy would add
+    /// hot-path latency. `new_with_proxy` is used only by the opt-in
+    /// "Probe networks via proxy" diagnostic. See docs/ARCHITECTURE.md + SECURITY.md.
     pub fn new(urls: Vec<String>) -> Self {
         Self::new_with_proxy(urls, None).expect("failed to create HTTP client")
     }
@@ -94,7 +104,23 @@ impl RpcClient {
     }
 
     fn short_url(url: &str) -> String {
-        // Char-based (not byte slicing): non-ASCII URLs must not panic.
+        // Keep scheme + host only; drop path/query, which may embed the provider
+        // API key (e.g. Alchemy `/v2/<key>`). Never log the key — not even a tail
+        // fragment of it (audit L1). ':' '/' '?' are ASCII, so byte finds/slices
+        // land on char boundaries and cannot panic.
+        if let Some(scheme_end) = url.find("://") {
+            let after = &url[scheme_end + 3..];
+            let host_end = after
+                .find('/')
+                .or_else(|| after.find('?'))
+                .unwrap_or(after.len());
+            let host = &after[..host_end];
+            if host_end < after.len() {
+                return format!("{}://{}/…", &url[..scheme_end], host);
+            }
+            return format!("{}://{}", &url[..scheme_end], host);
+        }
+        // Non-URL string: char-based shorten (never byte-slice; non-ASCII safe).
         let chars: Vec<char> = url.chars().collect();
         if chars.len() > 42 {
             let head: String = chars[..30].iter().collect();
@@ -664,7 +690,14 @@ impl RpcClient {
             bail!("No RPC URLs configured");
         }
 
-        let mut tasks = Vec::new();
+        // Broadcast to all endpoints in parallel; the first to COMPLETE
+        // successfully wins. Each send is wrapped in a per-attempt timeout so a
+        // hung node can't stall the winner up to the 30s client timeout, and the
+        // JoinSet aborts the remaining tasks on drop (audit M4 — was a
+        // sequential index-order await where a hung `urls[0]` blocked everything).
+        let timeout = self.tuning.call_timeout;
+        let mut set: tokio::task::JoinSet<(String, std::result::Result<serde_json::Value, String>)> =
+            tokio::task::JoinSet::new();
         for (attempt, url) in urls.into_iter().enumerate() {
             crate::rlog!(
                 "RPC send attempt {}/{} via {}",
@@ -677,34 +710,33 @@ impl RpcClient {
             let id = self
                 .next_id
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            tasks.push(tokio::spawn(async move {
-                let result = Self::rpc_call_with_client(
-                    client,
-                    url.clone(),
-                    id,
-                    "eth_sendRawTransaction",
-                    json!([raw_hex]),
+            set.spawn(async move {
+                let res = match tokio::time::timeout(
+                    timeout,
+                    Self::rpc_call_with_client(
+                        client,
+                        url.clone(),
+                        id,
+                        "eth_sendRawTransaction",
+                        json!([raw_hex]),
+                    ),
                 )
-                .await;
-                (url, result)
-            }));
+                .await
+                {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err(format!("timeout {}s", timeout.as_secs().max(1))),
+                };
+                (url, res)
+            });
         }
 
-        let mut tasks: Vec<Option<_>> = tasks.into_iter().map(Some).collect();
         let mut losers: Vec<String> = Vec::new();
-        for i in 0..tasks.len() {
-            let Some(handle) = tasks[i].take() else {
-                continue;
-            };
-            match handle.await {
+        while let Some(joined) = set.join_next().await {
+            match joined {
                 Ok((url, Ok(result))) => {
                     let hex_str = result.as_str().context("tx hash not a string")?;
                     let hash = hex_str.parse().context("invalid tx hash")?;
-                    for task in &mut tasks {
-                        if let Some(handle) = task.take() {
-                            handle.abort();
-                        }
-                    }
                     let winner = Self::short_url(&url);
                     if losers.is_empty() {
                         crate::rlog!("RPC send OK via {}", winner);

@@ -107,8 +107,30 @@ impl AuthCache {
                 let _ = std::fs::create_dir_all(parent);
             }
         }
-        std::fs::write(&self.path, &blob)
-            .with_context(|| format!("write auth cache {}", self.path.display()))?;
+        // Atomic write with 0600 (audit L6): temp in same dir → fsync → rename,
+        // so a crash mid-write can't leave a truncated cache, and the encrypted
+        // blob isn't world-readable on unix (parity with the vault writer).
+        let mut tmp = self.path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        {
+            let mut f = std::fs::File::create(&tmp)
+                .with_context(|| format!("create auth cache temp {}", tmp.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+            }
+            std::io::Write::write_all(&mut f, &blob).context("write auth cache temp")?;
+            f.sync_all().context("fsync auth cache temp")?;
+        }
+        if std::fs::rename(&tmp, &self.path).is_err() {
+            // Windows can't always rename over an existing file; fall back to a
+            // direct write and clean up the temp.
+            std::fs::write(&self.path, &blob)
+                .with_context(|| format!("write auth cache {}", self.path.display()))?;
+            let _ = std::fs::remove_file(&tmp);
+        }
         self.dirty = false;
         Ok(true)
     }

@@ -290,10 +290,15 @@ pub async fn run_raw_mint(
         }
     };
 
-    let (base_fee, network_priority) = rpc
-        .fee_history()
-        .await
-        .unwrap_or((U256::from(1_000_000_000u64), U256::from(1_000_000_000u64)));
+    let (base_fee, network_priority) = match rpc.fee_history().await {
+        Ok(f) => f,
+        Err(e) => {
+            crate::rlog!(
+                "WARN fee_history failed ({e}) — falling back to 1 gwei base/priority; tx may be underpriced (audit M6)"
+            );
+            (U256::from(1_000_000_000u64), U256::from(1_000_000_000u64))
+        }
+    };
     let (max_fee, max_priority_fee) =
         match gas::calculate_fees(&config.gas, base_fee, network_priority) {
             Ok(f) => f,
@@ -385,7 +390,9 @@ pub async fn run_raw_mint(
         crate::rlog!("\nWallet: {}", shorten_address(&addr));
 
         if let Ok(balance) = rpc.balance(&addr).await {
-            let min_needed = config.value + max_fee * U256::from(50000);
+            let min_needed = config
+        .value
+        .saturating_add(max_fee.saturating_mul(U256::from(50000)));
             if balance < min_needed {
                 crate::rlog!("  [WARN] Low balance: {} wei", balance);
             }
@@ -515,7 +522,7 @@ pub async fn run_raw_mint(
             return prepared.into_iter().map(|(_, _, r)| r).collect();
         }
         let auth = &signers[0];
-        let client = match FlashbotsClient::new(config.flashbots.clone()) {
+        let client = match FlashbotsClient::new(config.flashbots.clone(), chain_id) {
             Ok(c) => c,
             Err(e) => {
                 return prepared
@@ -689,7 +696,7 @@ pub async fn run_raw_mint(
     }
 
     let auth = &signers[0];
-    let client = match FlashbotsClient::new(config.flashbots.clone()) {
+    let client = match FlashbotsClient::new(config.flashbots.clone(), chain_id) {
         Ok(c) => c,
         Err(e) => {
             return prepared

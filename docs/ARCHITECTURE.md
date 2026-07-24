@@ -134,6 +134,8 @@ Multi-wallet: **N wallets ⇒ N txs** with the same function/params; value/gas p
 
 `Session.probe_networks` pings default set: ethereum, base, polygon, arbitrum, optimism, robinhood (optional via first proxy).
 
+> **Proxy scope (audit M1).** Proxies are applied **only** to OpenSea SIWE auth (per-wallet, where IP-based 429s matter). JSON-RPC calls — including `eth_sendRawTransaction`, nonce, balance and receipt polling — go **direct** from the operator's real IP. This is intentional: RPC is a single shared multi-URL race client per run (`RpcClient::new`), so it can't be sticky-per-wallet, and routing the race through one proxy would add hot-path latency. `RpcClient::new_with_proxy` exists only for the opt-in "Probe networks via proxy" diagnostic.
+
 ---
 
 ## Gas policy

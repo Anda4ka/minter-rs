@@ -11,6 +11,9 @@ use crate::types::Signer;
 
 const ERC721_INTERFACE_ID: [u8; 4] = [0x80, 0xac, 0x58, 0xcd];
 const ERC721_ENUMERABLE_INTERFACE_ID: [u8; 4] = [0x78, 0x0e, 0x9d, 0x63];
+/// Cap on tokens enumerated via the Alchemy NFT API, mirroring the on-chain
+/// MAX_ENUMERATE guard, so a broken/looping pageKey can't grow unbounded (audit L12).
+const MAX_ALCHEMY_TOKENS: usize = 10_000;
 
 fn encode_address(addr: &Address) -> Vec<u8> {
     let mut buf = vec![0u8; 32];
@@ -167,6 +170,13 @@ async fn fetch_token_ids_alchemy(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        if all_ids.len() >= MAX_ALCHEMY_TOKENS {
+            crate::rlog!(
+                "Alchemy NFT pagination cap ({}) reached — stopping enumeration (audit L12)",
+                MAX_ALCHEMY_TOKENS
+            );
+            break;
+        }
         if page_key.is_none() {
             break;
         }
@@ -196,9 +206,15 @@ pub async fn run_sweep(
         }
     };
 
-    let is_erc721 = supports_interface(rpc, &config.contract, ERC721_INTERFACE_ID)
-        .await
-        .unwrap_or(true);
+    let is_erc721 = match supports_interface(rpc, &config.contract, ERC721_INTERFACE_ID).await {
+        Ok(v) => v,
+        Err(e) => {
+            crate::rlog!(
+                "Warning: supportsInterface(ERC721) call failed ({e}); proceeding on the assumption this IS an ERC721 — verify the contract address (audit L11)"
+            );
+            true
+        }
+    };
     let has_enumerable = supports_interface(rpc, &config.contract, ERC721_ENUMERABLE_INTERFACE_ID)
         .await
         .unwrap_or(false);
@@ -377,7 +393,7 @@ pub async fn run_sweep(
                         token_id,
                         g
                     );
-                    (g as f64 * gas_multiplier) as u64
+                    gas::apply_gas_limit(g, gas_multiplier, chain_id, 21_000)
                 }
                 Err(e) => {
                     crate::rlog!(

@@ -99,7 +99,13 @@ pub fn is_underpriced(msg: &str) -> bool {
 /// Gas limit below the intrinsic minimum for the calldata (common on L2/Orbit).
 pub fn is_intrinsic_gas_too_low(msg: &str) -> bool {
     let l = msg.to_lowercase();
-    l.contains("intrinsic gas too low") || l.contains("gas too low")
+    // Require intrinsic / gas-limit context. Bare "gas too low" was too broad and
+    // also matched fee-underpriced phrasings (e.g. "max priority fee per gas too
+    // low"), which misdrove the retry loop to bump the gas *limit* instead of the
+    // *fee* (audit L10).
+    l.contains("intrinsic gas too low")
+        || l.contains("gas limit too low")
+        || (l.contains("intrinsic") && l.contains("gas") && l.contains("too low"))
 }
 
 /// Best-effort extraction of a JSON-RPC error code embedded in a formatted
@@ -250,10 +256,13 @@ mod tests {
 
     #[test]
     fn intrinsic_gas_variants() {
-        for s in ["intrinsic gas too low", "gas too low"] {
+        for s in ["intrinsic gas too low", "gas limit too low"] {
             assert!(is_intrinsic_gas_too_low(s), "{s}");
             assert_eq!(classify(s), TxErrorKind::IntrinsicGasTooLow, "{s}");
         }
+        // Bare "gas too low" no longer forces intrinsic (audit L10): a fee-ish
+        // phrase must not be misclassified as an intrinsic-gas (gas-limit) error.
+        assert!(!is_intrinsic_gas_too_low("max priority fee per gas too low"));
     }
 
     #[test]
