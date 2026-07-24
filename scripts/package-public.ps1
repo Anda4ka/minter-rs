@@ -1,11 +1,12 @@
-# Build minter-desktop release and copy exe into Public/.
+# Build minter-desktop release and copy a safe ship folder into Public/.
 # Usage (from repo root):
 #   powershell -ExecutionPolicy Bypass -File scripts/package-public.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts/package-public.ps1 -MakeZip
 #   powershell -ExecutionPolicy Bypass -File scripts/package-public.ps1 -SkipBuild -MakeZip
 #
-# -MakeZip packs ONLY the allowlist (see Public/SHIP_MANIFEST.txt).
+# -MakeZip packs ONLY the allowlist below (or Public/SHIP_MANIFEST.txt if present).
 # Live secrets in Public/ (keys.vault, config.json, …) are never included.
+# Public/ is gitignored — local packaging only. For GitHub Releases use .github/workflows/release.yml.
 
 param(
     [switch]$MakeZip,
@@ -56,13 +57,32 @@ if (-not $SkipBuild) {
     }
 }
 
-# ── Safe ship allowlist ──────────────────────────────────────────────────────
+# Copy docs next to the exe (safe to redistribute)
+$DocCopies = @(
+    @{ Src = "USER_GUIDE.md"; Dst = "USER_GUIDE.md" },
+    @{ Src = "docs\OPERATOR_GUIDE.md"; Dst = "OPERATOR_GUIDE.md" },
+    @{ Src = "LICENSE-MIT"; Dst = "LICENSE-MIT" },
+    @{ Src = "LICENSE-APACHE"; Dst = "LICENSE-APACHE" },
+    @{ Src = "SECURITY.md"; Dst = "SECURITY.md" },
+    @{ Src = "README.md"; Dst = "README.md" }
+)
+foreach ($d in $DocCopies) {
+    $src = Join-Path $Root $d.Src
+    if (Test-Path -LiteralPath $src) {
+        Copy-Item -Force -LiteralPath $src -Destination (Join-Path $Out $d.Dst)
+        Write-Host "  doc: $($d.Dst)"
+    }
+}
+
+# Default allowlist for zip (must match files we actually ship)
 $Allowlist = @(
     "minter-desktop.exe",
-    "config.example.json",
-    "proxies.example.txt",
-    "ИНСТРУКЦИЯ.md",
-    "README.txt",
+    "USER_GUIDE.md",
+    "OPERATOR_GUIDE.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "SECURITY.md",
+    "README.md",
     "SHIP_MANIFEST.txt"
 )
 
@@ -73,9 +93,26 @@ $SecretNames = @(
     "tasks.json",
     "wallet_meta.json",
     "runs_history.json",
-    "proxies.txt"
+    "proxies.txt",
+    ".env"
 )
 $SecretDirs = @("results", "logs")
+
+# Write default manifest if missing
+$manifestPath = Join-Path $Out "SHIP_MANIFEST.txt"
+if (-not (Test-Path -LiteralPath $manifestPath)) {
+    @(
+        "# Files included in a safe share zip (one basename per line).",
+        "# Secrets listed in package-public.ps1 are never packed even if added here.",
+        "minter-desktop.exe",
+        "USER_GUIDE.md",
+        "OPERATOR_GUIDE.md",
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "SECURITY.md",
+        "README.md"
+    ) | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+}
 
 function Get-ShipAllowlist {
     param([string]$PublicDir)
@@ -95,7 +132,6 @@ if ($MakeZip) {
     Write-Host "Allowlist:"
     foreach ($n in $shipList) { Write-Host "  + $n" }
 
-    # Report excluded secrets present in Public (never packed)
     Write-Host "Excluded secrets (present but never packed):"
     $excludedAny = $false
     foreach ($n in $SecretNames) {
@@ -126,7 +162,6 @@ if ($MakeZip) {
                 Write-Host "WARN: allowlist file missing, skip: $name"
                 continue
             }
-            # Hard guard: never pack known secret basenames even if mislisted
             $base = [System.IO.Path]::GetFileName($name)
             if ($SecretNames -contains $base) {
                 Write-Host "REFUSE secret on allowlist: $base"
@@ -144,10 +179,8 @@ if ($MakeZip) {
         $zipPath = Join-Path $Out $zipName
         if (Test-Path -LiteralPath $zipPath) { Remove-Item -Force -LiteralPath $zipPath }
 
-        # UTF-8 entry names (Compress-Archive can mangle non-ASCII on some PS versions)
         Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        if (Test-Path -LiteralPath $zipPath) { Remove-Item -Force -LiteralPath $zipPath }
         $zaWrite = [System.IO.Compression.ZipFile]::Open(
             $zipPath,
             [System.IO.Compression.ZipArchiveMode]::Create
@@ -171,7 +204,6 @@ if ($MakeZip) {
         Write-Host "  members:"
         foreach ($m in $packed) { Write-Host "    $m" }
 
-        # Verify zip members ⊆ allowlist and no secrets
         $za = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
         try {
             foreach ($entry in $za.Entries) {
@@ -198,3 +230,6 @@ if ($MakeZip) {
         Remove-Item -Recurse -Force -LiteralPath $staging -ErrorAction SilentlyContinue
     }
 }
+
+Write-Host ""
+Write-Host "Done. Public\ is local-only (gitignored). For GitHub Releases push a v* tag."
