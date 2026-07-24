@@ -414,10 +414,12 @@ mod tests {
         let ok = parse_destinations(&["0x000000000000000000000000000000000000dead".to_string()]);
         assert!(ok.is_ok(), "valid address should parse");
         // The zero address is refused so a typo can't burn funds (audit M2).
-        let zero =
-            parse_destinations(&["0x0000000000000000000000000000000000000000".to_string()]);
+        let zero = parse_destinations(&["0x0000000000000000000000000000000000000000".to_string()]);
         let err = zero.unwrap_err().to_string();
-        assert!(err.contains("zero address"), "expected zero-address refusal, got: {err}");
+        assert!(
+            err.contains("zero address"),
+            "expected zero-address refusal, got: {err}"
+        );
     }
 
     #[test]

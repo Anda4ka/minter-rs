@@ -262,7 +262,9 @@ mod tests {
         }
         // Bare "gas too low" no longer forces intrinsic (audit L10): a fee-ish
         // phrase must not be misclassified as an intrinsic-gas (gas-limit) error.
-        assert!(!is_intrinsic_gas_too_low("max priority fee per gas too low"));
+        assert!(!is_intrinsic_gas_too_low(
+            "max priority fee per gas too low"
+        ));
     }
 
     #[test]

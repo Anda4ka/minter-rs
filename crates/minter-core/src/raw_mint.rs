@@ -391,8 +391,8 @@ pub async fn run_raw_mint(
 
         if let Ok(balance) = rpc.balance(&addr).await {
             let min_needed = config
-        .value
-        .saturating_add(max_fee.saturating_mul(U256::from(50000)));
+                .value
+                .saturating_add(max_fee.saturating_mul(U256::from(50000)));
             if balance < min_needed {
                 crate::rlog!("  [WARN] Low balance: {} wei", balance);
             }

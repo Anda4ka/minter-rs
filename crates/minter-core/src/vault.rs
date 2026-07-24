@@ -90,12 +90,13 @@ impl Vault {
             )
         })?;
         let plaintext = zeroize::Zeroizing::new(self.decrypt(&blob, password)?);
-        let entries: Vec<VaultEntry> = serde_json::from_slice(plaintext.as_slice()).with_context(|| {
-            format!(
-                "Vault file {} could not be parsed (corrupted?)",
-                self.path.display()
-            )
-        })?;
+        let entries: Vec<VaultEntry> =
+            serde_json::from_slice(plaintext.as_slice()).with_context(|| {
+                format!(
+                    "Vault file {} could not be parsed (corrupted?)",
+                    self.path.display()
+                )
+            })?;
         Ok(entries)
     }
 

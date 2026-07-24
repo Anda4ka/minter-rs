@@ -696,8 +696,10 @@ impl RpcClient {
         // JoinSet aborts the remaining tasks on drop (audit M4 — was a
         // sequential index-order await where a hung `urls[0]` blocked everything).
         let timeout = self.tuning.call_timeout;
-        let mut set: tokio::task::JoinSet<(String, std::result::Result<serde_json::Value, String>)> =
-            tokio::task::JoinSet::new();
+        let mut set: tokio::task::JoinSet<(
+            String,
+            std::result::Result<serde_json::Value, String>,
+        )> = tokio::task::JoinSet::new();
         for (attempt, url) in urls.into_iter().enumerate() {
             crate::rlog!(
                 "RPC send attempt {}/{} via {}",

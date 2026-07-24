@@ -384,8 +384,12 @@ async fn fetch_and_parse_gql(
     let expected_seadrop = DEFAULT_SEADROP_ADDRESS
         .parse::<alloy_primitives::Address>()
         .ok();
-    let expected_nft = nft_contract.trim().parse::<alloy_primitives::Address>().ok();
-    if Some(to_addr) != expected_seadrop && expected_nft.is_some() && Some(to_addr) != expected_nft {
+    let expected_nft = nft_contract
+        .trim()
+        .parse::<alloy_primitives::Address>()
+        .ok();
+    if Some(to_addr) != expected_seadrop && expected_nft.is_some() && Some(to_addr) != expected_nft
+    {
         mint_log(
             reporter,
             quiet,
@@ -503,9 +507,9 @@ async fn fetch_calldata_reauth(
                 .await
                 .map_err(|ae| anyhow::anyhow!("re-auth failed: {}", ae))?;
             *session = Some(new_sess);
-            let sess = session.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("internal: session missing after re-auth")
-            })?;
+            let sess = session
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("internal: session missing after re-auth"))?;
             fetch_and_parse_gql(
                 reporter,
                 sess,
@@ -963,9 +967,10 @@ pub async fn run_opensea_mint(
         .iter()
         .find(|w| w.auth_ok)
         .ok_or_else(|| anyhow::anyhow!("internal: auth_ok_count>0 but no auth_ok wallet"))?;
-    let primary_session = primary.session.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("internal: auth_ok wallet missing OpenSea session")
-    })?;
+    let primary_session = primary
+        .session
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("internal: auth_ok wallet missing OpenSea session"))?;
     let info = match opensea::collection_drop_info(primary_session, &slug, &primary.address).await {
         Ok(i) => i,
         Err(e) => {
