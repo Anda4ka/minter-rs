@@ -3,7 +3,7 @@
 //! No TUI/CLI UI dependencies.
 
 // Clippy: large orchestration helpers intentionally carry many args (mint/api).
-// Style noise (collapsible_if, etc.) deferred — see docs/RISK_MITIGATION_PLAN L1.
+// Remaining style allows are intentional product noise, not deferred doc work.
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::useless_format)]

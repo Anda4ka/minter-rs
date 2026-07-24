@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 description = "Shared mint/vault/RPC logic for MINTER desktop"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/Anda4ka/minter-rs"
+homepage = "https://github.com/Anda4ka/minter-rs"
+documentation = "https://github.com/Anda4ka/minter-rs#readme"
+readme = "../../README.md"
+authors = ["Andark <andarx4nok@gmail.com>"]
+keywords = ["nft", "mint", "opensea", "ethereum", "tauri"]
+categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
 alloy = { version = "1", features = ["signer-local", "providers", "rpc-client", "rpc-types", "network"] }

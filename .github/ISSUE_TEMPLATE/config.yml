@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Anda4ka/minter-rs/security/advisories/new
+    about: Privately report key-leak or tx-forgery issues (do not file a public bug).
+  - name: User guide (RU)
+    url: https://github.com/Anda4ka/minter-rs/blob/main/USER_GUIDE.md
+    about: Full operator walkthrough in Russian.
+  - name: Operator guide (EN)
+    url: https://github.com/Anda4ka/minter-rs/blob/main/docs/OPERATOR_GUIDE.md
+    about: Shorter English first-run and mint flow.

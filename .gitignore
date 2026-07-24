@@ -22,12 +22,8 @@ results/
 logs/
 debug_*.json
 
-# Public/ is a local runtime folder — only ship examples + docs from it
+# Public/ is a local runtime / ship folder — never commit binaries or secrets
 Public/**
-!Public/config.example.json
-!Public/proxies.example.txt
-!Public/README.txt
-!Public/ИНСТРУКЦИЯ.md
 
 # local dumps / tooling
 *.png
@@ -36,3 +32,4 @@ Public/**
 mcps/
 .DS_Store
 Thumbs.db
+dist/

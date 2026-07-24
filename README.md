@@ -6,12 +6,12 @@
 <!-- Badges -->
 <p align="center">
   <a href="https://github.com/Anda4ka/minter-rs/actions/workflows/ci.yml"><img src="https://github.com/Anda4ka/minter-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Anda4ka/minter-rs/releases/latest"><img src="https://img.shields.io/github/v/release/Anda4ka/minter-rs?style=flat-square&label=release" alt="Release"></a>
   <img src="https://img.shields.io/badge/engine-Rust-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/desktop-Tauri%202-0a101c?style=flat-square&logo=tauri&logoColor=57c06b" alt="Tauri 2">
   <img src="https://img.shields.io/badge/platform-Windows-0a101c?style=flat-square&logo=windows&logoColor=white" alt="Windows">
   <img src="https://img.shields.io/badge/wallets-burner%20only-cf4b2f?style=flat-square" alt="Burner wallets only">
   <img src="https://img.shields.io/badge/telemetry-none-3fa652?style=flat-square" alt="No telemetry">
-  <img src="https://img.shields.io/badge/core%20tests-190%20passing-3fa652?style=flat-square" alt="190 core tests passing">
   <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3fa652?style=flat-square" alt="License MIT or Apache-2.0">
 </p>
 
@@ -25,19 +25,31 @@
   <a href="#-overview">Overview</a> ·
   <a href="#-features">Features</a> ·
   <a href="#-how-it-mints">How it mints</a> ·
+  <a href="#-install">Install</a> ·
   <a href="#-build--run">Build &amp; run</a> ·
   <a href="#-configure">Configure</a> ·
-  <a href="#-safety">Safety</a>
+  <a href="#-safety">Safety</a> ·
+  <a href="#-docs">Docs</a>
 </p>
 
 > [!WARNING]
 > **Burner wallets only.** Never import long-term funds. Live mint spends real gas and mint price, and there is **no mint guarantee** — OpenSea rate limits, RPC quality, and phase timing are outside the app's control.
+>
+> **Not affiliated with OpenSea.** You are solely responsible for compliance with OpenSea’s terms, chain rules, and applicable law. Software is provided **as-is**, without warranty.
 
 <br>
 
 ## ⚡ Quick start
 
-Build and run from source in one command (Windows, from the repo root):
+### Release binary (Windows)
+
+1. Download the latest **`minter-desktop-*-windows.zip`** from [Releases](https://github.com/Anda4ka/minter-rs/releases)
+2. Verify the SHA256 checksum when provided
+3. Unzip → run `minter-desktop.exe`
+4. Settings → Alchemy API key → Proxies → **Check Connection**
+5. **Dry Run** habits for raw tools; OpenSea **Tasks → Start** is LIVE (type `LIVE`)
+
+### From source
 
 ```powershell
 git clone https://github.com/Anda4ka/minter-rs
@@ -45,7 +57,7 @@ cd minter-rs
 cargo run -p minter-desktop --release
 ```
 
-**First run:** open **Settings** → paste your **Alchemy API key** → **Proxies** → paste your list → **Check Connection**. **Dry Run is ON by default** — flip to LIVE only when you're ready (type `LIVE`). Prerequisites in [Build &amp; run](#-build--run) · first-run setup in [Configure](#-configure).
+**First run:** open **Settings** → paste your **Alchemy API key** → **Proxies** → paste your list → **Check Connection**. Prerequisites in [Build &amp; run](#-build--run) · first-run setup in [Configure](#-configure) · short EN walkthrough in [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md).
 
 <br>
 
@@ -59,8 +71,9 @@ MINTER is a **self-contained desktop app**: a Rust engine (`minter-core`) wrappe
 - **Encrypted at rest** — AES-256-GCM vault, PBKDF2 (600k), atomic writes, `Zeroizing` in memory.
 - **Confirm-based success** — a broadcast (`SENT`) is never counted as a win; only a block-confirmed receipt is.
 - **Two mint paths** — OpenSea SeaDrop drops, and raw contract sniping with proxy/ABI discovery.
+- **Windows only** for the GUI. `minter-core` tests also run on Linux CI.
 
-> 📖 Full step-by-step operator guide (RU): **[`USER_GUIDE.md`](USER_GUIDE.md)**.
+> 📖 Operator guides: **[EN](docs/OPERATOR_GUIDE.md)** · **[RU full](USER_GUIDE.md)**
 
 <br>
 
@@ -77,8 +90,9 @@ MINTER is a **self-contained desktop app**: a Rust engine (`minter-core`) wrappe
 | **Mission Control** | Live HUD on OpenSea Start — phase, stats, per-wallet rows, mirrored log |
 | **OpenSea mint** | Wall-clock phase open → **fixed-gas** send (no estimate gate on LIVE) → on-chain confirm |
 | **Raw Mint** | Multi-wallet pre-sign race · Discover (EIP-1167/1967 proxy + 4byte) · simple `mint(uint256)` |
+| **Advanced** | Sweep ETH/NFT, disperse, multicall helpers; Flashbots path on **Ethereum mainnet only** |
 | **RPC** | Private Alchemy multi-chain (your key only) · **Ping networks** (+ via proxy) · latency |
-| **Proxies** | HTTP / SOCKS, health checks, sticky wallet mapping |
+| **Proxies** | HTTP / SOCKS, health checks, sticky wallet mapping (OpenSea auth path) |
 | **Results** | JSON / CSV export, run history, explorer links, full mint logs |
 | **UI** | Dark-only, EN / RU, phase banner, first-confirm badge + optional beep |
 
@@ -100,6 +114,18 @@ MINTER is a **self-contained desktop app**: a Rust engine (`minter-core`) wrappe
 <br>
 
 <!-- 04 -->
+<h2 id="-install"></h2>
+
+| Method | When |
+|--------|------|
+| **[GitHub Releases](https://github.com/Anda4ka/minter-rs/releases)** | You want a zip + `minter-desktop.exe` |
+| **Build from source** | You develop or want a custom build |
+
+Unsigned builds may show Windows SmartScreen — **More info → Run anyway**. Code signing is not included in v0.1.x.
+
+<br>
+
+<!-- 05 -->
 <h2 id="-build--run"></h2>
 <img src=".github/assets/section-build.svg" width="100%" alt="Build and run — Windows, PowerShell">
 
@@ -117,13 +143,19 @@ cargo run -p minter-desktop --release
 cargo build -p minter-desktop --release
 ```
 
-**Tests:** `cargo test -p minter-core`
+**Tests (core):** `cargo test -p minter-core --lib`
+
+**Local ship folder** (gitignored `Public\`, secrets never packed):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\package-public.ps1
+```
 
 > The app writes its data (vault, `config.json`, results, logs) **next to the exe** — those are gitignored; never share them.
 
 <br>
 
-<!-- 05 -->
+<!-- 06 -->
 <h2 id="-configure"></h2>
 <img src=".github/assets/section-configure.svg" width="100%" alt="Configure — first run">
 
@@ -135,7 +167,7 @@ Set connection details in the **Settings** UI (saved to `config.json` next to th
 2. **RPC** — in **Settings**, paste your **Alchemy API key** (private key; multi-chain URLs are built for you). Advanced: set explicit `rpc_url_ethereum` / `rpc_url_base` / `rpc_urls`.
 3. **Proxies** — on the **Proxies** page, paste one per line (formats below). Multi-wallet OpenSea without proxies often hits HTTP 429.
 4. **Check Connection** — **Ping networks** to confirm RPC + proxies are healthy.
-5. **Dry Run is ON by default** — do a dry pass first; switch to LIVE only when ready (type `LIVE`).
+5. **Dry Run is ON by default** (global chip for raw/sweep). OpenSea **Tasks → Start** is always LIVE — type `LIVE` when prompted.
 
 **Proxy formats**
 
@@ -151,7 +183,7 @@ Prefer env / headless config? Copy [`.env.example`](.env.example) → `.env` (`A
 
 <br>
 
-<!-- 06 -->
+<!-- 07 -->
 <h2 id="-safety"></h2>
 <img src=".github/assets/section-safety.svg" width="100%" alt="Safety — read before going live">
 
@@ -161,7 +193,44 @@ Prefer env / headless config? Copy [`.env.example`](.env.example) → `.env` (`A
 - **No mint guarantee** — OpenSea rate limits, RPC quality, and phase timing are outside the app's control.
 - **Keep `LIVE` confirm + idle-lock on** — type `LIVE` to start a live run; the vault auto-locks when idle.
 - **Never redistribute** `keys.vault`, a real `config.json`, or `auth_cache.bin`.
-- **No warranty** — provided **as-is**, without warranty of any kind. **You are solely responsible** for your use, your funds, and compliance with any applicable terms and laws.
+- **Proxies ≠ RPC privacy** — proxies cover OpenSea HTTP auth; JSON-RPC goes direct (provider sees your IP).
+- **No warranty** — provided **as-is**. **You are solely responsible** for your use, your funds, and compliance with any applicable terms and laws.
+
+Security reports: see **[SECURITY.md](SECURITY.md)** (private disclosure).
+
+<br>
+
+<!-- 08 -->
+<h2 id="-docs"></h2>
+
+| Doc | Audience |
+|-----|----------|
+| [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md) | EN first-run + mint flow |
+| [`USER_GUIDE.md`](USER_GUIDE.md) | Full RU operator manual |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Build, PR, tests |
+| [`SECURITY.md`](SECURITY.md) | Vulnerability reporting |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Community standards |
+
+<br>
+
+## Project layout
+
+```text
+crates/minter-core/          # mint engine, vault, RPC, OpenSea, raw sniper
+crates/minter-desktop/       # Tauri 2 app + static UI
+  src-tauri/                 # Rust shell
+  ui/                        # HTML/CSS/JS
+scripts/package-public.ps1   # local Windows ship folder / safe zip
+.github/workflows/           # CI + tag release
+```
+
+<br>
+
+## Contributing
+
+PRs welcome for fixes, docs, and focused features. Please read [CONTRIBUTING.md](CONTRIBUTING.md).  
+By contributing you agree to dual-license your work under **MIT OR Apache-2.0**.
 
 <br>
 
@@ -169,7 +238,12 @@ Prefer env / headless config? Copy [`.env.example`](.env.example) → `.env` (`A
 
 <p align="center">
   <sub>
-    <b>MINTER</b> · Rust + Tauri 2 · <a href="https://x.com/AndarkFomo">X @AndarkFomo</a> · <a href="https://t.me/grassfoundationn">Telegram</a> · <a href="USER_GUIDE.md">User guide</a><br>
-    Licensed under <b>MIT OR Apache-2.0</b>
+    <b>MINTER</b> · Rust + Tauri 2 · Windows ·
+    <a href="https://x.com/AndarkFomo">X @AndarkFomo</a> ·
+    <a href="https://t.me/grassfoundationn">Telegram</a> ·
+    <a href="docs/OPERATOR_GUIDE.md">EN guide</a> ·
+    <a href="USER_GUIDE.md">RU guide</a><br>
+    Licensed under <a href="LICENSE-MIT">MIT</a> OR <a href="LICENSE-APACHE">Apache-2.0</a>
+    · <a href="NOTICE">NOTICE</a>
   </sub>
 </p>

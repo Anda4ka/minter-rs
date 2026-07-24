@@ -1,0 +1,9 @@
+MINTER (minter-rs)
+Copyright (c) 2026 Rama Amarta Mahardika (Andark)
+
+This product includes software developed for local OpenSea drop minting
+and raw-contract sniping (Rust + Tauri).
+
+Licensed under MIT OR Apache-2.0. See LICENSE-MIT and LICENSE-APACHE.
+
+Not affiliated with, endorsed by, or sponsored by OpenSea or any RPC provider.
