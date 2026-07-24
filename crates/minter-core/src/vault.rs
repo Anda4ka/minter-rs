@@ -26,6 +26,11 @@ impl Vault {
         self.path.exists()
     }
 
+    /// Human path for operator messages.
+    pub fn path_display(&self) -> String {
+        self.path.display().to_string()
+    }
+
     fn derive_key(&self, password: &str, salt: &[u8]) -> [u8; 32] {
         let mut key = [0u8; 32];
         pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, VAULT_KDF_ITERATIONS, &mut key);
@@ -52,7 +57,10 @@ impl Vault {
 
     fn decrypt(&self, blob: &[u8], password: &str) -> Result<Vec<u8>> {
         if blob.len() < VAULT_SALT_LEN + VAULT_IV_LEN + VAULT_TAG_LEN {
-            bail!("Vault file too small or corrupted");
+            bail!(
+                "Vault file is too small or corrupted ({})",
+                self.path.display()
+            );
         }
         let salt = &blob[..VAULT_SALT_LEN];
         let nonce_bytes = &blob[VAULT_SALT_LEN..VAULT_SALT_LEN + VAULT_IV_LEN];
@@ -60,20 +68,34 @@ impl Vault {
         let ciphertext = &blob[VAULT_SALT_LEN + VAULT_IV_LEN..];
         let key = self.derive_key(password, salt);
         let cipher = Aes256Gcm::new_from_slice(&key).context("invalid key")?;
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|e| anyhow::anyhow!("wrong password or corrupted vault: {}", e))?;
+        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+            anyhow::anyhow!(
+                "Wrong vault password (or corrupted vault file at {})",
+                self.path.display()
+            )
+        })?;
         Ok(plaintext)
     }
 
     fn read_entries(&self, password: &str) -> Result<Vec<VaultEntry>> {
         if !self.exists() {
+            // Empty vault is OK for first-time create (add/import). Callers that
+            // expect an existing vault should check exists() first.
             return Ok(vec![]);
         }
-        let blob = std::fs::read(&self.path).context("failed to read vault")?;
+        let blob = std::fs::read(&self.path).with_context(|| {
+            format!(
+                "Failed to read vault file {} (check path / permissions)",
+                self.path.display()
+            )
+        })?;
         let plaintext = self.decrypt(&blob, password)?;
-        let entries: Vec<VaultEntry> =
-            serde_json::from_slice(&plaintext).context("failed to parse vault")?;
+        let entries: Vec<VaultEntry> = serde_json::from_slice(&plaintext).with_context(|| {
+            format!(
+                "Vault file {} could not be parsed (corrupted?)",
+                self.path.display()
+            )
+        })?;
         Ok(entries)
     }
 
@@ -169,7 +191,14 @@ impl Vault {
         let pk = private_key.strip_prefix("0x").unwrap_or(private_key);
         let signer: Signer = pk.parse().context("invalid private key")?;
         let addr = signer.address();
+        let created_new = !self.exists();
         let mut entries = self.read_entries(password)?;
+        if created_new {
+            crate::rlog!(
+                "No vault at {} — creating a new encrypted vault",
+                self.path.display()
+            );
+        }
         let addr_lower = format!("{:?}", addr).to_lowercase();
         for e in &entries {
             if e.address.to_lowercase() == addr_lower {
@@ -191,6 +220,12 @@ impl Vault {
     }
 
     pub fn remove(&self, address: &str, password: &str) -> Result<()> {
+        if !self.exists() {
+            bail!(
+                "No vault file at {} — nothing to remove (wrong working directory?)",
+                self.path.display()
+            );
+        }
         let addr_lower = address.to_lowercase();
         let mut entries = self.read_entries(password)?;
         let before = entries.len();
@@ -205,11 +240,19 @@ impl Vault {
     }
 
     pub fn list_addresses(&self, password: &str) -> Result<Vec<String>> {
+        if !self.exists() {
+            // Empty list is fine; unlock path creates password session first.
+            return Ok(vec![]);
+        }
         let entries = self.read_entries(password)?;
         Ok(entries.iter().map(|e| e.address.clone()).collect())
     }
 
     pub fn decrypt_keys(&self, password: &str) -> Result<Vec<zeroize::Zeroizing<String>>> {
+        if !self.exists() {
+            // First-run: no vault yet → empty key set (Session creates on add).
+            return Ok(vec![]);
+        }
         let entries = self.read_entries(password)?;
         Ok(entries
             .iter()
@@ -219,7 +262,14 @@ impl Vault {
 
     /// Import private keys from free-form text (one key per line; `#` comments ok).
     pub fn import_from_text(&self, content: &str, password: &str) -> Result<usize> {
+        let created_new = !self.exists();
         let mut entries = self.read_entries(password)?;
+        if created_new {
+            crate::rlog!(
+                "No vault at {} — creating a new encrypted vault on import",
+                self.path.display()
+            );
+        }
         let mut seen: std::collections::HashSet<String> =
             entries.iter().map(|e| e.address.to_lowercase()).collect();
         let mut added = 0;
@@ -312,7 +362,25 @@ mod tests {
         let vault = Vault::new("test_vault_tmp.bin");
         let encrypted = vault.encrypt(b"secret", "correct_pw");
 
-        assert!(vault.decrypt(&encrypted, "wrong_pw").is_err());
+        let err = vault.decrypt(&encrypted, "wrong_pw").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("wrong vault password"),
+            "expected clear wrong-password message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn remove_missing_vault_is_clear_error() {
+        let path = unique_vault_path("missing");
+        let vault = Vault::new(&path);
+        let err = vault.remove("0xabc", "pw").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No vault file") || msg.contains("nothing to remove"),
+            "{msg}"
+        );
+        cleanup_vault_path(&path);
     }
 
     #[test]

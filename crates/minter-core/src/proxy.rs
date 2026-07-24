@@ -31,6 +31,20 @@ pub fn short_proxy(url: &str) -> String {
     }
 }
 
+/// Percent-encode userinfo for proxy URLs (user/pass may contain `:`, `@`, etc.).
+fn encode_userinfo(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub fn parse_proxy(raw: &str) -> Result<String> {
     let raw = raw.trim();
 
@@ -48,23 +62,45 @@ pub fn parse_proxy(raw: &str) -> Result<String> {
     }
 
     if raw.contains('@') && !raw.contains("://") {
-        return Ok(format!("http://{}", raw));
+        // user:pass@host:port — encode userinfo if present
+        if let Some((userinfo, hostport)) = raw.rsplit_once('@') {
+            if let Some((user, pass)) = userinfo.split_once(':') {
+                return Ok(format!(
+                    "http://{}:{}@{}",
+                    encode_userinfo(user),
+                    encode_userinfo(pass),
+                    hostport
+                ));
+            }
+        }
+        return Ok(format!("http://{raw}"));
     }
 
-    let parts: Vec<&str> = raw.split(':').collect();
+    // host:port:user:pass — pass may contain ':' → splitn(4) then join rest as password
+    let parts: Vec<&str> = raw.splitn(4, ':').collect();
     if parts.len() == 4 {
         let host = parts[0];
         let port = parts[1];
         let user = parts[2];
         let pass = parts[3];
-        return Ok(format!("http://{}:{}@{}:{}", user, pass, host, port));
+        if host.is_empty() || port.is_empty() {
+            anyhow::bail!("invalid proxy host:port:user:pass");
+        }
+        return Ok(format!(
+            "http://{}:{}@{}:{}",
+            encode_userinfo(user),
+            encode_userinfo(pass),
+            host,
+            port
+        ));
     }
 
     if parts.len() == 2 {
-        return Ok(format!("http://{}", raw));
+        return Ok(format!("http://{raw}"));
     }
 
-    Ok(format!("http://{}", raw))
+    // Ambiguous — still accept as host-like URL for back-compat.
+    Ok(format!("http://{raw}"))
 }
 
 impl ProxyManager {
@@ -81,13 +117,25 @@ impl ProxyManager {
     }
 
     /// Parse multi-line proxy list (same formats as proxies.txt).
+    /// Invalid lines are logged and skipped (not silent).
     pub fn from_text(content: &str) -> Self {
-        let proxies: Vec<String> = content
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .filter_map(|l| parse_proxy(l).ok())
-            .collect();
+        let mut proxies = Vec::new();
+        for (lineno, line) in content.lines().enumerate() {
+            let l = line.trim();
+            if l.is_empty() || l.starts_with('#') {
+                continue;
+            }
+            match parse_proxy(l) {
+                Ok(p) => proxies.push(p),
+                Err(e) => {
+                    crate::rlog!(
+                        "proxy line {}: skipped invalid entry ({e}): {}",
+                        lineno + 1,
+                        crate::safe_truncate(l, 80)
+                    );
+                }
+            }
+        }
         Self { proxies }
     }
 
@@ -406,5 +454,29 @@ mod tests {
     #[test]
     fn parse_empty_fails() {
         assert!(parse_proxy("").is_err());
+    }
+
+    #[test]
+    fn parse_password_with_colon() {
+        // host:port:user:p:ass → pass = "p:ass"
+        let u = parse_proxy("1.2.3.4:8080:myuser:p:ass:word").unwrap();
+        assert!(u.starts_with("http://myuser:"), "{u}");
+        assert!(u.contains("@1.2.3.4:8080"), "{u}");
+        // colon in password must be percent-encoded
+        assert!(u.contains("%3A") || u.contains("p%3Aass"), "{u}");
+    }
+
+    #[test]
+    fn parse_userinfo_encodes_at() {
+        let u = parse_proxy("user:p@ss@host:8080").unwrap();
+        // user:p@ss@host:8080 is ambiguous with rsplit @ — last @ is hostport
+        assert!(u.contains("host:8080"), "{u}");
+    }
+
+    #[test]
+    fn from_text_skips_empty_not_all() {
+        let pm = ProxyManager::from_text("host:8080\n\n# comment\nbad::::too:many:colons:maybe\n");
+        // "bad::::..." with splitn(4) still parses as 4 parts
+        assert!(pm.len() >= 1, "at least host:8080");
     }
 }

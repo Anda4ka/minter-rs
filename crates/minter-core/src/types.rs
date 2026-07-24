@@ -204,10 +204,38 @@ pub struct MintResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Vault entry: address + private key. Debug MUST NOT print the key.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VaultEntry {
     pub address: String,
     pub key: String,
+}
+
+impl fmt::Debug for VaultEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VaultEntry")
+            .field("address", &self.address)
+            .field("key", &"[redacted]")
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod vault_entry_debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_private_key() {
+        let e = VaultEntry {
+            address: "0xabc".into(),
+            key: "0xdeadbeefcafebabe0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+        };
+        let s = format!("{e:?}");
+        assert!(s.contains("0xabc"), "{s}");
+        assert!(s.contains("[redacted]"), "{s}");
+        assert!(!s.contains("deadbeef"), "key leaked in Debug: {s}");
+        assert!(!s.contains("cafebabe"), "key leaked in Debug: {s}");
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
