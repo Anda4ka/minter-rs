@@ -1,0 +1,115 @@
+# Tag-driven Windows release: build minter-desktop, zip + SHA256, upload to GitHub Release.
+# Create a release by pushing a tag: git tag v0.1.0 && git push origin v0.1.0
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0). Leave empty to use run id naming only."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Build Windows desktop
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Build minter-desktop (release)
+        run: cargo build -p minter-desktop --release
+
+      - name: Stage ship folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.tag }}" -ne "") {
+            $tag = "${{ inputs.tag }}"
+          }
+          if (-not $tag -or $tag -eq "") { $tag = "dev-${{ github.run_id }}" }
+          $ver = $tag.TrimStart("v")
+          $exeCandidates = @(
+            "target\release\minter-desktop.exe",
+            "crates\minter-desktop\src-tauri\target\release\minter-desktop.exe"
+          )
+          $exe = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "minter-desktop.exe not found after build" }
+
+          $stage = "dist\minter-desktop-$ver-windows"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Force $exe (Join-Path $stage "minter-desktop.exe")
+          Copy-Item -Force "USER_GUIDE.md" $stage -ErrorAction SilentlyContinue
+          Copy-Item -Force "docs\OPERATOR_GUIDE.md" $stage -ErrorAction SilentlyContinue
+          Copy-Item -Force "LICENSE-MIT" $stage
+          Copy-Item -Force "LICENSE-APACHE" $stage
+          Copy-Item -Force "SECURITY.md" $stage
+          Copy-Item -Force "README.md" $stage
+
+          $zipName = "minter-desktop-$ver-windows.zip"
+          $zipPath = "dist\$zipName"
+          if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+          Compress-Archive -Path "$stage\*" -DestinationPath $zipPath -Force
+
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $zipPath).Hash.ToLower()
+          "$hash  $zipName" | Set-Content -Encoding ascii "dist\$zipName.sha256"
+          Write-Host "Artifact: $zipPath"
+          Write-Host "SHA256: $hash"
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: minter-desktop-windows
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/*.sha256
+          body: |
+            ## MINTER ${{ env.VERSION }}
+
+            Windows desktop build (`minter-desktop.exe`).
+
+            ### Install
+            1. Download `minter-desktop-*-windows.zip`
+            2. Verify SHA256 against the `.sha256` file
+            3. Unzip to a folder (e.g. `C:\Minter\`)
+            4. Run `minter-desktop.exe` (SmartScreen → More info → Run anyway if unsigned)
+            5. Read **USER_GUIDE.md** (RU) or **OPERATOR_GUIDE.md** (EN)
+
+            ### Safety
+            - **Burner wallets only**
+            - Dry Run is ON by default; type `LIVE` to start live OpenSea tasks
+            - Never share `keys.vault`, `config.json`, or `auth_cache.bin`
+
+            Full changelog: [CHANGELOG.md](https://github.com/Anda4ka/minter-rs/blob/main/CHANGELOG.md)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
