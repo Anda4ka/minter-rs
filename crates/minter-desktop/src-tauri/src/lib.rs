@@ -52,6 +52,19 @@ impl Drop for MintBusyGuard {
     }
 }
 
+/// Forwards batch (WL check / auth test / …) progress to the webview as
+/// `batch-event`, so long multi-wallet runs show rows as they finish instead of
+/// nothing until the whole set completes.
+struct TauriBatchReporter {
+    app: AppHandle,
+}
+
+impl minter_core::batch::BatchReporter for TauriBatchReporter {
+    fn report(&self, event: minter_core::batch::BatchEvent) {
+        let _ = self.app.emit("batch-event", &event);
+    }
+}
+
 /// Forwards mint progress to the webview as `mint-event`.
 struct TauriMintReporter {
     app: AppHandle,
@@ -140,6 +153,8 @@ pub struct AppState {
     pub mint_cancellable: Arc<AtomicBool>,
     /// Shared across reporter for one-shot first confirm per run.
     pub mint_first_confirm: Arc<AtomicBool>,
+    /// Cancel token for batch wallet operations (WL check, …).
+    pub batch_cancel: minter_core::batch::BatchCancel,
 }
 
 impl Default for AppState {
@@ -150,6 +165,7 @@ impl Default for AppState {
             mint_running: Arc::new(AtomicBool::new(false)),
             mint_cancellable: Arc::new(AtomicBool::new(false)),
             mint_first_confirm: Arc::new(AtomicBool::new(false)),
+            batch_cancel: minter_core::batch::BatchCancel::new(),
         }
     }
 }
@@ -949,11 +965,14 @@ struct CheckEligibilityWalletsInput {
     slug: String,
     /// If empty/absent → all unlocked wallets.
     wallet_addresses: Option<Vec<String>>,
+    /// Operator-selected worker count (forced to 1 when no proxies are set).
+    concurrency: Option<usize>,
 }
 
 /// Multi-wallet WL / eligibility (proxies by vault index).
 #[tauri::command]
 async fn check_eligibility_wallets(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     input: CheckEligibilityWalletsInput,
 ) -> Result<minter_core::WalletEligibilityReport, String> {
@@ -966,10 +985,27 @@ async fn check_eligibility_wallets(
             Some(v)
         }
     });
+    let reporter: Arc<dyn minter_core::batch::BatchReporter> = Arc::new(TauriBatchReporter { app });
+    // Arm a fresh cancel token for this run (Stop sets it).
+    state.batch_cancel.reset();
+    let cancel = state.batch_cancel.clone();
     session
-        .check_eligibility_wallets(&input.slug, wallets)
+        .check_eligibility_wallets_streaming(
+            &input.slug,
+            wallets,
+            input.concurrency,
+            Some(reporter),
+            Some(cancel),
+        )
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Stop an in-flight batch run. Rows already checked are kept and exported.
+#[tauri::command]
+fn cancel_batch(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    state.batch_cancel.cancel();
+    Ok("Stopping… finishing in-flight wallets".into())
 }
 
 #[tauri::command]
@@ -1526,6 +1562,7 @@ pub fn run() {
             warm_auth,
             check_eligibility,
             check_eligibility_wallets,
+            cancel_batch,
             measure_latency,
             discover_raw_functions,
             raw_mint,

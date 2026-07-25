@@ -29,6 +29,7 @@ pub mod abi;
 pub mod amount;
 pub mod api;
 pub mod auth_cache;
+pub mod batch;
 pub mod disperse;
 pub mod errors;
 pub mod export;
@@ -122,6 +123,10 @@ macro_rules! rprint {
         }
     }};
 }
+pub use batch::{
+    BatchCancel, BatchEvent, BatchReporter, DEFAULT_BATCH_CONCURRENCY, MAX_BATCH_CONCURRENCY,
+    NullBatchReporter, resolve_concurrency,
+};
 pub use mint::{MintRunSummary, run_opensea_mint};
 pub use mint_ops::{
     chain_mismatch_message, expand_wallet_quantities, explorer_tx_url, flashbots_allowed_for_chain,

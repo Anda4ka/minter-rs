@@ -1731,6 +1731,50 @@ function wlStageChips(labels, kind, maxShow = 4) {
   return `<div class="wl-stage-chips">${chips}${more}</div>`;
 }
 
+/** Build one WL result <tr>. Shared by the streaming path and the final render. */
+function wlRowElement(w) {
+  const tr = document.createElement("tr");
+  const eligHtml = wlStageChips(w.eligibleLabels, "ok", 5);
+  const notHtml = wlStageChips(w.notEligibleLabels, "no", 3);
+  const st = w.ok
+    ? (w.eligibleLabels || []).length
+      ? `<span class="status-pill status-ok">WL</span>`
+      : `<span class="status-pill status-wait">OK</span>`
+    : `<span class="status-pill status-fail">FAIL</span>`;
+  const meta = w.error
+    ? `<span class="error cell-clip" title="${escapeHtml(w.error)}">${escapeHtml(String(w.error).slice(0, 40))}</span>`
+    : `<span class="muted">${escapeHtml(String(w.latencyMs || 0))}ms</span>`;
+  tr.innerHTML = `
+    <td class="mono" title="${escapeHtml(w.address)}">${escapeHtml(shortAddr(w.address))}</td>
+    <td>${eligHtml}</td>
+    <td>${notHtml}</td>
+    <td class="mono muted">${escapeHtml(w.proxy || "direct")}</td>
+    <td><div class="wl-status-cell">${st}${meta}</div></td>`;
+  return tr;
+}
+
+/** Detail-log lines for one WL result. */
+function wlDetailLines(w) {
+  const out = [
+    `—— ${w.address} · proxy=${w.proxy || "direct"} · ${w.latencyMs || 0}ms ——`,
+  ];
+  if (w.error) {
+    out.push(`  ERROR: ${w.error}`);
+  } else if (!(w.stages || []).length) {
+    out.push("  (no stages)");
+  } else {
+    for (const s of w.stages) {
+      out.push(
+        `  ${s.label} | ${s.stageType} | ${s.eligible}` +
+          (s.priceEth ? ` | ${s.priceEth} ETH` : "") +
+          (s.maxMintable != null ? ` | max=${s.maxMintable}` : "")
+      );
+    }
+  }
+  out.push("");
+  return out;
+}
+
 function renderWlReport(report) {
   const tb = $("wl-tbody");
   const detail = $("wl-detail");
@@ -1754,40 +1798,8 @@ function renderWlReport(report) {
   for (const w of wallets) {
     if (w.ok) ok++;
     else fail++;
-    const tr = document.createElement("tr");
-    const eligHtml = wlStageChips(w.eligibleLabels, "ok", 5);
-    const notHtml = wlStageChips(w.notEligibleLabels, "no", 3);
-    const st = w.ok
-      ? (w.eligibleLabels || []).length
-        ? `<span class="status-pill status-ok">WL</span>`
-        : `<span class="status-pill status-wait">OK</span>`
-      : `<span class="status-pill status-fail">FAIL</span>`;
-    const meta = w.error
-      ? `<span class="error cell-clip" title="${escapeHtml(w.error)}">${escapeHtml(String(w.error).slice(0, 40))}</span>`
-      : `<span class="muted">${w.latencyMs || 0}ms</span>`;
-    tr.innerHTML = `
-      <td class="mono" title="${escapeHtml(w.address)}">${escapeHtml(shortAddr(w.address))}</td>
-      <td>${eligHtml}</td>
-      <td>${notHtml}</td>
-      <td class="mono muted">${escapeHtml(w.proxy || "direct")}</td>
-      <td><div class="wl-status-cell">${st}${meta}</div></td>`;
-    tb.appendChild(tr);
-
-    detailLines.push(`—— ${w.address} · proxy=${w.proxy || "direct"} · ${w.latencyMs || 0}ms ——`);
-    if (w.error) {
-      detailLines.push(`  ERROR: ${w.error}`);
-    } else if (!(w.stages || []).length) {
-      detailLines.push("  (no stages)");
-    } else {
-      for (const s of w.stages) {
-        detailLines.push(
-          `  ${s.label} | ${s.stageType} | ${s.eligible}` +
-            (s.priceEth ? ` | ${s.priceEth} ETH` : "") +
-            (s.maxMintable != null ? ` | max=${s.maxMintable}` : "")
-        );
-      }
-    }
-    detailLines.push("");
+    tb.appendChild(wlRowElement(w));
+    detailLines.push(...wlDetailLines(w));
   }
   // Count wallets with real WL (non-public) chips
   const wlCount = wallets.filter(
@@ -1824,10 +1836,47 @@ $("wl-wallets-all")?.addEventListener("change", (e) => {
   });
 });
 
+const WL_THREADS_KEY = "minter_wl_threads";
+
+/** Worker count from the UI field, clamped to what the backend accepts. */
+function wlThreadCount() {
+  const raw = parseInt($("wl-threads")?.value || "4", 10);
+  const n = Number.isFinite(raw) ? raw : 4;
+  return Math.min(16, Math.max(1, n));
+}
+
+// Restore / persist the operator's thread choice.
+(() => {
+  const el = $("wl-threads");
+  if (!el) return;
+  const saved = parseInt(localStorage.getItem(WL_THREADS_KEY) || "", 10);
+  if (Number.isFinite(saved) && saved >= 1 && saved <= 16) el.value = String(saved);
+  el.addEventListener("change", () => {
+    el.value = String(wlThreadCount());
+    localStorage.setItem(WL_THREADS_KEY, el.value);
+  });
+})();
+
+/** Unlisten handle for the in-flight batch stream. */
+let wlBatchUnlisten = null;
+
+$("btn-wl-stop")?.addEventListener("click", async () => {
+  try {
+    const m = await invoke("cancel_batch");
+    const msg = $("wl-msg");
+    if (msg) msg.textContent = String(m);
+  } catch (e) {
+    console.warn("cancel_batch", e);
+  }
+  if ($("btn-wl-stop")) $("btn-wl-stop").disabled = true;
+});
+
 $("btn-wl-check")?.addEventListener("click", async () => {
   const slug = $("wl-slug")?.value.trim();
   const wallets = selectedWlWallets();
   const msg = $("wl-msg");
+  const tb = $("wl-tbody");
+  const detail = $("wl-detail");
   if (!slug) {
     if (msg) msg.textContent = "Slug required";
     return;
@@ -1836,26 +1885,71 @@ $("btn-wl-check")?.addEventListener("click", async () => {
     if (msg) msg.textContent = "Select at least one wallet";
     return;
   }
+
+  const threads = wlThreadCount();
   const started = Date.now();
-  const tick = () => {
+  // Live counters, updated from the stream rather than only at the end.
+  let done = 0;
+  let wl = 0;
+  let fail = 0;
+  const detailLines = [];
+  if (tb) tb.innerHTML = "";
+  if (detail) detail.textContent = "";
+
+  const status = () => {
     const sec = Math.floor((Date.now() - started) / 1000);
     if (msg) {
       msg.textContent = (
-        t("wl.checkingN") ||
-        "Checking {n} wallet(s)… {sec}s (OpenSea auth + eligibility; uses proxies if set)"
+        t("wl.progress") || "{done}/{n} · WL {wl} · FAIL {fail} · {sec}s · {threads} thread(s)"
       )
+        .replace("{done}", String(done))
         .replace("{n}", String(wallets.length))
-        .replace("{sec}", String(sec));
+        .replace("{wl}", String(wl))
+        .replace("{fail}", String(fail))
+        .replace("{sec}", String(sec))
+        .replace("{threads}", String(threads));
     }
-    if ($("wl-run-stats")) $("wl-run-stats").textContent = `${sec}s…`;
+    if ($("wl-run-stats")) {
+      $("wl-run-stats").textContent = `${done}/${wallets.length} · ${sec}s`;
+    }
   };
-  tick();
-  const timer = setInterval(tick, 1000);
+  status();
+  const timer = setInterval(status, 1000);
+
+  // Subscribe before invoking so no early row is missed.
+  try {
+    const { listen } = window.__TAURI__.event;
+    if (wlBatchUnlisten) {
+      wlBatchUnlisten();
+      wlBatchUnlisten = null;
+    }
+    wlBatchUnlisten = await listen("batch-event", (ev) => {
+      const p = ev.payload || {};
+      if (p.kind !== "wlCheck") return;
+      if (p.row) {
+        const w = p.row;
+        done = p.done ?? done + 1;
+        if (!w.ok) fail++;
+        else if ((w.eligibleLabels || []).length) wl++;
+        if (tb) tb.appendChild(wlRowElement(w));
+        detailLines.push(...wlDetailLines(w));
+        if (detail) detail.textContent = detailLines.join("\n");
+        status();
+      } else if (p.cancelled) {
+        if (msg) msg.textContent = t("wl.stopped") || "Stopped — keeping checked wallets";
+      }
+    });
+  } catch (_) {
+    /* non-tauri / no event bridge: fall back to the final render only */
+  }
+
   if ($("btn-wl-check")) $("btn-wl-check").disabled = true;
+  if ($("btn-wl-stop")) $("btn-wl-stop").disabled = false;
   try {
     const report = await invoke("check_eligibility_wallets", {
-      input: { slug, walletAddresses: wallets },
+      input: { slug, walletAddresses: wallets, concurrency: threads },
     });
+    // Final render: authoritative, ordered, and includes the export paths.
     renderWlReport(report);
     if (msg) {
       if (report.exportDir) {
@@ -1870,10 +1964,15 @@ $("btn-wl-check")?.addEventListener("click", async () => {
     }
   } catch (e) {
     if (msg) msg.textContent = String(e);
-    if ($("wl-detail")) $("wl-detail").textContent = String(e);
+    if (detail) detail.textContent = String(e);
   } finally {
     clearInterval(timer);
+    if (wlBatchUnlisten) {
+      wlBatchUnlisten();
+      wlBatchUnlisten = null;
+    }
     if ($("btn-wl-check")) $("btn-wl-check").disabled = false;
+    if ($("btn-wl-stop")) $("btn-wl-stop").disabled = true;
   }
 });
 

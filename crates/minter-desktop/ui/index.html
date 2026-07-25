@@ -666,6 +666,10 @@
                     <div id="wl-wallet-list" class="task-wallet-list muted">Unlock vault to load wallets…</div>
                     <div class="wl-actions">
                       <button type="button" id="btn-wl-check" class="primary" data-i18n="wl.run">Check WL</button>
+                      <button type="button" id="btn-wl-stop" data-i18n="wl.stop" disabled>Stop</button>
+                      <label class="wl-threads"><span data-i18n="wl.threads">Threads</span>
+                        <input type="number" id="wl-threads" min="1" max="16" value="4" inputmode="numeric" />
+                      </label>
                       <p id="wl-msg" class="msg" style="margin:0"></p>
                     </div>
                   </div>

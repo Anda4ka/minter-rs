@@ -1166,6 +1166,29 @@ impl Session {
         slug: &str,
         wallet_addresses: Option<Vec<String>>,
     ) -> Result<WalletEligibilityReport> {
+        self.check_eligibility_wallets_streaming(slug, wallet_addresses, None, None, None)
+            .await
+    }
+
+    /// Streaming variant: publishes each wallet's row as soon as it finishes and
+    /// honours a cancel token.
+    ///
+    /// The batched version returned nothing until all N wallets were done, so a
+    /// 200-wallet run looked frozen for over a minute. Workers here are drained
+    /// with a `JoinSet`, so a finished row reaches the UI immediately.
+    ///
+    /// - `concurrency`: worker count (see [`crate::batch::resolve_concurrency`];
+    ///   forced to 1 when no proxies are configured).
+    /// - `cancel`: stop between wallets; already-checked rows are still
+    ///   returned and exported.
+    pub async fn check_eligibility_wallets_streaming(
+        &self,
+        slug: &str,
+        wallet_addresses: Option<Vec<String>>,
+        concurrency: Option<usize>,
+        reporter: Option<Arc<dyn crate::batch::BatchReporter>>,
+        cancel: Option<crate::batch::BatchCancel>,
+    ) -> Result<WalletEligibilityReport> {
         if self.signers.is_empty() {
             bail!("No wallets unlocked");
         }
@@ -1202,20 +1225,32 @@ impl Session {
 
         let chain_id = self.resolve_chain_id(None).await;
         let proxies = self.proxy_manager();
-        // Without proxies, keep concurrency low to avoid hammering one IP into 429 sleep storms.
-        // With proxies, scale with unique proxy count (same idea as warm_auth / mint).
-        let conc = if proxies.is_empty() {
-            1usize
-        } else {
-            proxies.len().clamp(2, 6)
-        };
+        // Operator-selected worker count, forced serial when there are no
+        // proxies (one IP + parallel SIWE = 429 storm).
+        let conc = crate::batch::resolve_concurrency(concurrency, proxies.len());
         let sem = Arc::new(tokio::sync::Semaphore::new(conc));
         let pw = self.password.as_ref().map(|z| z.as_str());
         let cache = Arc::new(tokio::sync::Mutex::new(AuthCache::load(pw)));
         let slug_owned = slug.clone();
         let n = selected.len();
+        let cancel = cancel.unwrap_or_default();
+        crate::batch::report(
+            reporter.as_ref(),
+            crate::batch::BatchEvent::message(
+                BATCH_KIND_WL_CHECK,
+                0,
+                n,
+                format!("checking {n} wallet(s) · {conc} worker(s)"),
+            ),
+        );
 
-        let mut handles = Vec::with_capacity(n);
+        // Selection order, used to re-sort the completion-ordered results below.
+        let order_index: Vec<String> = selected
+            .iter()
+            .map(|(_, s)| normalize_address(&format!("{:?}", s.address())))
+            .collect();
+
+        let mut set: tokio::task::JoinSet<WalletEligibilityRow> = tokio::task::JoinSet::new();
         for (ord, (vault_idx, signer)) in selected.into_iter().enumerate() {
             let addr = signer.address();
             let proxy = proxies.get(vault_idx).map(|s| s.to_string());
@@ -1225,7 +1260,8 @@ impl Session {
             let slug = slug_owned.clone();
             // Mild stagger so concurrent workers don't open SIWE in lockstep.
             let stagger_ms = (ord as u64 % conc as u64) * 250;
-            handles.push(tokio::spawn(async move {
+            let cancel_w = cancel.clone();
+            set.spawn(async move {
                 let _permit = match sem.acquire().await {
                     Ok(p) => p,
                     Err(_) => {
@@ -1243,6 +1279,20 @@ impl Session {
                 };
                 if stagger_ms > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(stagger_ms)).await;
+                }
+                // Queued workers can wait a long time behind the semaphore;
+                // don't start a fresh SIWE round for a run already stopped.
+                if cancel_w.is_cancelled() {
+                    return WalletEligibilityRow {
+                        address: format!("{:?}", addr),
+                        ok: false,
+                        proxy: proxy_short,
+                        latency_ms: 0,
+                        error: Some("skipped (stopped by operator)".into()),
+                        stages: vec![],
+                        eligible_labels: vec![],
+                        not_eligible_labels: vec![],
+                    };
                 }
 
                 let start = Instant::now();
@@ -1345,14 +1395,22 @@ impl Session {
                         not_eligible_labels: vec![],
                     },
                 }
-            }));
+            });
         }
 
+        // Drain as workers finish (not in spawn order) so each row reaches the
+        // UI the moment it is ready.
         let mut wallets = Vec::with_capacity(n);
-        for h in handles {
-            match h.await {
-                Ok(row) => wallets.push(row),
-                Err(e) => wallets.push(WalletEligibilityRow {
+        let mut was_cancelled = false;
+        while let Some(joined) = set.join_next().await {
+            let row = match joined {
+                Ok(row) => row,
+                // After `abort_all()` every queued task drains as
+                // `JoinError::Cancelled`. Those wallets were never checked, so
+                // recording them as failed rows would flood the report (and the
+                // export) with fake "task: cancelled" entries.
+                Err(e) if e.is_cancelled() => continue,
+                Err(e) => WalletEligibilityRow {
                     address: "join".into(),
                     ok: false,
                     proxy: "—".into(),
@@ -1361,8 +1419,47 @@ impl Session {
                     stages: vec![],
                     eligible_labels: vec![],
                     not_eligible_labels: vec![],
-                }),
+                },
+            };
+            wallets.push(row);
+            let done = wallets.len();
+            if let Some(last) = wallets.last() {
+                crate::batch::report(
+                    reporter.as_ref(),
+                    crate::batch::BatchEvent::row(
+                        BATCH_KIND_WL_CHECK,
+                        done,
+                        n,
+                        serde_json::to_value(last).unwrap_or(serde_json::Value::Null),
+                    ),
+                );
             }
+            if cancel.is_cancelled() && !was_cancelled {
+                was_cancelled = true;
+                // Abort the queue; in-flight workers still land above.
+                set.abort_all();
+                crate::batch::report(
+                    reporter.as_ref(),
+                    crate::batch::BatchEvent::cancelled(BATCH_KIND_WL_CHECK, done, n),
+                );
+            }
+        }
+
+        // Rows arrive in completion order, which is a race between workers.
+        // Restore the selection order so the export and the final report are
+        // stable across runs (the UI already showed rows as they landed).
+        {
+            let order: std::collections::HashMap<String, usize> = order_index
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (a.clone(), i))
+                .collect();
+            wallets.sort_by_key(|w| {
+                order
+                    .get(&normalize_address(&w.address))
+                    .copied()
+                    .unwrap_or(usize::MAX)
+            });
         }
 
         // One disk encrypt for the whole eligibility auth batch.
@@ -2321,6 +2418,9 @@ pub struct EligibilityResult {
     pub chain_id: u64,
     pub stages: Vec<StageRow>,
 }
+
+/// Batch-event `kind` for the WL / eligibility screen.
+pub const BATCH_KIND_WL_CHECK: &str = "wlCheck";
 
 /// One wallet's OpenSea stage eligibility (WL check).
 #[derive(Debug, Clone, serde::Serialize)]
