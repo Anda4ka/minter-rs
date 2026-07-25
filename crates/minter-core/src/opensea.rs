@@ -388,6 +388,45 @@ pub async fn siwe_auth_with_retries(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("siwe_auth retries exhausted")))
 }
 
+/// Extract the bearer token from a SIWE `verify` response body.
+///
+/// OpenSea answers HTTP 200 in two shapes, and **both mean success**:
+///
+/// 1. `{"accessToken": "..."}` — bearer token, sent as an `Authorization` header.
+/// 2. `{"user": {"address": ...}}` — no token; the session lives in the cookie
+///    jar. This is the common shape today.
+///
+/// Returning an empty string for shape 2 is correct and expected: every
+/// `Authorization` header in this module is guarded by `if !is_empty()`, and
+/// [`unauthenticated_session`] deliberately builds a session with an empty
+/// token, relying on `set_connected_account_cookie`.
+///
+/// A body carrying *neither* a token nor a user is a genuine failure — that is
+/// the case that must not be silently treated as an authenticated session.
+fn extract_verify_token(auth_data: &serde_json::Value) -> Result<String> {
+    let token = auth_data
+        .get("accessToken")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if !token.is_empty() {
+        return Ok(token);
+    }
+    let has_user = auth_data
+        .get("user")
+        .and_then(|u| u.get("address"))
+        .and_then(|a| a.as_str())
+        .is_some_and(|a| !a.trim().is_empty());
+    if has_user {
+        // Cookie-based session: the jar carries the credentials from here on.
+        return Ok(String::new());
+    }
+    bail!(
+        "Verify returned HTTP 200 with neither accessToken nor user: {}",
+        crate::safe_truncate(&auth_data.to_string(), 300)
+    )
+}
+
 async fn siwe_auth_once(
     address: &Address,
     signer: &alloy::signers::local::LocalSigner<k256::ecdsa::SigningKey>,
@@ -499,21 +538,9 @@ async fn siwe_auth_once(
     }
 
     let auth_data: serde_json::Value = verify_resp.json().await?;
-    // HTTP 200 with no accessToken is a *failed* auth, not an anonymous session.
-    // Returning Ok("") here made the caller mark the wallet auth_ok and cache an
-    // empty bearer for the full TTL, so every later request silently went out
-    // unauthenticated while the log said "CACHED OK".
-    let access_token = auth_data
-        .get("accessToken")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Verify returned HTTP 200 without accessToken: {}",
-                crate::safe_truncate(&auth_data.to_string(), 300)
-            )
-        })?
-        .to_string();
+    // Two success shapes (bearer token vs cookie-only session) — see
+    // [`extract_verify_token`].
+    let access_token = extract_verify_token(&auth_data)?;
 
     Ok(AuthSession {
         access_token,
@@ -1332,5 +1359,58 @@ mod extract_action_tx_tests {
         });
         let tx = extract_opensea_action_tx(&data).unwrap();
         assert_eq!(tx.get("value").unwrap().as_str(), Some("0x0"));
+    }
+}
+
+#[cfg(test)]
+mod verify_token_tests {
+    use super::extract_verify_token;
+
+    #[test]
+    fn bearer_token_shape_is_returned() {
+        let v = serde_json::json!({ "accessToken": "eyJhbGciOi.payload.sig" });
+        assert_eq!(extract_verify_token(&v).unwrap(), "eyJhbGciOi.payload.sig");
+    }
+
+    #[test]
+    fn cookie_session_shape_is_success_with_empty_token() {
+        // Real OpenSea response: auth succeeded, session lives in the cookie jar.
+        // Treating this as an error broke every wallet in a WL check.
+        let v = serde_json::json!({
+            "user": {
+                "address": "0x8128b75bd3ed3650bf72987388fa47f64e1f2fb1",
+                "exchange": false,
+                "userId": "133b94ba-3bb3-4144-9cd9-c3ce3512fa05",
+                "wallet": { "address": "0x8128b75bd3ed3650bf72987388fa47f64e1f2fb1",
+                            "chainArchitecture": "1", "chainId": "1" }
+            }
+        });
+        assert_eq!(
+            extract_verify_token(&v).unwrap(),
+            "",
+            "cookie-based session must be accepted, not rejected"
+        );
+    }
+
+    #[test]
+    fn neither_token_nor_user_is_an_error() {
+        for v in [
+            serde_json::json!({}),
+            serde_json::json!({ "accessToken": "" }),
+            serde_json::json!({ "user": {} }),
+            serde_json::json!({ "user": { "address": "" } }),
+            serde_json::json!({ "error": "rate limited" }),
+        ] {
+            assert!(extract_verify_token(&v).is_err(), "should reject: {v}");
+        }
+    }
+
+    #[test]
+    fn whitespace_token_falls_back_to_user_check() {
+        let v = serde_json::json!({
+            "accessToken": "   ",
+            "user": { "address": "0xabc" }
+        });
+        assert_eq!(extract_verify_token(&v).unwrap(), "");
     }
 }
