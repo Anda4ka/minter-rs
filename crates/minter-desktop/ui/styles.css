@@ -263,10 +263,27 @@ body {
   color: var(--text);
 }
 
-.nav-item:focus,
-.nav-item:focus-visible {
+/* Keyboard focus must stay visible. This previously set outline:none on
+   :focus-visible with no replacement, so tabbing through the sidebar showed
+   nothing at all. Mouse clicks still get no ring (:focus-visible only). */
+.nav-item:focus {
   outline: none;
-  box-shadow: none;
+}
+
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: -2px;
+}
+
+/* Global focus ring for every interactive element that lacks its own. */
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
 }
 
 .nav-item.active {
@@ -331,10 +348,48 @@ body {
   align-items: center;
 }
 
+/* Labelled cells: each value gets its own key so the eye lands on the one it
+   needs instead of parsing a run-on grey sentence. */
 .status-bar {
   font-size: 0.8rem;
   color: var(--muted);
   line-height: 1.55;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+
+.status-bar .sb-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.status-bar .sb-k {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.status-bar .sb-v {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.status-bar .sb-v.warn {
+  color: var(--yellow);
+}
+
+.status-bar .sb-v.bad {
+  color: var(--red);
 }
 
 .status-bar .ok {
@@ -1135,6 +1190,26 @@ button.primary:hover:not(:disabled) {
   border-color: #8377ff;
 }
 
+/* —— Action semantics ————————————————————————————————
+   Red used to mean both "spends money" and "deletes", so neither could be
+   learned. One meaning per colour now:
+     .spend-btn  green outline  — sends a transaction (Disperse/Sweep/Multicall)
+     .danger-btn red outline    — destroys data (delete task / wallet)
+     .btn-stop   amber          — halts a run, identical on every screen
+   ------------------------------------------------------------------ */
+button.spend-btn {
+  background: transparent;
+  border-color: rgba(97, 211, 148, 0.5);
+  color: var(--green);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+button.spend-btn:hover:not(:disabled) {
+  background: var(--green-dim);
+  border-color: rgba(97, 211, 148, 0.75);
+}
+
 button.danger-btn {
   background: transparent;
   border-color: rgba(255, 107, 107, 0.45);
@@ -1888,7 +1963,9 @@ code {
 
 .data-table th,
 .mint-table th {
-  color: var(--muted-2);
+  /* was --muted-2 (#5c6478) ≈ 2.8:1 on the header background — below the 3:1
+     floor for the labels used to read a 200-row table. --muted is ~5.4:1. */
+  color: var(--muted);
   font-weight: 700;
   font-size: 0.72rem;
   text-transform: uppercase;
@@ -2062,9 +2139,11 @@ code {
 }
 
 /* —— Bulk bar —— */
+/* Was position:sticky + bottom:12px, so it floated over the inputs below it —
+   covering "0x… to remove", Remove and the group buttons. It also stayed
+   visible with "0 Selected", when it has nothing to act on. Now it is a normal
+   block that only appears once something is selected (see .bulk-bar.hidden). */
 .bulk-bar {
-  position: sticky;
-  bottom: 12px;
   margin: 16px 0 0;
   padding: 11px 16px;
   background: var(--card);
@@ -2134,9 +2213,19 @@ code {
   min-width: 100px;
 }
 
+/* Stop: one look everywhere (was 4 different styles across screens), amber so
+   it reads as "halt", never confused with spend (green) or delete (red). */
 .btn-stop {
   min-width: 88px;
   font-weight: 600;
+  background: var(--yellow-dim);
+  border-color: rgba(245, 200, 76, 0.45);
+  color: var(--yellow);
+}
+
+.btn-stop:hover:not(:disabled) {
+  background: rgba(245, 200, 76, 0.18);
+  border-color: rgba(245, 200, 76, 0.7);
 }
 
 .btn-stop:not(:disabled) {
@@ -3180,4 +3269,478 @@ input[type="checkbox"] {
 
 #rpc-net-wrap {
   max-height: min(360px, 45vh);
+}
+
+/* Address cell doubles as the copy control (the full 42-char value never fits). */
+.addr-copy {
+  cursor: pointer;
+}
+
+.addr-copy:hover {
+  color: var(--accent-border);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+/* Proxy select must not push the table wider than its column. */
+.wallet-table-align .wallet-proxy-sel {
+  max-width: 100%;
+}
+
+/* —— Money-screen layout primitives (Disperse / Sweep / Multicall) ——————
+   These screens used to be one long column inside a red-outlined box. The red
+   frame is gone (red now means "destroys data"), replaced by a step rail, a
+   two-up field grid, and an explicit cost summary so the operator can see the
+   total before committing funds.
+   ------------------------------------------------------------------------ */
+.flow-steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0 0 16px;
+  flex-wrap: wrap;
+}
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 0 0;
+}
+
+.flow-step + .flow-step {
+  padding-left: 16px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.flow-step .fs-n {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.flow-step.is-done .fs-n {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.flow-step .fs-t {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.flow-step.is-done .fs-t {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.form-grid-2 {
+  display: grid;
+  gap: 13px;
+  margin: 0 0 14px;
+}
+
+@media (min-width: 760px) {
+  .form-grid-2 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.form-grid-2 > label {
+  margin: 0;
+}
+
+.field-inline {
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 9px;
+}
+
+.pick-block {
+  margin: 0 0 14px;
+}
+
+.pick-count {
+  font-size: 0.76rem;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* Cost summary — "will this even fit in the balance?" answered before sending. */
+.cost-card {
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 15px;
+  margin: 0 0 14px;
+}
+
+.cost-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border-soft);
+}
+
+.cost-row:last-child {
+  border-bottom: 0;
+}
+
+.cost-row .cost-k {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.cost-row .cost-v {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cost-row.is-sum .cost-k {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.cost-row.is-sum .cost-v {
+  color: var(--yellow);
+}
+
+.cost-row.is-sum.is-ok .cost-v {
+  color: var(--green);
+}
+
+.cost-row.is-sum.is-short .cost-v {
+  color: var(--red);
+}
+
+.cta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+
+/* —— Segmented toggle (Sweep ETH / NFT) ————————————————————
+   Replaces two stacked forms in separate red boxes: same fields, one at a time.
+   ------------------------------------------------------------------------ */
+.seg-toggle {
+  display: inline-flex;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+  margin: 0 0 16px;
+  gap: 2px;
+}
+
+.seg-toggle .seg-btn {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 500;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.seg-toggle .seg-btn:hover:not(.is-active) {
+  color: var(--text);
+  background: var(--card);
+}
+
+.seg-toggle .seg-btn.is-active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.results-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 0 8px;
+}
+
+.sub-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* Raw log kept for detail, but out of the way now that results are a table. */
+.collapsible-log:empty {
+  display: none;
+}
+
+.collapsible-log {
+  max-height: 160px;
+  overflow: auto;
+  margin-top: 12px;
+}
+
+/* —— Multicall step cards ————————————————————————————————
+   Numbered badge conveys execution order (Multicall3 runs steps in sequence);
+   the common fields sit on one row, the rare ones behind Advanced.
+   ------------------------------------------------------------------------ */
+.mc-call-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 11px;
+}
+
+.mc-step-n {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.mc-call-head .mc-target {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  min-height: 32px;
+}
+
+.mc-call-head .btn-mc-remove {
+  height: 30px;
+  min-height: 30px;
+  padding: 0 11px;
+  flex: 0 0 auto;
+}
+
+.mc-call-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 700px) {
+  .mc-call-grid {
+    grid-template-columns: 2fr 1fr 1fr;
+  }
+}
+
+.mc-call-grid > label {
+  margin: 0;
+}
+
+.mc-call-grid input {
+  height: 32px;
+  min-height: 32px;
+}
+
+.mc-call-adv {
+  margin-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 9px;
+}
+
+.mc-call-adv > summary {
+  font-size: 0.76rem;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.mc-call-adv > summary::before {
+  content: "▸ ";
+}
+
+.mc-call-adv[open] > summary::before {
+  content: "▾ ";
+}
+
+.mc-call-adv > label {
+  margin-top: 9px;
+}
+
+/* —— History run cards ————————————————————————————————————
+   One run per card. Replaces a 6-column table where "when/slug/phase/ok/fail/ms"
+   all had equal visual weight.
+   ------------------------------------------------------------------------ */
+.run-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+
+.run-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 13px 15px;
+}
+
+.run-card:hover {
+  border-color: var(--border-strong);
+}
+
+.rc-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rc-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.rc-slug {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rc-meta {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.rc-stats {
+  display: flex;
+  gap: 24px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border-soft);
+  flex-wrap: wrap;
+}
+
+.rc-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rc-k {
+  font-size: 0.63rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.rc-v {
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.rc-v.is-bad {
+  color: var(--red);
+}
+
+.head-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* —— Wallet search + group/balance filters ————————————————————
+   200+ wallets previously had no way to find one or narrow to a group.
+   ------------------------------------------------------------------------ */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 0 11px;
+  height: var(--control-h);
+  margin: 0 0 10px;
+}
+
+.search-bar .search-ico {
+  color: var(--muted);
+  font-size: 1rem;
+  flex: 0 0 auto;
+}
+
+.search-bar input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  height: 100%;
+  padding: 0;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: var(--mono);
+  box-shadow: none;
+}
+
+.search-bar input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.search-count {
+  font-size: 0.74rem;
+  font-family: var(--mono);
+  flex: 0 0 auto;
+}
+
+.search-close {
+  height: 22px;
+  min-height: 22px;
+  padding: 0 7px;
+  font-size: 0.66rem;
+  font-family: var(--mono);
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 4px;
+  flex: 0 0 auto;
+  box-shadow: none;
+}
+
+.wallet-filters {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+}
+
+.filter-chip.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--text);
+  font-weight: 600;
 }

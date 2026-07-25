@@ -517,21 +517,26 @@ function renderHomeHistory() {
 async function refreshStatus() {
   const s = await invoke("get_status");
   lastUiStatus = s;
-  const vaultCls = s.unlocked ? "ok" : "warn";
   const rpcCls = s.rpc_ok ? "ok" : "warn";
-  // Compact operator status — values only, no "from Settings" noise
+  // Labelled cells instead of one run-on grey line. "Vault unlocked" is dropped
+  // (the operator just typed the password) and so is the dry/live chip — it
+  // reported a session mode the tool screens don't actually read.
+  // rpc_status is either a URL count ("5") before any probe or "OK 42ms" after.
+  // A bare number read as a latency, so label it explicitly.
+  const rawRpc = String(s.rpc || "").trim();
+  const rpcTxt = escapeHtml(
+    /^\d+$/.test(rawRpc)
+      ? `${rawRpc} ${t("status.nodes") || "nodes"}`
+      : rawRpc.replace(/^OK\s+/i, "") || "—"
+  );
+  const proxyCount = s.proxy_count ?? 0;
+  const proxyCls = proxyCount > 0 ? "" : "warn";
   $("status-bar").innerHTML = `
-    Vault <span class="${vaultCls}">${escapeHtml(s.vault_label)}</span>
-    · <span class="ok">${s.wallet_count}</span> wallets
-    · <span class="${rpcCls}">${escapeHtml(s.network || "Not selected")}</span>
-    · RPC <span class="${rpcCls}">${escapeHtml(s.rpc)}</span>
+    <span class="sb-cell"><span class="sb-k">${escapeHtml(t("status.wallets") || "Wallets")}</span><span class="sb-v">${s.wallet_count}</span></span>
+    <span class="sb-cell"><span class="sb-k">${escapeHtml(t("status.network") || "Network")}</span><span class="sb-v ${rpcCls}">${escapeHtml(s.network || "—")}</span></span>
+    <span class="sb-cell"><span class="sb-k">RPC</span><span class="sb-v ${rpcCls}">${rpcTxt}</span></span>
+    <span class="sb-cell"><span class="sb-k">${escapeHtml(t("status.proxies") || "Proxies")}</span><span class="sb-v ${proxyCls}">${proxyCount}</span></span>
   `;
-  const chip = $("mode-chip");
-  if (chip) {
-    chip.textContent = s.dry_run ? "Dry Run" : "LIVE";
-    chip.className = "chip " + (s.dry_run ? "ok" : "bad");
-    chip.dataset.dry = s.dry_run ? "1" : "0";
-  }
   const hint = $("hint");
   if (hint && !hint.classList.contains("hidden")) {
     hint.innerHTML = `<strong>${escapeHtml(s.hint_title)}</strong><p>${escapeHtml(s.hint_body)}</p>`;
@@ -786,29 +791,8 @@ $("lang-chip")?.addEventListener("click", () => {
   if (tasksLoaded) renderTaskList();
 });
 
-// Dry / Live chip toggle
-$("mode-chip")?.addEventListener("click", async () => {
-  const chip = $("mode-chip");
-  const currentlyDry = chip.dataset.dry !== "0";
-  if (currentlyDry) {
-    // switching to LIVE — one click, no typed word
-    try {
-      await invoke("set_dry_run", { dryRun: false });
-      if ($("set-dry")) $("set-dry").checked = false;
-      await refreshStatus();
-    } catch (e) {
-      alert(String(e));
-    }
-  } else {
-    try {
-      await invoke("set_dry_run", { dryRun: true });
-      if ($("set-dry")) $("set-dry").checked = true;
-      await refreshStatus();
-    } catch (e) {
-      alert(String(e));
-    }
-  }
-});
+// Dry/Live is per-screen now (each tool has its own checkbox); the topbar
+// chip was removed because it reported a session mode the tools never read.
 
 // —— Wallets (virtualized) + groups / proxy map / balances / import ——
 /** address(lower) → group A/B/C */
@@ -880,7 +864,8 @@ function walletProxyLabel(w) {
 }
 
 function paintWalletRow(i) {
-  const w = walletData[i];
+  const w = walletView[i];
+  if (!w) return document.createElement("tr");
   const tr = document.createElement("tr");
   tr.dataset.address = w.address;
   const sel = walletSelection.has(w.address);
@@ -908,7 +893,7 @@ function paintWalletRow(i) {
   tr.innerHTML = `
     <td><input type="checkbox" class="wallet-cb" data-addr="${escapeHtml(w.address)}" ${sel ? "checked" : ""} /></td>
     <td class="muted">${w.index}</td>
-    <td class="mono" title="${escapeHtml(w.address)}">${escapeHtml(shortAddr(w.address))}</td>
+    <td class="mono addr-copy" data-addr="${escapeHtml(w.address)}" title="${escapeHtml(w.address)} — ${escapeHtml(t("wallets.clickCopy") || "click to copy")}">${escapeHtml(shortAddr(w.address))}</td>
     <td><span class="wallet-group-pill ${g ? "g-" + g : ""}">${g || "—"}</span></td>
     <td><select class="wallet-proxy-sel" data-addr="${escapeHtml(w.address)}">${proxyOpts}</select></td>
     <td class="mono">${bal}</td>`;
@@ -919,6 +904,17 @@ function paintWalletRow(i) {
     else walletSelection.delete(a);
     tr.classList.toggle("selected", cb.checked);
     updateWalletBulk();
+  });
+  // Full address only fits truncated, so make the cell the copy affordance.
+  const addrCell = tr.querySelector(".addr-copy");
+  addrCell?.addEventListener("click", async () => {
+    const full = addrCell.dataset.addr || "";
+    try {
+      await navigator.clipboard.writeText(full);
+      showToast(`${shortAddr(full)} ${t("wallets.copied") || "copied"}`, "ok");
+    } catch {
+      showToast(t("wallets.copyFail") || "Copy failed", "warn");
+    }
   });
   const selEl = tr.querySelector(".wallet-proxy-sel");
   selEl?.addEventListener("change", () => {
@@ -935,11 +931,14 @@ function renderWalletsVirtual() {
   const wrap = $("wallet-table-wrap");
   const tb = $("wallet-tbody");
   if (!tb) return;
-  if (!walletData.length) {
-    tb.innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(t("wallets.empty"))}</td></tr>`;
+  if (!walletView.length) {
+    const msg = walletData.length
+      ? t("wallets.noMatch") || "No wallets match the filter"
+      : t("wallets.empty");
+    tb.innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(msg)}</td></tr>`;
     return;
   }
-  paintVirtualTbody(wrap, tb, walletData.length, paintWalletRow);
+  paintVirtualTbody(wrap, tb, walletView.length, paintWalletRow);
 }
 
 async function loadWallets() {
@@ -978,16 +977,106 @@ async function loadWallets() {
     const ga = walletData.filter((w) => walletGroupOf(w.address) === "A").length;
     const gb = walletData.filter((w) => walletGroupOf(w.address) === "B").length;
     const gc = walletData.filter((w) => walletGroupOf(w.address) === "C").length;
-    hint.textContent = `${t("wallets.count", { n: walletData.length }) || walletData.length + " wallet(s)"} · A:${ga} B:${gb} C:${gc} · proxies:${proxyListItems.length}`;
+    // Total wallets and proxy count now live in the status strip; keep only the
+    // group breakdown, which the strip doesn't carry.
+    hint.textContent = `A:${ga} · B:${gb} · C:${gc}`;
   }
   bindVirtualScroll("wallet-table-wrap", renderWalletsVirtual);
+  applyWalletView();
+}
+
+
+// —— Wallet search + filters ————————————————————————————————
+// 200+ wallets had no way to find one ("wallet #137") or narrow to a group.
+// `walletView` is what the table renders; `walletData` stays the full set.
+let walletFilter = "all";
+let walletQuery = "";
+let walletView = [];
+
+/** Recompute the filtered/searched view and repaint. */
+function applyWalletView() {
+  const q = walletQuery.trim().toLowerCase();
+  walletView = (walletData || []).filter((w) => {
+    if (walletFilter === "A" || walletFilter === "B" || walletFilter === "C") {
+      if (walletGroupOf(w.address) !== walletFilter) return false;
+    } else if (walletFilter === "funded") {
+      // Unknown balance is kept: absence of data isn't evidence of zero.
+      if (w.balanceEth != null && !(parseFloat(w.balanceEth) > 0)) return false;
+    }
+    if (q) {
+      // A digits-only query means "wallet #N" — match the index, not any address
+      // that happens to contain those digits (searching "6" otherwise matched
+      // almost every wallet). Anything else is an address substring search.
+      if (/^\d+$/.test(q)) {
+        if (!String(w.index).startsWith(q)) return false;
+      } else if (!String(w.address).toLowerCase().includes(q)) {
+        return false;
+      }
+    }
+    return true;
+  });
+  const cnt = $("wallet-search-count");
+  if (cnt) {
+    cnt.textContent = walletQuery
+      ? `${walletView.length} / ${(walletData || []).length}`
+      : "";
+  }
   renderWalletsVirtual();
 }
+
+function openWalletSearch() {
+  const bar = $("wallet-search-bar");
+  if (!bar) return;
+  bar.classList.remove("hidden");
+  const inp = $("wallet-search");
+  inp?.focus();
+  inp?.select();
+}
+
+function closeWalletSearch() {
+  const bar = $("wallet-search-bar");
+  if (!bar) return;
+  bar.classList.add("hidden");
+  walletQuery = "";
+  const inp = $("wallet-search");
+  if (inp) inp.value = "";
+  applyWalletView();
+}
+
+$("btn-wallet-search-open")?.addEventListener("click", openWalletSearch);
+$("wallet-search-close")?.addEventListener("click", closeWalletSearch);
+$("wallet-search")?.addEventListener("input", (e) => {
+  walletQuery = e.target.value || "";
+  applyWalletView();
+});
+$("wallet-search")?.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    e.stopPropagation();
+    closeWalletSearch();
+  }
+});
+
+document.querySelectorAll(".filter-chip").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    walletFilter = btn.dataset.filter || "all";
+    document.querySelectorAll(".filter-chip").forEach((b) => {
+      const on = b === btn;
+      b.setAttribute("aria-pressed", String(on));
+      b.classList.toggle("is-on", on);
+    });
+    applyWalletView();
+  });
+});
 
 function updateWalletBulk() {
   const n = walletSelection.size;
   const el = $("wallet-selected-count");
   if (el) el.textContent = String(n);
+  // Only show the bar when it has something to act on. It used to sit there
+  // permanently reading "0 Selected" while covering the inputs below it.
+  const bar = $("wallet-bulk-bar");
+  if (bar) bar.classList.toggle("hidden", n === 0);
   const copy = $("btn-wallets-copy");
   const del = $("btn-wallets-remove-sel");
   const toTask = $("btn-wallets-to-task");
@@ -1550,6 +1639,61 @@ $("btn-security").addEventListener("click", async () => {
   $("security-out").textContent = JSON.stringify(s, null, 2);
 });
 
+
+/** Render sweep results as a table (was a padded monospace dump).
+ *  `kind` is "eth" or "nft"; both panes share the layout. */
+function renderSweepResults(kind, rows, chain) {
+  const tb = $(`sweep-${kind}-tbody`);
+  const box = $(`sweep-${kind}-results`);
+  const stats = $(`sweep-${kind}-stats`);
+  if (!tb || !box) return;
+  const list = rows || [];
+  if (!list.length) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  tb.innerHTML = "";
+  let ok = 0;
+  let fail = 0;
+  for (const r of list) {
+    const st = String(r.status || "");
+    const up = st.toUpperCase();
+    const good = up.includes("CONFIRM") || up.includes("DRY_RUN_OK") || up.includes("SENT");
+    if (good) ok++;
+    else fail++;
+    const tx = r.txHash || r.tx_hash || "";
+    const url = tx ? explorerTxUrlLocal(chain, tx) : "";
+    const pill = good
+      ? `<span class="status-pill status-ok">${escapeHtml(st || "OK")}</span>`
+      : `<span class="status-pill status-fail">${escapeHtml(st || "FAIL")}</span>`;
+    const detail = r.error
+      ? `<span class="error cell-clip" title="${escapeHtml(r.error)}">${escapeHtml(String(r.error).slice(0, 46))}</span>`
+      : "";
+    const amount = r.gasUsed != null || r.gas_used != null ? "" : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono" title="${escapeHtml(r.address || "")}">${escapeHtml(shortAddr(r.address || "—"))}</td>
+      <td class="mono muted">${escapeHtml(r.amountEth || r.amount_eth || amount || "—")}</td>
+      <td>${pill}</td>
+      <td class="mono">${
+        url
+          ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shortenHashLocal(tx))}</a>`
+          : detail || "—"
+      }</td>`;
+    tb.appendChild(tr);
+  }
+  if (stats) {
+    stats.textContent = `${ok} ok · ${fail} fail · ${list.length} total`;
+  }
+}
+
+/** Short tx hash for table cells. */
+function shortenHashLocal(h) {
+  const s = String(h || "");
+  return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-4)}` : s;
+}
+
 function formatSweepRows(rows) {
   if (!rows || !rows.length) return "(no transfers / empty balances)";
   return rows
@@ -1572,6 +1716,20 @@ function formatSweepRows(rows) {
     })
     .join("\n");
 }
+
+
+// —— Sweep ETH/NFT toggle (one form, two modes) ——
+function setSweepTab(kind) {
+  const isEth = kind === "eth";
+  $("sweep-tab-eth")?.classList.toggle("is-active", isEth);
+  $("sweep-tab-nft")?.classList.toggle("is-active", !isEth);
+  $("sweep-tab-eth")?.setAttribute("aria-selected", String(isEth));
+  $("sweep-tab-nft")?.setAttribute("aria-selected", String(!isEth));
+  $("sweep-pane-eth")?.classList.toggle("hidden", !isEth);
+  $("sweep-pane-nft")?.classList.toggle("hidden", isEth);
+}
+$("sweep-tab-eth")?.addEventListener("click", () => setSweepTab("eth"));
+$("sweep-tab-nft")?.addEventListener("click", () => setSweepTab("nft"));
 
 $("btn-sweep-eth")?.addEventListener("click", async () => {
   const dry = $("sweep-eth-dry")?.checked;
@@ -1608,6 +1766,7 @@ $("btn-sweep-eth")?.addEventListener("click", async () => {
         confirm: liveGate.confirm,
       },
     });
+    renderSweepResults("eth", rows, chain);
     $("sweep-eth-out").textContent = formatSweepRows(rows);
   } catch (e) {
     $("sweep-eth-out").textContent = String(e);
@@ -1653,6 +1812,7 @@ $("btn-sweep-nft")?.addEventListener("click", async () => {
         confirm: liveGate.confirm,
       },
     });
+    renderSweepResults("nft", rows, chain);
     $("sweep-nft-out").textContent = formatSweepRows(rows);
   } catch (e) {
     $("sweep-nft-out").textContent = String(e);
@@ -3120,17 +3280,74 @@ let disperseWalletCache = [];
 
 function updateDisperseSummary() {
   const el = $("disp-summary");
-  if (!el) return;
   const to = selectedDisperseTo();
-  const amt = parseFloat(($("disp-amount")?.value || "").replace(",", ".")) || 0;
-  if (!to.length || !(amt > 0)) {
-    el.textContent = "";
+  const raw = ($("disp-amount")?.value || "").trim().replace(",", ".");
+
+  // Live recipient count next to the section heading.
+  const cnt = $("disp-to-count");
+  if (cnt) cnt.textContent = to.length ? `· ${to.length}` : "";
+
+  // Step rail reflects what's actually filled in.
+  const hasFrom = !!($("disp-chain")?.value && $("disp-from")?.value);
+  setStepState("flow-steps", [hasFrom, to.length > 0, !!raw]);
+
+  // Exact wei math — never floats. A 0.001 × 199 total must not drift.
+  const card = $("disp-total");
+  let wei = 0n;
+  try {
+    wei = ethStrToWei(raw);
+  } catch (_) {
+    wei = 0n;
+  }
+  if (!to.length || wei <= 0n) {
+    if (card) card.classList.add("hidden");
+    if (el) el.textContent = "";
     return;
   }
-  el.textContent = (t("disperse.summary") || "{n} recipient(s) × {amt} ETH = ~{total} ETH (+ gas)")
-    .replace("{n}", String(to.length))
-    .replace("{amt}", String(amt))
-    .replace("{total}", (amt * to.length).toFixed(6));
+  const n = BigInt(to.length);
+  const total = wei * n;
+  // Rough per-tx gas allowance for the estimate line (21k × 30 gwei).
+  const gas = 21000n * 30000000000n * n;
+  if (card) {
+    card.classList.remove("hidden");
+    const line = $("disp-total-line");
+    if (line) line.textContent = `${to.length} × ${weiToEthStr(wei)} ETH`;
+    const amtEl = $("disp-total-amt");
+    if (amtEl) amtEl.textContent = `${weiToEthStr(total)} ETH`;
+    const gasEl = $("disp-total-gas");
+    if (gasEl) gasEl.textContent = `~${weiToEthStr(gas)} ETH`;
+    const sumEl = $("disp-total-sum");
+    if (sumEl) sumEl.textContent = `${weiToEthStr(total + gas)} ETH`;
+    // Colour the total against the source wallet's cached balance when known.
+    const row = sumEl?.closest(".cost-row");
+    if (row) {
+      row.classList.remove("is-ok", "is-short");
+      const bal = disperseFromBalanceWei();
+      if (bal != null) row.classList.add(bal >= total + gas ? "is-ok" : "is-short");
+    }
+  }
+  if (el) el.textContent = "";
+}
+
+/** Cached balance of the selected source wallet, in wei, or null if unknown. */
+function disperseFromBalanceWei() {
+  const addr = $("disp-from")?.value;
+  if (!addr) return null;
+  const w = (walletData || []).find((x) => addrKey(x.address) === addrKey(addr));
+  if (!w || w.balanceEth == null) return null;
+  try {
+    return ethStrToWei(String(w.balanceEth));
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Mark the first N steps of a `.flow-steps` rail as done. */
+function setStepState(containerId, doneFlags) {
+  const box = $(containerId);
+  if (!box) return;
+  const steps = [...box.querySelectorAll(".flow-step")];
+  steps.forEach((el, i) => el.classList.toggle("is-done", !!doneFlags[i]));
 }
 
 async function loadDisperseWallets() {
@@ -3220,6 +3437,8 @@ $("disp-to-list")?.addEventListener("change", (e) => {
 });
 
 $("disp-amount")?.addEventListener("input", updateDisperseSummary);
+// Network/source also drive the step rail and the balance check.
+$("disp-chain")?.addEventListener("change", updateDisperseSummary);
 
 $("btn-disperse")?.addEventListener("click", async () => {
   const chain = ($("disp-chain")?.value || "").trim();
@@ -3320,27 +3539,32 @@ function addMulticallRow(pref = {}) {
   const card = document.createElement("div");
   card.className = "mc-call-card";
   card.dataset.mcId = String(id);
+  // Numbered card: the badge makes execution order obvious (Multicall3 runs the
+  // steps in sequence), and the fields are grouped instead of one long column.
   card.innerHTML = `
     <div class="mc-call-head">
-      <span class="mc-idx">#${box.children.length + 1}</span>
-      <button type="button" class="danger-btn btn-mc-remove" data-i18n="mc.remove">Remove</button>
+      <span class="mc-step-n">${box.children.length + 1}</span>
+      <input type="text" class="mc-target mono" placeholder="${escapeHtml(t("mc.targetPh") || "0x… contract address")}" value="${escapeHtml(pref.target || "")}" autocomplete="off" spellcheck="false" />
+      <button type="button" class="danger-btn btn-mc-remove" title="${escapeHtml(t("mc.remove") || "Remove")}" aria-label="${escapeHtml(t("mc.remove") || "Remove")}">✕</button>
     </div>
-    <label><span data-i18n="mc.target">Target</span>
-      <input type="text" class="mc-target" placeholder="0x…" value="${escapeHtml(pref.target || "")}" autocomplete="off" />
-    </label>
-    <label><span data-i18n="mc.function">Function</span>
-      <input type="text" class="mc-fn" placeholder="mint(uint256)" value="${escapeHtml(pref.function || "")}" autocomplete="off" />
-    </label>
-    <label><span data-i18n="mc.params">Params</span>
-      <input type="text" class="mc-params" placeholder="1" value="${escapeHtml(pref.params || "")}" autocomplete="off" />
-    </label>
-    <label><span data-i18n="mc.calldata">Or raw calldata (0x…)</span>
-      <input type="text" class="mc-data" placeholder="0x…" value="${escapeHtml(pref.calldata || "")}" autocomplete="off" />
-    </label>
-    <label><span data-i18n="mc.value">Value ETH</span>
-      <input type="text" class="mc-value" value="${escapeHtml(pref.valueEth || "0")}" />
-    </label>
-    <label class="check"><input type="checkbox" class="mc-allow-fail" ${pref.allowFailure ? "checked" : ""} /> <span data-i18n="mc.allowFail">Allow failure</span></label>
+    <div class="mc-call-grid">
+      <label><span data-i18n="mc.function">Function</span>
+        <input type="text" class="mc-fn mono" placeholder="mint(uint256)" value="${escapeHtml(pref.function || "")}" autocomplete="off" spellcheck="false" />
+      </label>
+      <label><span data-i18n="mc.params">Params</span>
+        <input type="text" class="mc-params mono" placeholder="1" value="${escapeHtml(pref.params || "")}" autocomplete="off" />
+      </label>
+      <label><span data-i18n="mc.value">Value ETH</span>
+        <input type="text" class="mc-value mono" value="${escapeHtml(pref.valueEth || "0")}" inputmode="decimal" />
+      </label>
+    </div>
+    <details class="mc-call-adv">
+      <summary data-i18n="mc.advanced">Advanced</summary>
+      <label><span data-i18n="mc.calldata">Or raw calldata (0x…)</span>
+        <input type="text" class="mc-data mono" placeholder="0x…" value="${escapeHtml(pref.calldata || "")}" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="check"><input type="checkbox" class="mc-allow-fail" ${pref.allowFailure ? "checked" : ""} /> <span data-i18n="mc.allowFail">Allow failure</span></label>
+    </details>
   `;
   box.appendChild(card);
   renumberMcCalls();
@@ -3352,8 +3576,8 @@ function addMulticallRow(pref = {}) {
 
 function renumberMcCalls() {
   document.querySelectorAll("#mc-calls .mc-call-card").forEach((card, i) => {
-    const idx = card.querySelector(".mc-idx");
-    if (idx) idx.textContent = `#${i + 1}`;
+    const idx = card.querySelector(".mc-step-n");
+    if (idx) idx.textContent = String(i + 1);
   });
 }
 
@@ -5015,25 +5239,47 @@ function applyMintSummary(summary) {
 }
 
 function renderNftsPage() {
-  const hist = $("run-history-tbody");
-  if (hist) {
+  // History as cards: one run per card with the numbers that matter, instead of
+  // a 6-column table where every value competed for attention.
+  const cards = $("run-history-cards");
+  if (cards) {
     if (!mintRunHistory.length) {
-      hist.innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(
-        t("nfts.historyEmpty") || "No runs yet — finish a mint task."
-      )}</td></tr>`;
+      cards.innerHTML = `<p class="muted">${escapeHtml(
+        t("history.empty") || "No runs yet."
+      )}</p>`;
     } else {
-      hist.innerHTML = "";
+      cards.innerHTML = "";
       for (const r of mintRunHistory) {
-        const tr = document.createElement("tr");
+        const ok = r.confirmed ?? 0;
+        const fail = r.failed ?? 0;
+        const total = ok + fail;
         const when = r.at ? new Date(r.at).toLocaleString() : "—";
-        const dry = r.dryRun ? " · dry" : "";
-        tr.innerHTML = `<td class="muted small">${escapeHtml(when)}</td>
-          <td class="mono" title="${escapeHtml(r.exportJson || "")}">${escapeHtml(r.slug || "—")}</td>
-          <td>${escapeHtml(r.phase || "—")}${dry}</td>
-          <td class="ok">${r.confirmed ?? 0}</td>
-          <td class="fail">${r.failed ?? 0}</td>
-          <td class="muted">${r.elapsedMs ?? "—"}</td>`;
-        hist.appendChild(tr);
+        const secs = r.elapsedMs != null ? (r.elapsedMs / 1000).toFixed(1) + "s" : "—";
+        const pillCls = fail === 0 && ok > 0 ? "status-ok" : ok > 0 ? "status-wait" : "status-fail";
+        const el = document.createElement("div");
+        el.className = "run-card";
+        el.innerHTML = `
+          <div class="rc-top">
+            <div class="rc-title">
+              <span class="rc-slug">${escapeHtml(r.slug || "—")}</span>
+              <span class="rc-meta">${escapeHtml(when)} · ${escapeHtml(r.chain || "—")}${
+          r.dryRun ? " · dry" : ""
+        }</span>
+            </div>
+            <span class="status-pill ${pillCls}">${ok} / ${total}</span>
+          </div>
+          <div class="rc-stats">
+            <div class="rc-stat"><span class="rc-k">${escapeHtml(t("history.phase") || "Phase")}</span><span class="rc-v">${escapeHtml(
+          r.phase || "—"
+        )}</span></div>
+            <div class="rc-stat"><span class="rc-k">${escapeHtml(t("history.failed") || "Failed")}</span><span class="rc-v${
+          fail ? " is-bad" : ""
+        }">${fail}</span></div>
+            <div class="rc-stat"><span class="rc-k">${escapeHtml(t("history.time") || "Time")}</span><span class="rc-v">${escapeHtml(
+          secs
+        )}</span></div>
+          </div>`;
+        cards.appendChild(el);
       }
     }
   }
@@ -5539,12 +5785,6 @@ function buildCmdItems() {
     });
   });
   items.push({
-    label: t("cmd.toggleMode"),
-    sub: t("cmd.actionGroup"),
-    icon: "",
-    run: () => $("mode-chip")?.click(),
-  });
-  items.push({
     label: t("cmd.reopenMc"),
     sub: t("cmd.actionGroup"),
     icon: "",
@@ -5658,6 +5898,14 @@ $("cmd-input")?.addEventListener("keydown", (e) => {
   }
 });
 
+// Enter in the vault password field unlocks (was mouse-only every session).
+$("unlock-password")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    $("btn-unlock")?.click();
+  }
+});
+
 // —— Global hotkeys ——
 document.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
@@ -5668,6 +5916,15 @@ document.addEventListener("keydown", (e) => {
     else openCmdPalette();
     return;
   }
+  // Ctrl/Cmd+F → wallet search (only where a wallet table exists)
+  if (mod && (e.key === "f" || e.key === "F")) {
+    const page = $("page-wallets");
+    if (page && !page.classList.contains("hidden")) {
+      e.preventDefault();
+      openWalletSearch();
+      return;
+    }
+  }
   // Ctrl/Cmd+M → reopen / toggle Mission Control
   if (mod && (e.key === "m" || e.key === "M")) {
     const mc = $("mission-control");
@@ -5677,10 +5934,24 @@ document.addEventListener("keydown", (e) => {
     else toggleMcMinimize();
     return;
   }
-  // Esc → collapse Mission Control (only if nothing else is capturing Esc)
+  // Esc → close whatever is open: modal first, then Mission Control.
   if (e.key === "Escape") {
     if (cmdIsOpen()) return; // palette input handles its own Escape
-    const modalOpen = ["modal-overlay", "onboard-overlay"].some((id) => {
+    // Esc used to be swallowed whenever a modal was open, so modals could only
+    // be dismissed with the mouse. Treat Esc as "decline" instead.
+    const confirmOverlay = $("modal-overlay");
+    if (confirmOverlay && !confirmOverlay.classList.contains("hidden")) {
+      e.preventDefault();
+      closeModal(false);
+      return;
+    }
+    const taskModal = $("task-modal");
+    if (taskModal && !taskModal.classList.contains("hidden")) {
+      e.preventDefault();
+      taskModal.classList.add("hidden");
+      return;
+    }
+    const modalOpen = ["onboard-overlay"].some((id) => {
       const el = $(id);
       return el && !el.classList.contains("hidden");
     });

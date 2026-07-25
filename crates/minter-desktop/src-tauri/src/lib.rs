@@ -179,6 +179,9 @@ pub struct UiStatus {
     pub network: String,
     pub rpc: String,
     pub rpc_ok: bool,
+    /// Configured proxy count — surfaced in the status strip so the operator
+    /// can see "0 proxies" before starting a 200-wallet run.
+    pub proxy_count: usize,
     pub hint_title: String,
     pub hint_body: String,
 }
@@ -272,6 +275,7 @@ fn get_status(state: State<'_, Arc<AppState>>) -> UiStatus {
         network: s.network_label.clone(),
         rpc: s.rpc_status.clone(),
         rpc_ok: s.rpc_configured(),
+        proxy_count: s.proxy_count,
         hint_title,
         hint_body,
     }

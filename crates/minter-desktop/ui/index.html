@@ -84,7 +84,7 @@
               </button>
               <button type="button" class="nav-item" data-page="nfts">
                 <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14l-8-3.5L4 19V5zm2 0v11.2l6-2.6 6 2.6V5H6zm2 3h8v2H8V8z"/></svg></span>
-                <span data-i18n="nav.nfts">NFTs</span>
+                <span data-i18n="nav.nfts">History</span>
               </button>
             </div>
             <div class="nav-group">
@@ -138,7 +138,6 @@
                 <span class="tool-dot" title="Local only"></span>
               </div>
               <button type="button" id="lang-chip" class="chip" title="Language / Язык">EN</button>
-              <button type="button" id="mode-chip" class="chip ok" title="Click to toggle Dry Run / Live" data-i18n-title="modeChipTitle">Dry Run</button>
             </div>
           </header>
 
@@ -445,7 +444,7 @@
                   </div>
 
                   <div class="raw-cta-bar">
-                    <button id="btn-raw-sniper" class="danger-btn cta-lg" type="button" data-i18n="raw.sniperRun">Start</button>
+                    <button id="btn-raw-sniper" class="spend-btn cta-lg" type="button" data-i18n="raw.sniperRun">Start</button>
                     <button id="btn-raw-stop" class="btn-stop" type="button" disabled data-i18n="raw.stop">Stop</button>
                   </div>
 
@@ -480,28 +479,33 @@
             <div id="page-disperse" class="page hidden">
               <div class="panel">
                 <div class="panel-head">
-                  <h2 data-i18n="disperse.title">Disperse</h2>
+                  
                   <span class="badge warn-badge" data-i18n="disperse.badge">1 → many</span>
                 </div>
                 <p class="muted" data-i18n="disperse.hint">Send a fixed native amount from one vault wallet to many others on the selected chain.</p>
-                <div class="settings-section danger-box">
+                <div class="flow-steps" id="flow-steps" role="list">
+                  <div class="flow-step is-done" role="listitem"><span class="fs-n">1</span><span class="fs-t" data-i18n="disperse.step1">From</span></div>
+                  <div class="flow-step" role="listitem"><span class="fs-n">2</span><span class="fs-t" data-i18n="disperse.step2">To</span></div>
+                  <div class="flow-step" role="listitem"><span class="fs-n">3</span><span class="fs-t" data-i18n="disperse.step3">Amount</span></div>
+                </div>
+                <div class="form-grid-2">
                   <label><span data-i18n="disperse.chain">Network</span> <span class="req-star" title="required">*</span>
                     <select id="disp-chain" required>
-                      <option value="" data-i18n="raw.chainPick">— select network —</option>
-                      <option value="ethereum">Ethereum</option>
-                      <option value="base">Base</option>
-                      <option value="polygon">Polygon</option>
-                      <option value="arbitrum">Arbitrum</option>
-                      <option value="optimism">Optimism</option>
-                      <option value="bsc">BSC</option>
-                      <option value="avalanche">Avalanche</option>
-                      <option value="blast">Blast</option>
-                      <option value="zora">Zora</option>
-                      <option value="apechain">ApeChain</option>
-                      <option value="shape">Shape</option>
-                      <option value="monad">Monad</option>
-                      <option value="megaeth">MegaETH</option>
-                      <option value="robinhood">Robinhood Chain</option>
+                        <option value="" data-i18n="raw.chainPick">— select network —</option>
+                        <option value="ethereum">Ethereum</option>
+                        <option value="base">Base</option>
+                        <option value="polygon">Polygon</option>
+                        <option value="arbitrum">Arbitrum</option>
+                        <option value="optimism">Optimism</option>
+                        <option value="bsc">BSC</option>
+                        <option value="avalanche">Avalanche</option>
+                        <option value="blast">Blast</option>
+                        <option value="zora">Zora</option>
+                        <option value="apechain">ApeChain</option>
+                        <option value="shape">Shape</option>
+                        <option value="monad">Monad</option>
+                        <option value="megaeth">MegaETH</option>
+                        <option value="robinhood">Robinhood Chain</option>
                     </select>
                   </label>
                   <label><span data-i18n="disperse.from">From wallet</span> <span class="req-star">*</span>
@@ -509,19 +513,32 @@
                       <option value="" data-i18n="disperse.fromPick">— select source —</option>
                     </select>
                   </label>
+                </div>
+                <div class="pick-block">
                   <div class="wallet-pick-head">
-                    <span data-i18n="disperse.to">To wallets</span>
+                    <span><span data-i18n="disperse.to">To wallets</span> <span id="disp-to-count" class="pick-count"></span></span>
                     <label class="check tight"><input type="checkbox" id="disp-to-all" checked /> <span data-i18n="tasks.selectAll">Select all</span></label>
                   </div>
                   <div id="disp-to-list" class="task-wallet-list muted">Unlock vault to load wallets…</div>
-                  <label><span data-i18n="disperse.amount">Amount ETH (each)</span> <span class="req-star">*</span>
-                    <input type="text" id="disp-amount" placeholder="0.001" autocomplete="off" />
-                  </label>
-                  <p id="disp-summary" class="muted small"></p>
-                  <label class="check"><input type="checkbox" id="disp-dry" checked /> Dry run</label>
-                  <button id="btn-disperse" class="danger-btn" type="button" data-i18n="disperse.run">Run Disperse</button>
-                  <pre id="disp-out" class="code"></pre>
                 </div>
+                <div class="form-grid-2">
+                  <label><span data-i18n="disperse.amount">Amount ETH (each)</span> <span class="req-star">*</span>
+                    <input type="text" id="disp-amount" placeholder="0.001" autocomplete="off" inputmode="decimal" />
+                  </label>
+                  <div class="field-inline">
+                    <label class="check"><input type="checkbox" id="disp-dry" checked /> <span data-i18n="disperse.dry">Dry run</span></label>
+                  </div>
+                </div>
+                <div id="disp-total" class="cost-card hidden">
+                  <div class="cost-row"><span class="cost-k" id="disp-total-line">—</span><span class="cost-v" id="disp-total-amt">—</span></div>
+                  <div class="cost-row"><span class="cost-k" data-i18n="disperse.gasEst">Gas (estimate)</span><span class="cost-v" id="disp-total-gas">—</span></div>
+                  <div class="cost-row is-sum"><span class="cost-k" data-i18n="disperse.totalOut">Total from wallet</span><span class="cost-v" id="disp-total-sum">—</span></div>
+                </div>
+                <p id="disp-summary" class="muted small"></p>
+                <div class="cta-row">
+                  <button id="btn-disperse" class="spend-btn" type="button" data-i18n="disperse.run">Disperse</button>
+                </div>
+                <pre id="disp-out" class="code"></pre>
               </div>
             </div>
 
@@ -529,12 +546,12 @@
             <div id="page-multicall" class="page hidden">
               <div class="panel">
                 <div class="panel-head">
-                  <h2 data-i18n="mc.title">Multicall</h2>
+                  
                   <span class="badge warn-badge" data-i18n="mc.badge">1 wallet · N calls</span>
                 </div>
                 <p class="muted" data-i18n="mc.hint">Batch several contract calls into one transaction from a single vault wallet via Multicall3.</p>
                 <p class="muted small" data-i18n="mc.warn">Warning: target contracts see msg.sender = Multicall3 (not your EOA). Many NFT/OS mints will fail — use Raw / Flashbots for multi-wallet snipes.</p>
-                <div class="settings-section danger-box">
+                <div class="settings-section">
                   <label><span data-i18n="mc.chain">Network</span> <span class="req-star">*</span>
                     <select id="mc-chain" required>
                       <option value="" data-i18n="raw.chainPick">— select network —</option>
@@ -568,7 +585,7 @@
                   </div>
                   <div id="mc-calls" class="mc-calls"></div>
                   <label class="check"><input type="checkbox" id="mc-dry" checked /> Dry run</label>
-                  <button id="btn-multicall" class="danger-btn" type="button" data-i18n="mc.run">Run Multicall</button>
+                  <button id="btn-multicall" class="spend-btn" type="button" data-i18n="mc.run">Multicall</button>
                   <pre id="mc-out" class="code"></pre>
                 </div>
               </div>
@@ -583,65 +600,120 @@
                 </div>
                 <p class="muted" data-i18n="sweep.hint">Collect native ETH or ERC-721 from all vault wallets to one destination on the selected chain.</p>
 
-                <div class="settings-section danger-box">
-                  <h3 data-i18n="adv.sweepEth">Sweep ETH</h3>
-                  <label><span data-i18n="sweep.chain">Network</span> <span class="req-star">*</span>
-                    <select id="sweep-eth-chain" required>
-                      <option value="" data-i18n="raw.chainPick">— select network —</option>
-                      <option value="ethereum">Ethereum</option>
-                      <option value="base">Base</option>
-                      <option value="polygon">Polygon</option>
-                      <option value="arbitrum">Arbitrum</option>
-                      <option value="optimism">Optimism</option>
-                      <option value="bsc">BSC</option>
-                      <option value="avalanche">Avalanche</option>
-                      <option value="blast">Blast</option>
-                      <option value="zora">Zora</option>
-                      <option value="apechain">ApeChain</option>
-                      <option value="shape">Shape</option>
-                      <option value="monad">Monad</option>
-                      <option value="megaeth">MegaETH</option>
-                      <option value="robinhood">Robinhood Chain</option>
-                    </select>
-                  </label>
-                  <label><span data-i18n="sweep.destination">Destination</span>
-                    <input type="text" id="sweep-eth-to" placeholder="0x…" autocomplete="off" spellcheck="false" />
-                  </label>
-                  <label class="check"><input type="checkbox" id="sweep-eth-dry" checked /> Dry run</label>
-                  <button id="btn-sweep-eth" class="danger-btn" type="button" data-i18n="sweep.runEth">Run Sweep ETH</button>
-                  <pre id="sweep-eth-out" class="code"></pre>
+                <div class="seg-toggle" role="tablist" aria-label="Sweep mode">
+                  <button type="button" class="seg-btn is-active" id="sweep-tab-eth" role="tab" aria-selected="true" data-i18n="sweep.tabEth">ETH</button>
+                  <button type="button" class="seg-btn" id="sweep-tab-nft" role="tab" aria-selected="false" data-i18n="sweep.tabNft">NFT</button>
                 </div>
 
-                <div class="settings-section danger-box">
-                  <h3 data-i18n="adv.sweepNft">Sweep NFTs</h3>
-                  <label><span data-i18n="sweep.chain">Network</span> <span class="req-star">*</span>
-                    <select id="sweep-nft-chain" required>
-                      <option value="" data-i18n="raw.chainPick">— select network —</option>
-                      <option value="ethereum">Ethereum</option>
-                      <option value="base">Base</option>
-                      <option value="polygon">Polygon</option>
-                      <option value="arbitrum">Arbitrum</option>
-                      <option value="optimism">Optimism</option>
-                      <option value="bsc">BSC</option>
-                      <option value="avalanche">Avalanche</option>
-                      <option value="blast">Blast</option>
-                      <option value="zora">Zora</option>
-                      <option value="apechain">ApeChain</option>
-                      <option value="shape">Shape</option>
-                      <option value="monad">Monad</option>
-                      <option value="megaeth">MegaETH</option>
-                      <option value="robinhood">Robinhood Chain</option>
-                    </select>
-                  </label>
-                  <label><span data-i18n="sweep.nftContract">NFT contract</span>
-                    <input type="text" id="sweep-nft-contract" placeholder="0x…" autocomplete="off" spellcheck="false" />
-                  </label>
-                  <label><span data-i18n="sweep.destination">Destination</span>
-                    <input type="text" id="sweep-nft-to" placeholder="0x…" autocomplete="off" spellcheck="false" />
-                  </label>
-                  <label class="check"><input type="checkbox" id="sweep-nft-dry" checked /> Dry run</label>
-                  <button id="btn-sweep-nft" class="danger-btn" type="button" data-i18n="sweep.runNft">Run Sweep NFTs</button>
-                  <pre id="sweep-nft-out" class="code"></pre>
+                <div id="sweep-pane-eth" class="sweep-pane">
+                  <div class="form-grid-2">
+                    <label><span data-i18n="sweep.chain">Network</span> <span class="req-star">*</span>
+                      <select id="sweep-eth-chain" required>
+                        <option value="" data-i18n="raw.chainPick">— select network —</option>
+                        <option value="ethereum">Ethereum</option>
+                        <option value="base">Base</option>
+                        <option value="polygon">Polygon</option>
+                        <option value="arbitrum">Arbitrum</option>
+                        <option value="optimism">Optimism</option>
+                        <option value="bsc">BSC</option>
+                        <option value="avalanche">Avalanche</option>
+                        <option value="blast">Blast</option>
+                        <option value="zora">Zora</option>
+                        <option value="apechain">ApeChain</option>
+                        <option value="shape">Shape</option>
+                        <option value="monad">Monad</option>
+                        <option value="megaeth">MegaETH</option>
+                        <option value="robinhood">Robinhood Chain</option>
+                      </select>
+                    </label>
+                    <label><span data-i18n="sweep.destination">Destination</span> <span class="req-star">*</span>
+                      <input type="text" id="sweep-eth-to" placeholder="0x…" autocomplete="off" spellcheck="false" />
+                    </label>
+                  </div>
+                  <div id="sweep-eth-total" class="cost-card hidden">
+                    <div class="cost-row"><span class="cost-k" id="sweep-eth-src">—</span><span class="cost-v" id="sweep-eth-gross">—</span></div>
+                    <div class="cost-row"><span class="cost-k" data-i18n="sweep.gasReserve">Gas reserve</span><span class="cost-v" id="sweep-eth-gas">—</span></div>
+                    <div class="cost-row is-sum is-ok"><span class="cost-k" data-i18n="sweep.willArrive">Arrives at destination</span><span class="cost-v" id="sweep-eth-net">—</span></div>
+                  </div>
+                  <div class="cta-row">
+                    <button id="btn-sweep-eth" class="spend-btn" type="button" data-i18n="sweep.runEth">Sweep ETH</button>
+                    <label class="check"><input type="checkbox" id="sweep-eth-dry" checked /> <span data-i18n="disperse.dry">Dry run</span></label>
+                    <button type="button" id="btn-sweep-stop" class="btn-stop" disabled data-i18n="wl.stop">Stop</button>
+                  </div>
+                  <div id="sweep-eth-results" class="hidden">
+                    <div class="results-head">
+                      <span class="sub-label" data-i18n="sweep.results">Results</span>
+                      <span id="sweep-eth-stats" class="stat-inline muted"></span>
+                    </div>
+                    <div class="table-wrap">
+                      <table class="data-table">
+                        <thead><tr>
+                          <th style="width:38%" data-i18n="col.wallet">Wallet</th>
+                          <th style="width:22%" data-i18n="sweep.amount">Amount</th>
+                          <th style="width:20%" data-i18n="col.status">Status</th>
+                          <th data-i18n="col.tx">Tx</th>
+                        </tr></thead>
+                        <tbody id="sweep-eth-tbody"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <pre id="sweep-eth-out" class="code collapsible-log"></pre>
+                </div>
+
+                <div id="sweep-pane-nft" class="sweep-pane hidden">
+                  <div class="form-grid-2">
+                    <label><span data-i18n="sweep.chain">Network</span> <span class="req-star">*</span>
+                      <select id="sweep-nft-chain" required>
+                        <option value="" data-i18n="raw.chainPick">— select network —</option>
+                        <option value="ethereum">Ethereum</option>
+                        <option value="base">Base</option>
+                        <option value="polygon">Polygon</option>
+                        <option value="arbitrum">Arbitrum</option>
+                        <option value="optimism">Optimism</option>
+                        <option value="bsc">BSC</option>
+                        <option value="avalanche">Avalanche</option>
+                        <option value="blast">Blast</option>
+                        <option value="zora">Zora</option>
+                        <option value="apechain">ApeChain</option>
+                        <option value="shape">Shape</option>
+                        <option value="monad">Monad</option>
+                        <option value="megaeth">MegaETH</option>
+                        <option value="robinhood">Robinhood Chain</option>
+                      </select>
+                    </label>
+                    <label><span data-i18n="sweep.nftContract">NFT contract</span> <span class="req-star">*</span>
+                      <input type="text" id="sweep-nft-contract" placeholder="0x…" autocomplete="off" spellcheck="false" />
+                    </label>
+                  </div>
+                  <div class="form-grid-2">
+                    <label><span data-i18n="sweep.destination">Destination</span> <span class="req-star">*</span>
+                      <input type="text" id="sweep-nft-to" placeholder="0x…" autocomplete="off" spellcheck="false" />
+                    </label>
+                    <div class="field-inline">
+                      <label class="check"><input type="checkbox" id="sweep-nft-dry" checked /> <span data-i18n="disperse.dry">Dry run</span></label>
+                    </div>
+                  </div>
+                  <div class="cta-row">
+                    <button id="btn-sweep-nft" class="spend-btn" type="button" data-i18n="sweep.runNft">Sweep NFTs</button>
+                  </div>
+                  <div id="sweep-nft-results" class="hidden">
+                    <div class="results-head">
+                      <span class="sub-label" data-i18n="sweep.results">Results</span>
+                      <span id="sweep-nft-stats" class="stat-inline muted"></span>
+                    </div>
+                    <div class="table-wrap">
+                      <table class="data-table">
+                        <thead><tr>
+                          <th style="width:38%" data-i18n="col.wallet">Wallet</th>
+                          <th style="width:22%" data-i18n="sweep.tokens">Token</th>
+                          <th style="width:20%" data-i18n="col.status">Status</th>
+                          <th data-i18n="col.tx">Tx</th>
+                        </tr></thead>
+                        <tbody id="sweep-nft-tbody"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <pre id="sweep-nft-out" class="code collapsible-log"></pre>
                 </div>
               </div>
             </div>
@@ -711,6 +783,21 @@
                 <p class="muted burner" data-i18n="wallets.hint">Addresses shown — never private keys.</p>
                 <p id="wallet-count-hint" class="muted small"></p>
 
+                <div id="wallet-search-bar" class="search-bar hidden">
+                  <span class="search-ico" aria-hidden="true">⌕</span>
+                  <input type="text" id="wallet-search" placeholder="" data-i18n-placeholder="wallets.searchPh" autocomplete="off" spellcheck="false" />
+                  <span id="wallet-search-count" class="search-count muted"></span>
+                  <button type="button" id="wallet-search-close" class="search-close" aria-label="Close search">Esc</button>
+                </div>
+                <div class="wallet-filters">
+                  <span class="muted small" data-i18n="wallets.filter">Filter</span>
+                  <button type="button" class="chip filter-chip" data-filter="all" aria-pressed="true" data-i18n="wallets.fAll">All</button>
+                  <button type="button" class="chip filter-chip" data-filter="A" aria-pressed="false">A</button>
+                  <button type="button" class="chip filter-chip" data-filter="B" aria-pressed="false">B</button>
+                  <button type="button" class="chip filter-chip" data-filter="C" aria-pressed="false">C</button>
+                  <button type="button" class="chip filter-chip" data-filter="funded" aria-pressed="false" data-i18n="wallets.fFunded">Funded</button>
+                  <button type="button" id="btn-wallet-search-open" class="chip" title="Ctrl+F" aria-label="Search wallets">⌕</button>
+                </div>
                 <div class="wallet-toolbar">
                   <div class="wallet-group-btns">
                     <span class="muted small" data-i18n="wallets.group">Group</span>
@@ -744,16 +831,23 @@
                   <table class="data-table">
                     <thead>
                       <tr>
-                        <th style="width:36px"><input type="checkbox" id="wallets-select-all" title="Select all" /></th>
-                        <th style="width:40px">#</th>
-                        <th data-i18n="col.address">Address</th>
-                        <th style="width:48px" data-i18n="wallets.col.group">Grp</th>
-                        <th style="width:120px" data-i18n="wallets.col.proxy">Proxy</th>
-                        <th style="width:100px" data-i18n="wallets.col.balance">Balance</th>
+                        <th style="width:34px"><input type="checkbox" id="wallets-select-all" title="Select all" /></th>
+                        <th style="width:46px">#</th>
+                        <th style="width:38%" data-i18n="col.address">Address</th>
+                        <th style="width:52px" data-i18n="wallets.col.group">Grp</th>
+                        <th style="width:22%" data-i18n="wallets.col.proxy">Proxy</th>
+                        <th style="width:110px" data-i18n="wallets.col.balance">Balance</th>
                       </tr>
                     </thead>
                     <tbody id="wallet-tbody"></tbody>
                   </table>
+                </div>
+                <div id="wallet-bulk-bar" class="bulk-bar hidden">
+                  <span class="bulk-count"><span id="wallet-selected-count">0</span> <span data-i18n="wallets.selected">Selected</span></span>
+                  <div class="bulk-actions">
+                    <button type="button" id="btn-wallets-copy" data-i18n="wallets.copy">Copy addresses</button>
+                    <button type="button" class="danger-btn" id="btn-wallets-remove-sel" data-i18n="wallets.delete">Delete</button>
+                  </div>
                 </div>
                 <ul id="wallet-list" class="list hidden"></ul>
 
@@ -776,39 +870,27 @@
                 </div>
                 <p id="wallet-msg" class="msg"></p>
               </div>
-              <div class="bulk-bar">
-                <span class="bulk-count"><span id="wallet-selected-count">0</span> <span data-i18n="wallets.selected">Selected</span></span>
-                <div class="bulk-actions">
-                  <button type="button" id="btn-wallets-copy" disabled data-i18n="wallets.copy">Copy addresses</button>
-                  <button type="button" class="danger-btn" id="btn-wallets-remove-sel" disabled data-i18n="wallets.delete">Delete</button>
-                </div>
-              </div>
             </div>
 
             <!-- NFTS / RESULTS -->
             <div id="page-nfts" class="page hidden">
               <div class="panel">
                 <div class="panel-head">
-                  <h2>Results / NFTs</h2>
+                  <span class="badge accent-badge" data-i18n="history.badge">All runs</span>
+                  <div class="head-actions">
+                    <button type="button" id="btn-open-results" data-i18n="nfts.openResults">Open results folder</button>
+                    <button type="button" id="btn-open-logs" data-i18n="nfts.openLogs">Open logs folder</button>
+                  </div>
                 </div>
-                <div class="row actions">
-                  <button type="button" id="btn-open-results" class="primary" data-i18n="nfts.openResults">Open results folder</button>
-                  <button type="button" id="btn-open-logs" data-i18n="nfts.openLogs">Open logs folder</button>
+                <div id="run-history-cards" class="run-cards">
+                  <p class="muted" data-i18n="history.empty">No runs yet.</p>
                 </div>
-                <h3 data-i18n="nfts.history">Run history</h3>
-                <div class="table-wrap" id="run-history-wrap">
+                <div class="table-wrap hidden" id="run-history-wrap">
                   <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th>When</th><th>Slug</th><th>Phase</th><th>OK</th><th>Fail</th><th>ms</th>
-                      </tr>
-                    </thead>
-                    <tbody id="run-history-tbody">
-                      <tr><td colspan="6" class="muted">No runs yet this session.</td></tr>
-                    </tbody>
+                    <tbody id="run-history-tbody"></tbody>
                   </table>
                 </div>
-                <h3>Last run wallets</h3>
+                <h3 data-i18n="history.lastRun">Last run wallets</h3>
                 <div class="table-wrap">
                   <table class="data-table">
                     <thead>
@@ -902,13 +984,13 @@
             <div id="page-settings" class="page hidden">
               <div class="panel">
                 <div class="panel-head">
-                  <h2>Settings</h2>
+                  
                 </div>
                 <p class="muted">Saved to <code>config.json</code>.</p>
                 <p id="settings-path" class="muted small"></p>
 
                 <details class="settings-acc" open>
-                  <summary>Connection</summary>
+                  <summary data-i18n="settings.secConnection">Connection</summary>
                   <div class="settings-acc-body">
                     <label>Alchemy API key
                       <input type="password" id="set-alchemy" placeholder="Leave blank to keep existing" autocomplete="off" />
@@ -922,6 +1004,14 @@
                     <label>Ethereum RPC <input type="text" id="set-rpc-eth" placeholder="optional" /></label>
                     <label>Base RPC <input type="text" id="set-rpc-base" placeholder="optional" /></label>
                     <label>Polygon RPC <input type="text" id="set-rpc-polygon" placeholder="optional" /></label>
+
+                    <p class="muted small" data-i18n="settings.fbHint">Flashbots: Ethereum only. Statuses: sim OK → submitted → confirmed / not included. Auth = vault wallet #0.</p>
+                  </div>
+                </details>
+
+                <details class="settings-acc">
+                  <summary data-i18n="settings.secFlashbots">Flashbots</summary>
+                  <div class="settings-acc-body">
                     <label data-i18n-title="settings.fbRelay">Flashbots relay URL
                       <input type="text" id="set-fb-relay" placeholder="https://relay.flashbots.net" />
                     </label>
@@ -931,12 +1021,11 @@
                     <label>Flashbots resubmit (ms)
                       <input type="number" id="set-fb-resubmit" min="200" max="10000" step="100" value="1200" />
                     </label>
-                    <p class="muted small" data-i18n="settings.fbHint">Flashbots: Ethereum only. Statuses: sim OK → submitted → confirmed / not included. Auth = vault wallet #0.</p>
                   </div>
                 </details>
 
                 <details class="settings-acc">
-                  <summary>Gas &amp; mint</summary>
+                  <summary data-i18n="settings.secGas">Gas &amp; mint</summary>
                   <div class="settings-acc-body">
                     <div class="settings-grid">
                       <label>Gas limit <input type="number" id="set-gas" min="0" step="1000" /></label>
@@ -952,7 +1041,7 @@
                 </details>
 
                 <details class="settings-acc">
-                  <summary>Safety</summary>
+                  <summary data-i18n="settings.secSafety">Safety</summary>
                   <div class="settings-acc-body">
                     <label class="check"><input type="checkbox" id="set-dry" /> Dry run mode (default)</label>
                     <label class="check"><input type="checkbox" id="set-live-confirm" checked /> Require type LIVE before Tasks Start</label>
