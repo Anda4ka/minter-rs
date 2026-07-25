@@ -31,6 +31,16 @@ use crate::types::{GasParams, MintResult, Signer, WalletStatus};
 const DEFAULT_GAS_LIMIT: u64 = 650_000;
 /// Start pre-sign this many seconds before `at_time`.
 const PREP_LEAD_SECS: i64 = 5;
+/// Reject a scheduled `at_time` further ahead than this (30 days).
+///
+/// Guards against a mistyped date parking the run in the pre-fire wait forever.
+const MAX_SCHEDULE_AHEAD_SECS: i64 = 30 * 86_400;
+/// Ceiling (1 ETH per unit) on a mint value derived from on-chain data.
+///
+/// The auto value is decoded from `getMintStatus()` by slot index, so a contract
+/// whose layout differs from what we expect could otherwise put an arbitrary
+/// amount into `msg.value`. An explicit `fixed_value` is never capped.
+const MAX_AUTO_MINT_VALUE_WEI: u64 = 1_000_000_000_000_000_000;
 
 // ─── Public config ───────────────────────────────────────────────────────────
 
@@ -233,13 +243,31 @@ async fn resolve_mint_value(rpc: &RpcClient, config: &RawSniperConfig) -> (U256,
                             )
                         } else {
                             let v = st.mint_value(config.quantity);
-                            (
-                                v,
-                                format!(
-                                    "MintBay auto {} wei (phaseType={} minted={}/{})",
-                                    v, st.current_phase_type, st.total_minted, st.max_supply
-                                ),
-                            )
+                            // Bound a contract-derived value before it becomes
+                            // msg.value. It is decoded from an on-chain response by
+                            // slot index, so a layout change or a hostile contract
+                            // could otherwise hand the signer an arbitrary amount.
+                            let cap = U256::from(MAX_AUTO_MINT_VALUE_WEI)
+                                .saturating_mul(U256::from(config.quantity.max(1)));
+                            if v > cap {
+                                let fallback = config.fixed_value;
+                                (
+                                    fallback,
+                                    format!(
+                                        "MintBay auto value {v} wei exceeds the {} wei/unit safety cap \
+                                         — refusing it, using fixed {fallback} wei",
+                                        MAX_AUTO_MINT_VALUE_WEI
+                                    ),
+                                )
+                            } else {
+                                (
+                                    v,
+                                    format!(
+                                        "MintBay auto {} wei (phaseType={} minted={}/{})",
+                                        v, st.current_phase_type, st.total_minted, st.max_supply
+                                    ),
+                                )
+                            }
                         }
                     }
                     Err(e) => (
@@ -322,27 +350,72 @@ impl MintBayStatus {
     }
 }
 
-/// `getMintStatus()` selector 0x941ada0e — flat static ABI layout (17 words).
+/// Decode a `getMintStatus()` return whose layout matches MintbayGenerative**V4**
+/// (17 static words / 544 bytes).
+///
+/// Word map: 0 mintStart · 1 publicMintPrice · 2 maxSupply · 3 totalMinted ·
+/// 4 collectorFee · 5 resolvedPhaseId · 6 isRevealed · 7 mintingPaused ·
+/// 8 currentPhaseType · 9 phase.phaseType · 10 phase.startTime ·
+/// 11 phase.endTime · 12 phase.mintPrice · 13..16 phase limits/root.
+fn decode_mintbay_status_v4(raw: &[u8]) -> Result<MintBayStatus> {
+    Ok(MintBayStatus {
+        public_mint_price: word_u256(raw, 1)?,
+        max_supply: word_u256(raw, 2)?,
+        total_minted: word_u256(raw, 3)?,
+        collector_fee: word_u256(raw, 4)?,
+        resolved_phase_id: word_u256(raw, 5)?,
+        minting_paused: word_bool(raw, 7)?,
+        current_phase_type: u256_to_u8_sat(word_u256(raw, 8)?),
+        phase_start: word_u256(raw, 10)?,
+        phase_end: word_u256(raw, 11)?,
+        phase_mint_price: word_u256(raw, 12)?,
+    })
+}
+
+/// Decode a `getMintStatus()` return whose layout matches MintbayGenerative**V3**
+/// (18 static words / 576 bytes).
+///
+/// V3's `MintStatus` carries an extra `bool isFreeMint` after `isRevealed`, so
+/// everything from `mintingPaused` onward sits one slot later than in V4.
+fn decode_mintbay_status_v3(raw: &[u8]) -> Result<MintBayStatus> {
+    Ok(MintBayStatus {
+        public_mint_price: word_u256(raw, 1)?,
+        max_supply: word_u256(raw, 2)?,
+        total_minted: word_u256(raw, 3)?,
+        collector_fee: word_u256(raw, 4)?,
+        resolved_phase_id: word_u256(raw, 5)?,
+        // 6 isRevealed, 7 isFreeMint
+        minting_paused: word_bool(raw, 8)?,
+        current_phase_type: u256_to_u8_sat(word_u256(raw, 9)?),
+        // 10 phase.phaseType
+        phase_start: word_u256(raw, 11)?,
+        phase_end: word_u256(raw, 12)?,
+        phase_mint_price: word_u256(raw, 13)?,
+    })
+}
+
+/// `getMintStatus()` selector 0x941ada0e — flat static ABI layout.
+///
+/// MintBay has shipped several contract generations behind this one selector
+/// and they return **different tuple widths**: V4 is 17 words (544 bytes), V3
+/// adds a `bool isFreeMint` for 18 words (576 bytes), and V1 predates the phase
+/// fields at 16 words. Dispatch on the exact length — a `>=` check let an 18-word
+/// V3 response through the V4 map, which read `phase.endTime` (a unix timestamp)
+/// as `phase.mintPrice`. Since V3/V4 `mint()` enforce
+/// `msg.value == qty * (mintPrice + collectorFee)`, that mispriced every
+/// pre-signed tx and reverted the whole blast.
+///
 /// Falls back to individual view calls if the combined call fails (RPC / proxy quirks).
 pub async fn fetch_mintbay_status(rpc: &RpcClient, contract: &Address) -> Result<MintBayStatus> {
     let data = Bytes::from(hex::decode("941ada0e").context("sel")?);
     match rpc.eth_call(&Address::ZERO, contract, &data).await {
-        Ok(raw) if raw.len() >= 17 * 32 => Ok(MintBayStatus {
-            public_mint_price: word_u256(&raw, 1)?,
-            max_supply: word_u256(&raw, 2)?,
-            total_minted: word_u256(&raw, 3)?,
-            collector_fee: word_u256(&raw, 4)?,
-            resolved_phase_id: word_u256(&raw, 5)?,
-            minting_paused: word_bool(&raw, 7)?,
-            current_phase_type: u256_to_u8_sat(word_u256(&raw, 8)?),
-            phase_start: word_u256(&raw, 10)?,
-            phase_end: word_u256(&raw, 11)?,
-            phase_mint_price: word_u256(&raw, 12)?,
-        }),
+        Ok(raw) if raw.len() == 17 * 32 => decode_mintbay_status_v4(&raw),
+        Ok(raw) if raw.len() == 18 * 32 => decode_mintbay_status_v3(&raw),
         Ok(raw) if !raw.is_empty() => {
-            // Unexpected short return — try views
+            // Unrecognized width (V1's 16 words, or a future layout): decoding by
+            // fixed index would silently mis-map price fields, so use the views.
             crate::rlog!(
-                "getMintStatus short return ({} bytes), using view fallback",
+                "getMintStatus unrecognized return width ({} bytes), using view fallback",
                 raw.len()
             );
             fetch_mintbay_status_fallback(rpc, contract).await
@@ -392,18 +465,32 @@ async fn fetch_mintbay_status_fallback(
 }
 
 fn build_mint_params(config: &RawSniperConfig) -> Result<Vec<String>> {
-    if config.function.contains("uint256") && config.params.is_empty() {
-        // mint(uint256) with quantity
-        return Ok(vec![config.quantity.max(1).to_string()]);
-    }
+    // Explicit params always win.
     if !config.params.is_empty() {
         return Ok(config.params.clone());
     }
-    // zero-arg
-    if config.function.contains("()") && !config.function.contains(',') {
-        return Ok(vec![]);
+    // Parse the signature's actual arity instead of substring-sniffing it.
+    // `contains("uint256")` / `contains("()")` misread the same non-canonical
+    // spellings that used to corrupt the selector: `claim( )` (a space between
+    // the parens) was not recognized as zero-arg and got a spurious quantity
+    // argument, and `mint(uint)` missed the quantity branch. Fall back to the
+    // old heuristics only if the signature doesn't parse.
+    match crate::abi::parse_function_signature(&config.function) {
+        Ok((_name, types)) => {
+            if types.is_empty() {
+                return Ok(vec![]);
+            }
+            // Single numeric arg → the mint quantity.
+            if types.len() == 1 {
+                let t = crate::abi::canonical_type_name(&types[0]);
+                if t == "uint256" || t.starts_with("uint") {
+                    return Ok(vec![config.quantity.max(1).to_string()]);
+                }
+            }
+            Ok(vec![config.quantity.max(1).to_string()])
+        }
+        Err(_) => Ok(vec![config.quantity.max(1).to_string()]),
     }
-    Ok(vec![config.quantity.max(1).to_string()])
 }
 
 // ─── Main entry (pre-sign race) ───────────────────────────────────────────────
@@ -463,10 +550,33 @@ pub async fn run_raw_sniper(
     let start_wall = now_unix();
 
     // Hard deadline only for hanging waits (not open-poll).
+    //
+    // NB: for a scheduled run this is intentionally derived from `at_time`, not
+    // from run start — waiting until a future `at_time` is the whole point of a
+    // scheduled snipe, so `timeout_secs` must not abort it. The "mistyped
+    // at_time" hazard is handled by the sanity bound below instead.
     let wait_deadline = match fire_at {
         Some(at) => at.saturating_add(config.timeout_secs.max(60) as i64),
         None => start_wall.saturating_add(config.timeout_secs.max(60) as i64),
     };
+
+    // Reject an absurdly distant `at_time` up front. Without this, a typo (wrong
+    // year, extra digit) parks the run in the pre-fire wait loop indefinitely —
+    // the loop's own deadline check can never fire, because `wait_deadline`
+    // always lands *after* the prep window it guards.
+    if let Some(at) = fire_at {
+        let ahead = at.saturating_sub(start_wall);
+        if ahead > MAX_SCHEDULE_AHEAD_SECS {
+            return fail_all(
+                signers,
+                &format!(
+                    "at_time is {} days in the future (max {} days) — check the date",
+                    ahead / 86_400,
+                    MAX_SCHEDULE_AHEAD_SECS / 86_400
+                ),
+            );
+        }
+    }
 
     report(
         &reporter,
@@ -858,12 +968,17 @@ pub async fn run_raw_sniper(
         let rep = reporter.clone();
 
         send_handles.push(tokio::spawn(async move {
-            let _permit = permit;
             let addr = ps.address;
             let signed_hash = ps.hash;
 
-            // Send first — only then report Sent with real RPC hash
-            match rpc.race_send(&ps.raw).await {
+            // Send first — only then report Sent with real RPC hash.
+            let send_res = rpc.race_send(&ps.raw).await;
+            // Release the send slot *before* polling for a receipt. Holding it
+            // across `wait_for_receipt` (up to 90s) serialized the blast: with
+            // more wallets than `concurrency`, wallet N+1 could not fire until
+            // an earlier wallet's receipt landed, so it missed the drop entirely.
+            drop(permit);
+            match send_res {
                 Ok(tx_hash) => {
                     report(
                         &rep,
@@ -1141,5 +1256,124 @@ mod tests {
         };
         // (0.001 + 0.0004) * 2
         assert_eq!(st.mint_value(2), U256::from(2_800_000_000_000_000u64));
+    }
+
+    #[test]
+    fn build_mint_params_uses_real_arity_not_substrings() {
+        let cfg = |func: &str, params: Vec<String>| RawSniperConfig {
+            function: func.to_string(),
+            params,
+            quantity: 3,
+            ..Default::default()
+        };
+
+        // Zero-arg, including the non-canonical spellings the old substring
+        // checks misread (a space between the parens got a spurious argument).
+        assert_eq!(
+            build_mint_params(&cfg("claim()", vec![])).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            build_mint_params(&cfg("claim( )", vec![])).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            build_mint_params(&cfg(" mint ( ) ", vec![])).unwrap(),
+            Vec::<String>::new()
+        );
+
+        // Single numeric arg → quantity, canonical and shorthand alike.
+        assert_eq!(
+            build_mint_params(&cfg("mint(uint256)", vec![])).unwrap(),
+            vec!["3"]
+        );
+        assert_eq!(
+            build_mint_params(&cfg("mint(uint)", vec![])).unwrap(),
+            vec!["3"]
+        );
+        assert_eq!(
+            build_mint_params(&cfg("mint( uint256 )", vec![])).unwrap(),
+            vec!["3"]
+        );
+
+        // Explicit params always win.
+        assert_eq!(
+            build_mint_params(&cfg(
+                "mint(address,uint256)",
+                vec!["0xabc".into(), "7".into()]
+            ))
+            .unwrap(),
+            vec!["0xabc", "7"]
+        );
+    }
+
+    /// Build a fake `getMintStatus()` return with `words` 32-byte slots, setting
+    /// the given (index, value) pairs.
+    fn mk_words(words: usize, set: &[(usize, u64)]) -> Vec<u8> {
+        let mut raw = vec![0u8; words * 32];
+        for (i, v) in set {
+            let start = i * 32;
+            raw[start + 24..start + 32].copy_from_slice(&v.to_be_bytes());
+        }
+        raw
+    }
+
+    #[test]
+    fn v4_layout_decodes_17_words() {
+        // V4: w4 collectorFee, w5 resolvedPhaseId, w12 phase.mintPrice
+        let raw = mk_words(
+            17,
+            &[
+                (4, 400_000_000_000_000),
+                (5, 1),
+                (12, 8_000_000_000_000_000),
+            ],
+        );
+        let st = decode_mintbay_status_v4(&raw).unwrap();
+        assert_eq!(st.collector_fee, U256::from(400_000_000_000_000u64));
+        assert_eq!(st.resolved_phase_id, U256::from(1u64));
+        assert_eq!(st.phase_mint_price, U256::from(8_000_000_000_000_000u64));
+    }
+
+    #[test]
+    fn v3_layout_shifts_by_one_from_word_seven() {
+        // V3 has an extra `bool isFreeMint`, so mintPrice lives at w13, not w12.
+        // w12 holds phase.endTime — decoding it as a price is the money bug.
+        let end_time = 1_800_000_000u64; // a unix timestamp, NOT a price
+        let price = 8_000_000_000_000_000u64;
+        let raw = mk_words(
+            18,
+            &[
+                (4, 400_000_000_000_000),
+                (5, 1),
+                (12, end_time),
+                (13, price),
+            ],
+        );
+        let st = decode_mintbay_status_v3(&raw).unwrap();
+        assert_eq!(st.phase_mint_price, U256::from(price), "must read w13");
+        assert_eq!(st.phase_end, U256::from(end_time));
+        // The V4 map on the same bytes would have taken the timestamp as the price.
+        let wrong = decode_mintbay_status_v4(&raw).unwrap();
+        assert_eq!(wrong.phase_mint_price, U256::from(end_time));
+        assert_ne!(
+            wrong.phase_mint_price, st.phase_mint_price,
+            "this divergence is exactly what the length dispatch prevents"
+        );
+    }
+
+    #[test]
+    fn mint_value_uses_phase_price_when_phase_active() {
+        let raw = mk_words(18, &[(4, 1_000), (5, 7), (13, 5_000)]);
+        let st = decode_mintbay_status_v3(&raw).unwrap();
+        // resolved_phase_id != 0 → (phase_price + collector_fee) * qty
+        assert_eq!(st.mint_value(3), U256::from((5_000u64 + 1_000) * 3));
+    }
+
+    #[test]
+    fn short_response_errors_instead_of_panicking() {
+        let raw = mk_words(5, &[]);
+        assert!(decode_mintbay_status_v4(&raw).is_err());
+        assert!(decode_mintbay_status_v3(&raw).is_err());
     }
 }

@@ -220,6 +220,18 @@ impl fmt::Debug for VaultEntry {
     }
 }
 
+/// Scrub the plaintext private key when the entry is dropped.
+///
+/// `read_entries` hands back every key in the vault, and only one call site
+/// scrubbed them by hand — the rest left the key bytes in freed heap memory.
+/// Doing it in `Drop` makes it automatic for every path.
+impl Drop for VaultEntry {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.key.zeroize();
+    }
+}
+
 #[cfg(test)]
 mod vault_entry_debug_tests {
     use super::*;
@@ -346,6 +358,31 @@ pub fn env_flag(env: &std::collections::HashMap<String, String>, key: &str, defa
     }
 }
 
+/// Parse a *safety-critical* flag that defaults to ON (e.g. `DRY_RUN`).
+///
+/// Unlike [`env_flag`], this is fail-safe: only an explicit falsy value
+/// (`0`/`false`/`no`/`off`) turns the flag off. Anything else — including the
+/// affirmative spellings `yes`/`on`, an empty value, or a typo — keeps the safe
+/// state. Parsing `DRY_RUN=yes` as "live" would send real funds when the
+/// operator asked for a simulation.
+pub fn env_flag_safe_on(env: &std::collections::HashMap<String, String>, key: &str) -> bool {
+    match env.get(key) {
+        None => true,
+        Some(v) => {
+            let t = v.trim();
+            !(t == "0"
+                || t.eq_ignore_ascii_case("false")
+                || t.eq_ignore_ascii_case("no")
+                || t.eq_ignore_ascii_case("off"))
+        }
+    }
+}
+
+/// `DRY_RUN` flag (default ON, fail-safe — see [`env_flag_safe_on`]).
+pub fn dry_run_from_env(env: &std::collections::HashMap<String, String>) -> bool {
+    env_flag_safe_on(env, "DRY_RUN")
+}
+
 pub fn quiet_from_env(env: &std::collections::HashMap<String, String>) -> bool {
     env_flag(env, "QUIET", false)
 }
@@ -363,14 +400,81 @@ pub fn export_results_from_env(env: &std::collections::HashMap<String, String>) 
     env_flag(env, "EXPORT_RESULTS", true)
 }
 
+/// True when `needle` occurs in `hay` as a standalone token (not glued to
+/// surrounding alphanumerics).
+///
+/// A bare `contains("401")` matches wei amounts, block numbers, proxy ports and
+/// tx-hash fragments, so status-code detection must be boundary-aware.
+fn contains_code_token(hay: &str, needle: &str) -> bool {
+    hay.match_indices(needle).any(|(i, _)| {
+        let before_ok = !hay[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric());
+        let after_ok = !hay[i + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric());
+        before_ok && after_ok
+    })
+}
+
 /// True if error string looks like OpenSea/HTTP auth failure.
 pub fn is_auth_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
-    lower.contains("401")
+    contains_code_token(&lower, "401")
         || lower.contains("unauthorized")
         || lower.contains("not authenticated")
         || lower.contains("authentication required")
         || lower.contains("invalid token")
         || (lower.contains("access token")
             && (lower.contains("expired") || lower.contains("invalid")))
+}
+
+#[cfg(test)]
+mod env_flag_and_auth_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn dry_run_defaults_on_and_is_fail_safe() {
+        // Absent → ON (documented default).
+        assert!(dry_run_from_env(&env(&[])));
+        // Affirmative spellings keep it ON.
+        for v in ["1", "true", "TRUE", "yes", "on", "  yes  "] {
+            assert!(dry_run_from_env(&env(&[("DRY_RUN", v)])), "DRY_RUN={v}");
+        }
+        // An empty or unrecognized value must NOT silently go live.
+        for v in ["", "   ", "maybe", "tru"] {
+            assert!(
+                dry_run_from_env(&env(&[("DRY_RUN", v)])),
+                "DRY_RUN={v:?} must stay safe"
+            );
+        }
+        // Only explicit falsy values disable it.
+        for v in ["0", "false", "FALSE", "no", "off", " off "] {
+            assert!(!dry_run_from_env(&env(&[("DRY_RUN", v)])), "DRY_RUN={v}");
+        }
+    }
+
+    #[test]
+    fn auth_error_401_requires_token_boundary() {
+        // Real auth failures.
+        assert!(is_auth_error("HTTP 401 Unauthorized"));
+        assert!(is_auth_error("status: 401"));
+        assert!(is_auth_error("(401)"));
+        assert!(is_auth_error("unauthorized"));
+        // Digits that merely contain 401 must not trigger a re-auth.
+        assert!(!is_auth_error("price 40100000000000000 wei"));
+        assert!(!is_auth_error("proxy host:40123 failed"));
+        assert!(!is_auth_error("tx 0xdead401beef reverted"));
+        assert!(!is_auth_error("block 1401"));
+    }
 }

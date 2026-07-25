@@ -538,7 +538,24 @@ pub async fn run_raw_mint(
                     .collect();
             }
         };
-        let block = rpc.block_number().await.unwrap_or(0).saturating_add(1);
+        // Simulating at block 1 (the `unwrap_or(0) + 1` fallback) produces a
+        // meaningless "block in the past" failure that hides the real RPC outage.
+        let block = match rpc.block_number().await {
+            Ok(b) => b.saturating_add(1),
+            Err(e) => {
+                return prepared
+                    .into_iter()
+                    .map(|(addr, _, _)| MintResult {
+                        address: addr,
+                        tx_hash: None,
+                        status: WalletStatus::Failed,
+                        gas_used: None,
+                        block_number: None,
+                        error: Some(format!("block number: {e}")),
+                    })
+                    .collect();
+            }
+        };
         crate::rlog!("Flashbots eth_callBundle @ block {}", block);
         match client.call_bundle(auth, &pieces, block).await {
             Ok(res) => {
@@ -559,7 +576,14 @@ pub async fn run_raw_mint(
                         });
                         continue;
                     }
-                    let e = errs.get(err_i).and_then(|x| x.clone());
+                    // A missing entry means the relay returned no `results` array (or
+                    // a truncated one) — this tx was never actually simulated. Falling
+                    // into the success branch let an operator go live on the strength
+                    // of a simulation that validated nothing.
+                    let e = match errs.get(err_i) {
+                        Some(x) => x.clone(),
+                        None => Some("callBundle returned no result entry for this tx".into()),
+                    };
                     err_i += 1;
                     if let Some(err) = e {
                         out.push(MintResult {
@@ -713,7 +737,25 @@ pub async fn run_raw_mint(
         }
     };
 
-    let current = rpc.block_number().await.unwrap_or(0);
+    // Don't paper over an RPC failure with block 0: the bundle would target
+    // blocks 1..=3, every relay call would fail with a confusing "block in the
+    // past", and the real cause (RPC outage) would stay hidden.
+    let current = match rpc.block_number().await {
+        Ok(b) => b,
+        Err(e) => {
+            return prepared
+                .into_iter()
+                .map(|(addr, piece, _)| MintResult {
+                    address: addr,
+                    tx_hash: piece.as_ref().map(|p| p.tx_hash),
+                    status: WalletStatus::Failed,
+                    gas_used: None,
+                    block_number: None,
+                    error: Some(format!("block number: {e}")),
+                })
+                .collect();
+        }
+    };
     crate::rlog!(
         "Flashbots sendBundle window: current={} pieces={}",
         current,

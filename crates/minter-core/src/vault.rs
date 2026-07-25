@@ -6,6 +6,7 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 use crate::types::*;
 
@@ -31,9 +32,16 @@ impl Vault {
         self.path.display().to_string()
     }
 
-    fn derive_key(&self, password: &str, salt: &[u8]) -> [u8; 32] {
-        let mut key = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, VAULT_KDF_ITERATIONS, &mut key);
+    /// Derive the AES-256 key. Returned in `Zeroizing` so the master key is
+    /// scrubbed from the stack instead of lingering in freed memory.
+    fn derive_key(&self, password: &str, salt: &[u8]) -> Zeroizing<[u8; 32]> {
+        let mut key = Zeroizing::new([0u8; 32]);
+        pbkdf2_hmac::<Sha256>(
+            password.as_bytes(),
+            salt,
+            VAULT_KDF_ITERATIONS,
+            key.as_mut(),
+        );
         key
     }
 
@@ -45,7 +53,7 @@ impl Vault {
         };
         let key = self.derive_key(password, &salt);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let cipher = Aes256Gcm::new_from_slice(&key).expect("valid key");
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).expect("valid key");
         let ciphertext = cipher.encrypt(&nonce, data).expect("encryption succeeded");
         let mut out =
             Vec::with_capacity(VAULT_SALT_LEN + VAULT_IV_LEN + VAULT_TAG_LEN + ciphertext.len());
@@ -67,7 +75,7 @@ impl Vault {
         let nonce = Nonce::from_slice(nonce_bytes);
         let ciphertext = &blob[VAULT_SALT_LEN + VAULT_IV_LEN..];
         let key = self.derive_key(password, salt);
-        let cipher = Aes256Gcm::new_from_slice(&key).context("invalid key")?;
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).context("invalid key")?;
         let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
             anyhow::anyhow!(
                 "Wrong vault password (or corrupted vault file at {})",

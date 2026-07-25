@@ -132,7 +132,13 @@ mod proxy_parse_tests {
 pub fn parse_function_signature(sig: &str) -> Result<(String, Vec<String>)> {
     let paren = sig.find('(').context("invalid signature: no (")?;
     let name = sig[..paren].to_string();
-    let inner = &sig[paren + 1..sig.rfind(')').context("invalid signature: no )")?];
+    let close = sig.rfind(')').context("invalid signature: no )")?;
+    // `rfind(')')` can land *before* the first '(' (e.g. a typo like `mint)u(`),
+    // which would make the slice range inverted and panic instead of erroring.
+    if close < paren {
+        bail!("invalid signature: ')' before '(': {sig}");
+    }
+    let inner = &sig[paren + 1..close];
     if inner.trim().is_empty() {
         return Ok((name, vec![]));
     }
@@ -167,6 +173,49 @@ pub fn function_selector(signature: &str) -> [u8; 4] {
     let mut sel = [0u8; 4];
     sel.copy_from_slice(&hash[..4]);
     sel
+}
+
+/// Canonicalize an ABI type for selector hashing: `uint`/`int` are aliases for
+/// `uint256`/`int256`, and whitespace is not part of the canonical form.
+///
+/// Recurses through arrays (`uint[]` → `uint256[]`) and tuples
+/// (`(uint,bytes)` → `(uint256,bytes)`).
+pub fn canonical_type_name(ty: &str) -> String {
+    canonical_type(ty)
+}
+
+fn canonical_type(ty: &str) -> String {
+    let ty = ty.trim();
+    if let Some((elem, fixed)) = parse_array_type(ty) {
+        let inner = canonical_type(&elem);
+        return match fixed {
+            Some(n) => format!("{inner}[{n}]"),
+            None => format!("{inner}[]"),
+        };
+    }
+    if let Some(components) = parse_tuple_components(ty) {
+        let parts: Vec<String> = components.iter().map(|c| canonical_type(c)).collect();
+        return format!("({})", parts.join(","));
+    }
+    match ty {
+        "uint" => "uint256".to_string(),
+        "int" => "int256".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Rebuild `name(type,type,…)` in canonical form so the keccak selector matches
+/// what the contract actually exposes.
+///
+/// Operators paste signatures the way Solidity/Etherscan render them — with
+/// spaces (`mint(address, uint256)`) or the `uint` shorthand (`mint(uint)`).
+/// Both parse and encode fine here, but hashing the raw string yields a
+/// selector no function matches: the tx hits the fallback (value accepted,
+/// nothing minted) or reverts, burning gas across every wallet.
+pub fn canonical_signature(signature: &str) -> Result<String> {
+    let (name, types) = parse_function_signature(signature)?;
+    let parts: Vec<String> = types.iter().map(|t| canonical_type(t)).collect();
+    Ok(format!("{}({})", name.trim(), parts.join(",")))
 }
 
 fn pad32_right(data: &[u8]) -> Vec<u8> {
@@ -685,7 +734,9 @@ pub fn build_calldata(signature: &str, param_values: &[String]) -> Result<Bytes>
         }
     }
 
-    let selector = function_selector(signature);
+    // Hash the *canonical* signature, not the raw user string: whitespace and
+    // the `uint`/`int` shorthand change the keccak selector but not the encoding.
+    let selector = function_selector(&canonical_signature(signature)?);
     if types.is_empty() {
         return Ok(Bytes::from(selector.to_vec()));
     }
@@ -1110,5 +1161,60 @@ mod tests {
         assert_eq!(pad32_right(&[1, 2]).len(), 32);
         assert_eq!(pad32_right(&[0u8; 32]).len(), 32);
         assert_eq!(pad32_right(&[0u8; 33]).len(), 64);
+    }
+}
+
+#[cfg(test)]
+mod canonical_selector_tests {
+    use super::*;
+
+    #[test]
+    fn canonicalizes_whitespace_and_uint_alias() {
+        assert_eq!(
+            canonical_signature("mint(address, uint256)").unwrap(),
+            "mint(address,uint256)"
+        );
+        assert_eq!(canonical_signature("mint(uint)").unwrap(), "mint(uint256)");
+        assert_eq!(
+            canonical_signature(" mint( uint )").unwrap(),
+            "mint(uint256)"
+        );
+        assert_eq!(canonical_signature("f(int)").unwrap(), "f(int256)");
+        assert_eq!(canonical_signature("f(uint[])").unwrap(), "f(uint256[])");
+        assert_eq!(canonical_signature("f(uint[3])").unwrap(), "f(uint256[3])");
+        assert_eq!(
+            canonical_signature("f((uint, bytes))").unwrap(),
+            "f((uint256,bytes))"
+        );
+        assert_eq!(canonical_signature("go()").unwrap(), "go()");
+    }
+
+    #[test]
+    fn spaced_signature_yields_canonical_selector() {
+        // mint(address,uint256) = 0x40c10f19
+        let want = function_selector("mint(address,uint256)");
+        let a = build_calldata(
+            "mint(address, uint256)",
+            &[
+                "0x1111111111111111111111111111111111111111".into(),
+                "1".into(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(&a[..4], &want, "spaced signature must hash canonically");
+    }
+
+    #[test]
+    fn uint_alias_yields_uint256_selector() {
+        // mint(uint256) = 0xa0712d68
+        let want = function_selector("mint(uint256)");
+        let cd = build_calldata("mint(uint)", &["5".into()]).unwrap();
+        assert_eq!(&cd[..4], &want);
+    }
+
+    #[test]
+    fn inverted_parens_error_not_panic() {
+        assert!(parse_function_signature("mint)uint256(").is_err());
+        assert!(parse_function_signature(")(").is_err());
     }
 }

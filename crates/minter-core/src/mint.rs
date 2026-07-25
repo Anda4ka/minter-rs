@@ -247,6 +247,15 @@ struct WalletAuth {
 
 const DEFAULT_SEADROP_ADDRESS: &str = "0x00005EA00Ac477B1030CE78506496e8C2dE24bf5";
 
+/// Absolute ceiling (0.05 ETH) on the tx value OpenSea may request when the
+/// resolved phase price is zero — i.e. a free mint, or a priced phase whose
+/// price we failed to parse.
+///
+/// The relative "4x phase price" guard degenerates to 0 in that case, leaving
+/// the response free to specify any value. This keeps a bad/tampered response
+/// from draining wallets while staying well above real gas-inclusive overhead.
+const UNPRICED_VALUE_CAP_WEI: u64 = 50_000_000_000_000_000;
+
 /// Decode OpenSea / local mint `data` hex. Fail-fast on empty or invalid.
 pub(crate) fn parse_tx_calldata_hex(data_hex: &str) -> anyhow::Result<Bytes> {
     let raw = data_hex.trim();
@@ -294,6 +303,51 @@ pub(crate) fn resolve_mint_gas_limit(
         limit.min(15_000_000)
     } else {
         gas::apply_gas_limit(estimated_or_fixed, gas_multiplier, chain_id, 21_000)
+    }
+}
+
+/// Return the first already-mined hash among `hashes`, if any.
+///
+/// A send is fanned out to several RPC endpoints, so a `nonce too low` or
+/// `underpriced` rejection is ambiguous: it can equally mean "a previous
+/// attempt was already mined by another node". Re-broadcasting in that case
+/// mints (and pays) twice, so every retry path must check here first.
+///
+/// Best-effort: a receipt lookup that errors is treated as "not found" rather
+/// than blocking the retry, since the tx genuinely may not exist.
+async fn first_landed_hash(
+    rpc: &crate::rpc::RpcClient,
+    hashes: &[B256],
+) -> Option<(B256, serde_json::Value)> {
+    for h in hashes {
+        if let Ok(Some(receipt)) = rpc.transaction_receipt(h).await {
+            return Some((*h, receipt));
+        }
+    }
+    None
+}
+
+/// Build the worker result for a tx that is already on chain.
+fn receipt_to_result(
+    addr: alloy_primitives::Address,
+    hash: B256,
+    info: &crate::rpc::ReceiptInfo,
+) -> MintResult {
+    MintResult {
+        address: addr,
+        tx_hash: Some(hash),
+        status: if info.success {
+            WalletStatus::Confirmed
+        } else {
+            WalletStatus::Failed
+        },
+        gas_used: Some(info.gas_used),
+        block_number: Some(info.block_number),
+        error: if info.success {
+            None
+        } else {
+            Some("transaction reverted on chain".to_string())
+        },
     }
 }
 
@@ -400,7 +454,20 @@ async fn fetch_and_parse_gql(
             ),
         );
     }
-    if !calldata_value.is_zero() && tx_value > calldata_value.saturating_mul(U256::from(4u64)) {
+    if calldata_value.is_zero() {
+        // Free / unpriced phase: the relative 4x cap can't apply here, so bound
+        // the absolute value instead. Otherwise a free mint — or any phase whose
+        // price failed to parse — forwards whatever value the response asks for,
+        // up to the wallet's entire balance, on every wallet.
+        if tx_value > U256::from(UNPRICED_VALUE_CAP_WEI) {
+            anyhow::bail!(
+                "[{}] OpenSea tx value {} on a free/unpriced phase exceeds the {} wei safety cap — refusing (possible bad response)",
+                sign::shorten_address(addr),
+                tx_value,
+                UNPRICED_VALUE_CAP_WEI
+            );
+        }
+    } else if tx_value > calldata_value.saturating_mul(U256::from(4u64)) {
         anyhow::bail!(
             "[{}] OpenSea tx value {} exceeds 4x expected phase price {} — refusing (possible bad response)",
             sign::shorten_address(addr),
@@ -1166,13 +1233,25 @@ pub async fn run_opensea_mint(
             &addrs,
             opts.wallet_quantities.as_ref(),
         );
-        for w in &wallets {
+        for w in &mut wallets {
             if !w.auth_ok {
                 continue;
             }
             let k = crate::mint_ops::normalize_addr_key(&format!("{:?}", w.address));
-            let q = expanded.get(&k).copied().unwrap_or(quantity).max(1);
-            wallet_quantities.insert(w.address, q);
+            match expanded.get(&k).copied() {
+                Some(q) => {
+                    wallet_quantities.insert(w.address, q.max(1));
+                }
+                None => {
+                    // `expand_wallet_quantities` drops zero entries, and every
+                    // auth-ok address was passed in, so a missing key can only
+                    // mean an explicit qty of 0 — i.e. "exclude this wallet".
+                    // `unwrap_or(quantity)` used to resurrect it at the full
+                    // default and mint (and pay) with a wallet the caller had
+                    // deliberately excluded.
+                    w.auth_ok = false;
+                }
+            }
         }
     }
     report_phase(
@@ -1955,6 +2034,12 @@ pub async fn run_opensea_mint(
             let mut burst_idx = 0usize;
             // Prefetch / retry calldata. Use take()+restore so every write is later read.
             let mut cached_tx: Option<(alloy_primitives::Address, U256, Bytes)> = initial_cached_tx;
+            // Every tx hash this worker has signed and broadcast. A send is fanned
+            // out to several RPCs, so a `nonce too low` / `underpriced` rejection
+            // can mean "another node already mined the previous attempt", not
+            // "nothing landed". Re-sending without checking these first is a
+            // double mint / double spend.
+            let mut sent_hashes: Vec<B256> = Vec::new();
             // Last failure message for exhaust path only (updated in place via helper).
             let mut last_error = String::new();
             let mut max_fee = max_fee;
@@ -2496,9 +2581,13 @@ pub async fn run_opensea_mint(
                 if dry_run_w && !use_flashbots_w {
                     // Display-only costs via saturating wei math (no to::<u128>() panic).
                     let gas_cost_wei = max_fee.saturating_mul(U256::from(gas_limit));
-                    let total_cost_wei = gas_cost_wei.saturating_add(calldata_value);
+                    // Report the value the live tx would actually carry
+                    // (`tx_value`), not the phase price — they can legitimately
+                    // differ, and mixing them made "Value:" print an ETH amount
+                    // and a wei amount that disagreed.
+                    let total_cost_wei = gas_cost_wei.saturating_add(tx_value);
                     let gas_cost_s = crate::amount::wei_to_eth_string(gas_cost_wei);
-                    let price_s = crate::amount::wei_to_eth_string(calldata_value);
+                    let price_s = crate::amount::wei_to_eth_string(tx_value);
                     let total_s = crate::amount::wei_to_eth_string(total_cost_wei);
                     log_always(reporter.as_ref(), format!("\n[{}] DRY RUN REPORT t+{}ms",
                         sign::shorten_address(&addr),
@@ -2512,7 +2601,7 @@ pub async fn run_opensea_mint(
                     log_always(reporter.as_ref(), format!("  Total cost:  ~{} ETH", total_s));
                     log_always(reporter.as_ref(), format!("  Calldata:    {} bytes", calldata.len()));
                     log_always(reporter.as_ref(), format!("  Nonce:       {}", nonce));
-                    log_always(reporter.as_ref(), format!("  Chain:       {} (id={})", chain_id, chain_id));
+                    log_always(reporter.as_ref(), format!("  Chain:       {} (id={})", chain_owned, chain_id));
                     // Dry-run OK only if simulation path did not leave a preflight error.
                     // (Funds/sim failures already break Failed above when fixed gas + estimate.)
                     report_wallet(reporter.as_ref(),
@@ -2552,6 +2641,12 @@ pub async fn run_opensea_mint(
                             sign::shorten_address(&addr),
                             sign_start.elapsed().as_millis(),
                             r.len()));
+                        // Remember every hash we are about to put on the wire, so a
+                        // later ambiguous rejection can be checked against it before
+                        // we broadcast a replacement.
+                        if !sent_hashes.contains(&h) {
+                            sent_hashes.push(h);
+                        }
                         (r, h)
                     }
                     Err(e) => {
@@ -2660,10 +2755,39 @@ pub async fn run_opensea_mint(
                             );
                             signed_hash
                         } else if is_nonce_too_low(&err_str) {
+                            // `nonce too low` is ambiguous: it also means a prior
+                            // attempt was already mined (we fan out to several
+                            // nodes). Re-sending in that case is a double mint.
+                            if let Some((landed, receipt)) =
+                                first_landed_hash(&rpc, &sent_hashes).await
+                            {
+                                let info = crate::rpc::parse_receipt(&receipt);
+                                log_always(reporter.as_ref(), format!(
+                                    "[{}] nonce too low, but {} already landed — not resending",
+                                    sign::shorten_address(&addr),
+                                    sign::shorten_hash(&landed)));
+                                break (addr, receipt_to_result(addr, landed, &info));
+                            }
                             // Same calldata next attempt; only nonce changes.
                             cached_tx = Some((tx.to, tx.value, tx.data.clone()));
-                            if let Ok(n) = rpc.nonce(&addr).await {
-                                nonce = n;
+                            // A stale nonce would make every retry re-send the same
+                            // dead tx and report a misleading error, so a failed
+                            // refresh must stop the worker instead.
+                            match rpc.nonce(&addr).await {
+                                Ok(n) => nonce = n,
+                                Err(e) => {
+                                    let msg = format!("nonce refresh failed after nonce-too-low: {e}");
+                                    report_wallet(reporter.as_ref(), &addr,
+                                        Some(WalletStatus::Failed), None, None, Some(msg.clone()));
+                                    break (addr, MintResult {
+                                        address: addr,
+                                        tx_hash: None,
+                                        status: WalletStatus::Failed,
+                                        gas_used: None,
+                                        block_number: None,
+                                        error: Some(msg),
+                                    });
+                                }
                             }
                             let delay_ms = if burst_idx < burst_delays.len() {
                                 burst_delays[burst_idx]
@@ -2674,6 +2798,19 @@ pub async fn run_opensea_mint(
                             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                             continue;
                         } else if is_underpriced(&err_str) {
+                            // Same ambiguity as nonce-too-low: the pool may be
+                            // rejecting a replacement because the original already
+                            // landed. Check before broadcasting a bumped copy.
+                            if let Some((landed, receipt)) =
+                                first_landed_hash(&rpc, &sent_hashes).await
+                            {
+                                let info = crate::rpc::parse_receipt(&receipt);
+                                log_always(reporter.as_ref(), format!(
+                                    "[{}] underpriced, but {} already landed — not resending",
+                                    sign::shorten_address(&addr),
+                                    sign::shorten_hash(&landed)));
+                                break (addr, receipt_to_result(addr, landed, &info));
+                            }
                             // Same calldata next attempt; only gas bumps (×1.15).
                             // Sleep like nonce-too-low so we do not hammer RPC; cap fee at 4× start.
                             cached_tx = Some((tx.to, tx.value, tx.data.clone()));
@@ -2752,7 +2889,12 @@ pub async fn run_opensea_mint(
                     sign::shorten_hash(&tx_hash)));
 
                 // Track original + every RBF hash; receipt on any candidate is success.
-                let mut candidate_hashes: Vec<B256> = vec![tx_hash];
+                // Seed with every hash this worker broadcast, not just the last
+                // one: an earlier retry attempt may still be the copy that mines.
+                let mut candidate_hashes: Vec<B256> = sent_hashes.clone();
+                if !candidate_hashes.contains(&tx_hash) {
+                    candidate_hashes.push(tx_hash);
+                }
                 let mut mined_hash = tx_hash;
                 let mut rbf_count = 0u32;
                 const MAX_RBF: u32 = 3;

@@ -10,22 +10,44 @@ use tauri::{AppHandle, Emitter, State};
 /// Clears `mint_running` on drop (including panic unwind) so the UI cannot stick "busy forever".
 struct MintBusyGuard {
     flag: Arc<AtomicBool>,
+    /// Mirrors whether the running operation actually observes the cancel flag,
+    /// so `cancel_mint` can tell the user the truth instead of reporting
+    /// "cancel requested" for a path that will run to completion regardless.
+    cancellable: Option<Arc<AtomicBool>>,
 }
 
 impl MintBusyGuard {
     /// Try to acquire the busy flag. Err if another money path is already running.
+    ///
+    /// Marks the run as **not** cancellable; use [`try_acquire_cancellable`] for
+    /// operations that poll the cancel token.
     fn try_acquire(flag: &Arc<AtomicBool>) -> Result<Self, String> {
         if flag.swap(true, Ordering::SeqCst) {
             return Err(minter_core::mint_busy_message().into());
         }
         Ok(Self {
             flag: Arc::clone(flag),
+            cancellable: None,
         })
+    }
+
+    /// Acquire the busy flag for an operation that honors the cancel token.
+    fn try_acquire_cancellable(
+        flag: &Arc<AtomicBool>,
+        cancellable: &Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let mut guard = Self::try_acquire(flag)?;
+        cancellable.store(true, Ordering::SeqCst);
+        guard.cancellable = Some(Arc::clone(cancellable));
+        Ok(guard)
     }
 }
 
 impl Drop for MintBusyGuard {
     fn drop(&mut self) {
+        if let Some(c) = &self.cancellable {
+            c.store(false, Ordering::SeqCst);
+        }
         self.flag.store(false, Ordering::SeqCst);
     }
 }
@@ -112,6 +134,10 @@ pub struct AppState {
     pub mint_cancel: Arc<AtomicBool>,
     /// Money-path busy flag (Arc so MintBusyGuard can clear on drop across await).
     pub mint_running: Arc<AtomicBool>,
+    /// True while the running money path actually polls `mint_cancel`.
+    /// Not every path does (raw_mint, sweeps, disperse, multicall run to
+    /// completion), so Stop must not claim it cancelled them.
+    pub mint_cancellable: Arc<AtomicBool>,
     /// Shared across reporter for one-shot first confirm per run.
     pub mint_first_confirm: Arc<AtomicBool>,
 }
@@ -122,6 +148,7 @@ impl Default for AppState {
             session: Mutex::new(Session::default_paths()),
             mint_cancel: Arc::new(AtomicBool::new(false)),
             mint_running: Arc::new(AtomicBool::new(false)),
+            mint_cancellable: Arc::new(AtomicBool::new(false)),
             mint_first_confirm: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -145,13 +172,22 @@ fn accept_burner(state: State<'_, Arc<AppState>>) {
     state.session.lock().accept_burner_warning();
 }
 
+/// Vault ops run 600k-iteration PBKDF2 (up to 3 derivations each). As plain
+/// sync commands they executed on the main/event-loop thread and froze the
+/// window for seconds — during which the webview cannot paint and no other IPC
+/// (including Stop) is processed. Run them on the blocking pool instead.
 #[tauri::command]
-fn unlock(state: State<'_, Arc<AppState>>, password: String) -> Result<usize, String> {
-    let mut s = state.session.lock();
-    if !s.burner_accepted {
-        return Err("Accept burner-wallet warning first".into());
-    }
-    s.unlock(&password).map_err(|e| e.to_string())
+async fn unlock(state: State<'_, Arc<AppState>>, password: String) -> Result<usize, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut s = state.session.lock();
+        if !s.burner_accepted {
+            return Err("Accept burner-wallet warning first".to_string());
+        }
+        s.unlock(&password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Clear signers + password from RAM (idle lock / manual lock).
@@ -231,40 +267,64 @@ fn list_wallets(state: State<'_, Arc<AppState>>) -> Vec<minter_core::WalletInfo>
 }
 
 #[tauri::command]
-fn add_key(state: State<'_, Arc<AppState>>, private_key: String) -> Result<String, String> {
-    state
-        .session
-        .lock()
-        .add_key(&private_key)
-        .map_err(|e| e.to_string())
+async fn add_key(state: State<'_, Arc<AppState>>, private_key: String) -> Result<String, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .session
+            .lock()
+            .add_key(&private_key)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn import_file(state: State<'_, Arc<AppState>>, path: String) -> Result<usize, String> {
-    state
-        .session
-        .lock()
-        .import_file(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())
+async fn import_file(state: State<'_, Arc<AppState>>, path: String) -> Result<usize, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .session
+            .lock()
+            .import_file(std::path::Path::new(&path))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn import_files(state: State<'_, Arc<AppState>>, paths: Vec<String>) -> Result<usize, String> {
-    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(std::path::PathBuf::from).collect();
-    state
-        .session
-        .lock()
-        .import_files(&paths)
-        .map_err(|e| e.to_string())
+async fn import_files(
+    state: State<'_, Arc<AppState>>,
+    paths: Vec<String>,
+) -> Result<usize, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths: Vec<std::path::PathBuf> =
+            paths.into_iter().map(std::path::PathBuf::from).collect();
+        state
+            .session
+            .lock()
+            .import_files(&paths)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn import_keys_text(state: State<'_, Arc<AppState>>, text: String) -> Result<usize, String> {
-    state
-        .session
-        .lock()
-        .import_keys_text(&text)
-        .map_err(|e| e.to_string())
+async fn import_keys_text(state: State<'_, Arc<AppState>>, text: String) -> Result<usize, String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .session
+            .lock()
+            .import_keys_text(&text)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -356,7 +416,17 @@ async fn probe_rpc(
         s.clone()
     };
     let res = session.probe_rpc().await.map_err(|e| e.to_string())?;
-    *state.session.lock() = session;
+    // Write back ONLY what the probe mutates. Restoring the whole pre-probe
+    // clone was a lost update: the probe can run for seconds, and anything the
+    // user (or the idle auto-lock) did meanwhile was silently reverted — most
+    // dangerously `lock_vault`, which would come back **unlocked** with the
+    // private keys reinstated while the UI showed it as locked.
+    {
+        let mut s = state.session.lock();
+        s.env = session.env;
+        s.rpc_status = session.rpc_status;
+        s.network_label = session.network_label;
+    }
     Ok(res)
 }
 
@@ -664,7 +734,8 @@ async fn run_mint(
     state: State<'_, Arc<AppState>>,
     input: RunMintInput,
 ) -> Result<minter_core::MintRunSummary, String> {
-    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
+    let _busy =
+        MintBusyGuard::try_acquire_cancellable(&state.mint_running, &state.mint_cancellable)?;
     let session = state.session.lock().clone();
     let dry_run = input.dry_run.unwrap_or(session.dry_run);
     let wallets = input.wallet_addresses.and_then(|v| {
@@ -737,7 +808,13 @@ async fn run_mint(
             if lower.contains("chain")
                 && (lower.contains("mismatch") || lower.contains("wrong network"))
             {
-                minter_core::chain_mismatch_message("collection", "RPC")
+                // Keep the original error — it names the actual chains, which
+                // is the one detail the user needs to fix the run. The canned
+                // message rendered literally as "collection expects
+                // 'collection', RPC reports 'RPC'".
+                format!(
+                    "{s} — open Settings → Connection and set an RPC / Alchemy network matching the collection"
+                )
             } else if lower.contains("401") || lower.contains("unauthorized") {
                 format!("{} ({s})", minter_core::reauth_required_message())
             } else {
@@ -750,6 +827,12 @@ async fn run_mint(
 fn cancel_mint(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     if !state.mint_running.load(Ordering::SeqCst) {
         return Ok("No mint running".into());
+    }
+    // Only some money paths poll the cancel token. Reporting "cancel requested"
+    // for the others (raw_mint, sweeps, disperse, multicall) told the operator
+    // their funds were held back while the sends carried on to completion.
+    if !state.mint_cancellable.load(Ordering::SeqCst) {
+        return Err("This operation cannot be stopped mid-run — it will finish on its own.".into());
     }
     state.mint_cancel.store(true, Ordering::SeqCst);
     Ok("Stopping… cancel requested".into())
@@ -967,7 +1050,8 @@ async fn raw_sniper(
     state: State<'_, Arc<AppState>>,
     input: minter_core::RawSniperInput,
 ) -> Result<Vec<minter_core::SweepResultRow>, String> {
-    let _busy = MintBusyGuard::try_acquire(&state.mint_running)?;
+    let _busy =
+        MintBusyGuard::try_acquire_cancellable(&state.mint_running, &state.mint_cancellable)?;
     let session = state.session.lock().clone();
     state.mint_first_confirm.store(false, Ordering::SeqCst);
     let beep = session.settings.beep;
@@ -1056,12 +1140,17 @@ fn clear_auth_cache(state: State<'_, Arc<AppState>>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn remove_wallet(state: State<'_, Arc<AppState>>, address: String) -> Result<(), String> {
-    state
-        .session
-        .lock()
-        .remove_wallet(&address)
-        .map_err(|e| e.to_string())
+async fn remove_wallet(state: State<'_, Arc<AppState>>, address: String) -> Result<(), String> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        state
+            .session
+            .lock()
+            .remove_wallet(&address)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Toggle Dry Run / Live in session + persist to config.json.
@@ -1124,6 +1213,24 @@ struct WalletMetaFile {
     proxy_map: std::collections::HashMap<String, u32>,
 }
 
+/// Preserve a corrupt data file before the caller falls back to an empty value.
+///
+/// The loaders return `Ok(empty)` so the app still starts, but the UI persists
+/// on the next mutation — which would overwrite the damaged-yet-recoverable
+/// file with the empty set. Copying it aside first keeps the data recoverable.
+fn backup_corrupt_file(path: &std::path::Path, what: &str, err: &impl std::fmt::Display) {
+    let backup = path.with_extension("json.corrupt");
+    match std::fs::copy(path, &backup) {
+        Ok(_) => eprintln!(
+            "{what} load error: {err} — original preserved at {}",
+            backup.display()
+        ),
+        Err(copy_err) => {
+            eprintln!("{what} load error: {err} (backup failed: {copy_err})")
+        }
+    }
+}
+
 #[tauri::command]
 fn load_wallet_meta(state: State<'_, Arc<AppState>>) -> Result<WalletMetaFile, String> {
     let path = wallet_meta_path(&state);
@@ -1143,7 +1250,7 @@ fn load_wallet_meta(state: State<'_, Arc<AppState>>) -> Result<WalletMetaFile, S
             Ok(f)
         }
         Err(e) => {
-            eprintln!("wallet_meta.json load error: {e}");
+            backup_corrupt_file(&path, "wallet_meta.json", &e);
             Ok(WalletMetaFile {
                 version: 1,
                 groups: Default::default(),
@@ -1175,8 +1282,12 @@ fn save_wallet_meta(state: State<'_, Arc<AppState>>, file: WalletMetaFile) -> Re
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
     // Restrict this IPC file-read primitive to small text-like files so a UI
-    // bug / XSS can't turn it into arbitrary local file exfiltration (e.g.
-    // reading config.json for the Alchemy key) — audit L5.
+    // bug / XSS can't turn it into arbitrary local file exfiltration.
+    //
+    // `json` was in this list, which defeated the stated purpose: the app's own
+    // config.json holds the Alchemy key, so the one file the comment named as
+    // the thing to protect was readable. The only caller imports a user-picked
+    // proxy list, so plain text extensions are enough.
     let p = std::path::Path::new(&path);
     let ext_ok = p
         .extension()
@@ -1184,12 +1295,30 @@ fn read_text_file(path: String) -> Result<String, String> {
         .map(|e| {
             matches!(
                 e.to_ascii_lowercase().as_str(),
-                "txt" | "csv" | "json" | "md" | "text" | "list"
+                "txt" | "csv" | "md" | "text" | "list"
             )
         })
         .unwrap_or(false);
     if !ext_ok {
-        return Err("Only .txt/.csv/.json/.md/.list text files can be read".into());
+        return Err("Only .txt/.csv/.md/.list text files can be read".into());
+    }
+    // Defense in depth: never serve one of our own secret-bearing files even if
+    // it is renamed to a whitelisted extension.
+    const PROTECTED: &[&str] = &[
+        "config.json",
+        "keys.vault",
+        "auth_cache.bin",
+        ".env",
+        "tasks.json",
+        "wallet_meta.json",
+    ];
+    let name_lc = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if PROTECTED.iter().any(|f| *f == name_lc) {
+        return Err("This file cannot be read through the import helper".into());
     }
     match std::fs::metadata(p) {
         Ok(m) if m.len() > 8 * 1024 * 1024 => return Err("File too large (max 8 MB)".into()),
@@ -1233,8 +1362,9 @@ fn load_tasks(state: State<'_, Arc<AppState>>) -> Result<TasksFile, String> {
             Ok(f)
         }
         Err(e) => {
-            // Corrupt file: return empty, do not wipe on disk.
-            eprintln!("tasks.json load error: {e}");
+            // Corrupt file: return empty, but keep a copy so the next
+            // debounced save cannot destroy it.
+            backup_corrupt_file(&path, "tasks.json", &e);
             Ok(TasksFile {
                 version: 1,
                 tasks: vec![],
@@ -1301,7 +1431,7 @@ fn load_runs_history(state: State<'_, Arc<AppState>>) -> Result<RunsHistoryFile,
             Ok(f)
         }
         Err(e) => {
-            eprintln!("runs_history.json load error: {e}");
+            backup_corrupt_file(&path, "runs_history.json", &e);
             Ok(RunsHistoryFile {
                 version: 1,
                 runs: vec![],

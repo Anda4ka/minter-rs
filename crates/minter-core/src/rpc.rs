@@ -643,15 +643,20 @@ impl RpcClient {
         let result = self
             .call("eth_feeHistory", json!(["0x1", "latest", [25.0]]))
             .await?;
-        let base_fee = result
+        // A missing/unparseable base fee must be an *error*, not a silent zero:
+        // `calculate_fees` would then produce max_fee == tip (e.g. 1.5 gwei) on a
+        // chain whose base fee is 10-30 gwei, so the tx sits unmineable and the
+        // mint is missed. Every caller has a "fall back to a sane default" path
+        // on Err — returning Ok(0) bypasses it with no warning.
+        let base_fee_hex = result
             .get("baseFeePerGas")
             .and_then(|v| v.as_array())
             .and_then(|a| a.last())
             .and_then(|v| v.as_str())
-            .map(|s| {
-                U256::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).unwrap_or_default()
-            })
-            .unwrap_or_default();
+            .context("eth_feeHistory: missing baseFeePerGas")?;
+        let base_fee =
+            U256::from_str_radix(base_fee_hex.strip_prefix("0x").unwrap_or(base_fee_hex), 16)
+                .context("eth_feeHistory: invalid baseFeePerGas hex")?;
         let priority = result
             .get("reward")
             .and_then(|v| v.as_array())
@@ -737,8 +742,26 @@ impl RpcClient {
         while let Some(joined) = set.join_next().await {
             match joined {
                 Ok((url, Ok(result))) => {
-                    let hex_str = result.as_str().context("tx hash not a string")?;
-                    let hash = hex_str.parse().context("invalid tx hash")?;
+                    // A node that answers 200 with a non-hash `result` (null, an
+                    // object, junk from a flaky load balancer) is a *loser*, not a
+                    // fatal error. Propagating with `?` here dropped the JoinSet,
+                    // aborting the other in-flight sends whose requests were
+                    // already on the wire — so one bad node discarded valid
+                    // acceptances and reported a failure for a tx that was very
+                    // likely live in the mempool.
+                    let parsed = result
+                        .as_str()
+                        .context("tx hash not a string")
+                        .and_then(|s| s.parse::<B256>().context("invalid tx hash"));
+                    let hash = match parsed {
+                        Ok(h) => h,
+                        Err(e) => {
+                            let msg = format!("{}: bad send result: {}", Self::short_url(&url), e);
+                            crate::rlog!("RPC send failed: {}", msg);
+                            losers.push(msg);
+                            continue;
+                        }
+                    };
                     let winner = Self::short_url(&url);
                     if losers.is_empty() {
                         crate::rlog!("RPC send OK via {}", winner);

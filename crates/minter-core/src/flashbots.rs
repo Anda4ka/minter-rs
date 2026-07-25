@@ -237,6 +237,7 @@ impl FlashbotsClient {
         let mut target_blocks = Vec::new();
         let mut last_resp = String::new();
         let mut bundle_hash = None;
+        let mut ok_count = 0usize;
 
         for i in 1..=n {
             if cancel
@@ -251,6 +252,7 @@ impl FlashbotsClient {
             crate::rlog!("Flashbots eth_sendBundle target block {}", target);
             match self.send_bundle(auth, txs, target).await {
                 Ok(v) => {
+                    ok_count += 1;
                     last_resp = v.to_string();
                     if let Some(h) = v.get("bundleHash").and_then(|x| x.as_str()) {
                         bundle_hash = Some(h.to_string());
@@ -271,6 +273,17 @@ impl FlashbotsClient {
             if i < n {
                 tokio::time::sleep(Duration::from_millis(self.config.resubmit_ms)).await;
             }
+        }
+
+        // Every attempt failed → this is a failed submission, not a submitted
+        // bundle. Returning Ok here made callers log "bundle submitted", then
+        // burn the receipt-wait window on txs no relay ever accepted.
+        if ok_count == 0 {
+            bail!(
+                "all {} eth_sendBundle submissions failed; last error: {}",
+                n,
+                crate::safe_truncate(&last_resp, 400)
+            );
         }
 
         Ok(BundleSubmitResult {

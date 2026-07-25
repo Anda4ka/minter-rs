@@ -199,6 +199,12 @@ pub async fn run_sweep(
     config: &SweepConfig,
 ) -> Vec<MintResult> {
     let chain_id = match rpc.chain_id().await {
+        // Chain id 0 is never valid; signing with it produces a tx no network
+        // will accept (and, on a broken node, an unreplayable signature).
+        Ok(0) => {
+            crate::rlog!("RPC returned invalid chain id 0 — refusing to sign");
+            return vec![];
+        }
         Ok(id) => id,
         Err(e) => {
             crate::rlog!("Failed to get chain ID: {}", e);
@@ -576,6 +582,12 @@ pub async fn run_sweep_eth(
         return vec![];
     }
     let chain_id = match rpc.chain_id().await {
+        // Chain id 0 is never valid; signing with it produces a tx no network
+        // will accept (and, on a broken node, an unreplayable signature).
+        Ok(0) => {
+            crate::rlog!("RPC returned invalid chain id 0 — refusing to sign");
+            return vec![];
+        }
         Ok(id) => id,
         Err(e) => {
             crate::rlog!("Failed to get chain ID: {}", e);
@@ -611,9 +623,17 @@ pub async fn run_sweep_eth(
         config.gas.gas_multiplier,
     )
     .await;
-    let gas_cost = max_fee * U256::from(gas_limit);
+    // OP-stack chains bill an L1 data fee on top of L2 gas, and the node's
+    // balance check includes it. Reserving only `gas_limit * max_fee` and
+    // sending the exact remainder makes every sweep on Base/Optimism/etc. fail
+    // with "insufficient funds" — by precisely the L1 fee.
+    let l1_data_fee = crate::gas::estimate_l1_data_fee(rpc, chain_id).await;
+    let gas_cost = max_fee * U256::from(gas_limit) + l1_data_fee;
 
     crate::rlog!("\nETH Sweep Summary:");
+    if !l1_data_fee.is_zero() {
+        crate::rlog!("  L1 data fee reserve: {} ETH", fmt_eth(l1_data_fee));
+    }
     crate::rlog!("  Destination: {:?}", config.destination);
     crate::rlog!("  Chain ID:    {}", chain_id);
     crate::rlog!("  Wallets:     {}", signers.len());

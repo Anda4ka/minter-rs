@@ -121,6 +121,18 @@ pub fn encode_aggregate3_value(steps: &[MulticallStep]) -> anyhow::Result<(Bytes
     let mut total_value = U256::ZERO;
     let mut calls = Vec::with_capacity(steps.len());
     for s in steps {
+        // Multicall3 forwards `msg.value` per call but requires
+        // `msg.value == sum(values)`. If a value-carrying call reverts under
+        // allowFailure, the outer tx still succeeds and that ETH stays in the
+        // Multicall3 contract with no way to withdraw it — silently lost.
+        if s.allow_failure && !s.value.is_zero() {
+            bail!(
+                "step '{}' carries {} wei with allowFailure=true: if it reverts that ETH is \
+                 stranded in Multicall3 permanently. Use allowFailure=false for calls with value.",
+                if s.label.is_empty() { "?" } else { &s.label },
+                s.value
+            );
+        }
         total_value = total_value.saturating_add(s.value);
         calls.push(Call3Value {
             target: s.target,
@@ -247,6 +259,18 @@ pub async fn run_multicall(from: &Signer, rpc: &RpcClient, config: &MulticallCon
     }
 
     let chain_id = match rpc.chain_id().await {
+        // Chain id 0 is never valid; signing with it produces a tx no network
+        // will accept (and, on a broken node, an unreplayable signature).
+        Ok(0) => {
+            return MintResult {
+                address: addr,
+                tx_hash: None,
+                status: WalletStatus::Failed,
+                gas_used: None,
+                block_number: None,
+                error: Some("RPC returned invalid chain id 0".to_string()),
+            };
+        }
         Ok(id) => id,
         Err(e) => {
             return MintResult {
@@ -466,5 +490,43 @@ mod tests {
             format!("{:?}", MULTICALL3).to_lowercase(),
             "0xca11bde05977b3631167028862be2a173976ca11"
         );
+    }
+}
+
+#[cfg(test)]
+mod allow_failure_value_tests {
+    use super::*;
+
+    fn step(value: u64, allow_failure: bool) -> MulticallStep {
+        MulticallStep {
+            target: Address::repeat_byte(0x11),
+            value: U256::from(value),
+            call_data: Bytes::from(vec![0u8; 4]),
+            allow_failure,
+            label: "step1".into(),
+        }
+    }
+
+    #[test]
+    fn rejects_value_with_allow_failure() {
+        let err = encode_aggregate3_value(&[step(1_000, true)]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("stranded"), "got: {msg}");
+    }
+
+    #[test]
+    fn allows_zero_value_with_allow_failure() {
+        assert!(encode_aggregate3_value(&[step(0, true)]).is_ok());
+    }
+
+    #[test]
+    fn allows_value_without_allow_failure() {
+        let (_data, total) = encode_aggregate3_value(&[step(1_000, false)]).unwrap();
+        assert_eq!(total, U256::from(1_000u64));
+    }
+
+    #[test]
+    fn empty_batch_errors() {
+        assert!(encode_aggregate3_value(&[]).is_err());
     }
 }

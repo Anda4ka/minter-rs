@@ -262,6 +262,19 @@ impl Settings {
                 }
             }
         }
+        // `to_env_map` writes FLASHBOTS_RESUBMIT_MS but nothing read it back, so
+        // every env refresh overlaid the default 1200 on top of the operator's
+        // value and legacy-.env migration silently dropped it.
+        if !only_if_empty || self.flashbots_resubmit_ms == Self::default().flashbots_resubmit_ms {
+            if let Some(ms) = env
+                .get("FLASHBOTS_RESUBMIT_MS")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+            {
+                if ms >= 200 {
+                    self.flashbots_resubmit_ms = ms;
+                }
+            }
+        }
 
         if !only_if_empty || self.gas_limit == Self::default().gas_limit {
             if let Some(v) = env.get("GAS_LIMIT").and_then(|v| v.parse().ok()) {
@@ -303,8 +316,9 @@ impl Settings {
             self.skip_preflight = skip_preflight_from_env(env);
             self.beep = beep_from_env(env);
             self.export_results = export_results_from_env(env);
-            if let Some(v) = env.get("DRY_RUN") {
-                self.dry_run = v == "1" || v.eq_ignore_ascii_case("true");
+            if env.contains_key("DRY_RUN") {
+                // Fail-safe: only an explicit falsy value disables dry-run.
+                self.dry_run = crate::types::dry_run_from_env(env);
             }
         } else {
             // Migration: only apply flags if env explicitly sets them
@@ -320,8 +334,9 @@ impl Settings {
             if env.contains_key("EXPORT_RESULTS") {
                 self.export_results = export_results_from_env(env);
             }
-            if let Some(v) = env.get("DRY_RUN") {
-                self.dry_run = v == "1" || v.eq_ignore_ascii_case("true");
+            if env.contains_key("DRY_RUN") {
+                // Fail-safe: only an explicit falsy value disables dry-run.
+                self.dry_run = crate::types::dry_run_from_env(env);
             }
         }
     }
@@ -917,5 +932,36 @@ mod tests {
                     .contains("round_atomic_key")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flashbots_resubmit_ms_roundtrips_through_env() {
+        // Regression: to_env_map exported FLASHBOTS_RESUBMIT_MS but nothing read
+        // it back, so every env refresh reset the operator's value to 1200.
+        let mut env = std::collections::HashMap::new();
+        env.insert("FLASHBOTS_RESUBMIT_MS".to_string(), "2500".to_string());
+        let mut s = Settings::default();
+        s.merge_from_env_map(&env, false);
+        assert_eq!(s.flashbots_resubmit_ms, 2500);
+
+        // Full round-trip: export then re-import must preserve the value.
+        let exported = s.to_env_map();
+        assert_eq!(
+            exported.get("FLASHBOTS_RESUBMIT_MS").map(|v| v.as_str()),
+            Some("2500")
+        );
+        let mut s2 = Settings::default();
+        s2.merge_from_env_map(&exported, false);
+        assert_eq!(s2.flashbots_resubmit_ms, 2500);
+
+        // Below the 200ms floor is ignored (keeps the default).
+        let mut low = std::collections::HashMap::new();
+        low.insert("FLASHBOTS_RESUBMIT_MS".to_string(), "50".to_string());
+        let mut s3 = Settings::default();
+        s3.merge_from_env_map(&low, false);
+        assert_eq!(
+            s3.flashbots_resubmit_ms,
+            Settings::default().flashbots_resubmit_ms
+        );
     }
 }

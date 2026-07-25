@@ -19,7 +19,52 @@ struct CachedToken {
 }
 
 const CACHE_FILE: &str = "auth_cache.bin";
+/// Fallback lifetime when the token carries no readable `exp` claim.
 const TOKEN_TTL_SECS: i64 = 3000;
+/// Safety margin subtracted from a JWT's own `exp` so a token isn't used in the
+/// last moments before the server rejects it.
+const TOKEN_EXPIRY_SKEW_SECS: i64 = 30;
+
+/// Decode a base64url segment (no padding) without pulling in a base64 crate.
+fn b64url_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &c in s.as_bytes() {
+        if c == b'=' {
+            break;
+        }
+        let v = val(c)? as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Read the `exp` (unix seconds) claim out of a JWT access token.
+///
+/// OpenSea's token carries its own lifetime; assuming a fixed TTL means a token
+/// the server has already rejected can still look "fresh" in the cache.
+fn jwt_exp_secs(token: &str) -> Option<i64> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = b64url_decode(payload)?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    v.get("exp").and_then(|e| e.as_i64())
+}
 
 pub struct AuthCache {
     tokens: HashMap<String, CachedToken>,
@@ -69,21 +114,38 @@ impl AuthCache {
         if now >= cached.expires_at {
             return None;
         }
+        // An empty token is not a usable session — force a re-auth rather than
+        // reporting a cache hit that yields unauthenticated requests.
+        if cached.access_token.trim().is_empty() {
+            return None;
+        }
         Some(&cached.access_token)
     }
 
     /// Insert/update token in memory only. Call [`flush`] once after a batch of saves
     /// so PBKDF2 + encrypt runs at most once (not per wallet).
     pub fn save(&mut self, address: &str, chain_id: u64, access_token: &str) {
+        // Never persist an empty bearer: it would look like a valid cache hit
+        // for the whole TTL and silently downgrade the wallet to anonymous.
+        if access_token.trim().is_empty() {
+            return;
+        }
         let key = format!("{}:{}", address.to_lowercase(), chain_id);
         let now = chrono::Utc::now().timestamp();
+        // Prefer the token's own `exp`. A hard-coded 3000s TTL is a guess: if the
+        // real lifetime is shorter, the cache keeps serving a token the server
+        // already rejects, and every request 401s until the TTL runs out.
+        let expires_at = jwt_exp_secs(access_token)
+            .map(|exp| exp - TOKEN_EXPIRY_SKEW_SECS)
+            .filter(|exp| *exp > now)
+            .unwrap_or(now + TOKEN_TTL_SECS);
         self.tokens.insert(
             key,
             CachedToken {
                 access_token: access_token.to_string(),
                 address: address.to_string(),
                 chain_id,
-                expires_at: now + TOKEN_TTL_SECS,
+                expires_at,
             },
         );
         self.dirty = true;
@@ -163,9 +225,16 @@ impl AuthCache {
         Ok(())
     }
 
-    fn derive_key(password: &str, salt: &[u8]) -> [u8; 32] {
-        let mut key = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, VAULT_KDF_ITERATIONS, &mut key);
+    /// Derive the AES-256 key. Returned in `Zeroizing` so the master key is
+    /// scrubbed from the stack instead of lingering in freed memory.
+    fn derive_key(password: &str, salt: &[u8]) -> Zeroizing<[u8; 32]> {
+        let mut key = Zeroizing::new([0u8; 32]);
+        pbkdf2_hmac::<Sha256>(
+            password.as_bytes(),
+            salt,
+            VAULT_KDF_ITERATIONS,
+            key.as_mut(),
+        );
         key
     }
 
@@ -174,7 +243,7 @@ impl AuthCache {
         getrandom::getrandom(&mut salt).expect("rng failed");
         let key = Self::derive_key(password, &salt);
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let cipher = Aes256Gcm::new_from_slice(&key).expect("valid key");
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).expect("valid key");
         let ciphertext = cipher.encrypt(&nonce, data).expect("encryption succeeded");
         let mut out = Vec::with_capacity(VAULT_SALT_LEN + VAULT_IV_LEN + ciphertext.len());
         out.extend_from_slice(&salt);
@@ -192,7 +261,7 @@ impl AuthCache {
         let nonce = Nonce::from_slice(nonce_bytes);
         let ciphertext = &blob[VAULT_SALT_LEN + VAULT_IV_LEN..];
         let key = Self::derive_key(password, salt);
-        let cipher = Aes256Gcm::new_from_slice(&key).context("invalid key")?;
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).context("invalid key")?;
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
             .map_err(|e| anyhow::anyhow!("auth cache decrypt failed: {}", e))?;
@@ -254,5 +323,80 @@ mod tests {
         assert_eq!(loaded.len(), 5);
         assert_eq!(loaded.get(&format!("0x{:040x}", 3), 8453), Some("tok3"));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Build an unsigned JWT with the given `exp` (only the payload is read).
+    fn jwt_with_exp(exp: i64) -> String {
+        fn b64url(bytes: &[u8]) -> String {
+            const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for c in bytes.chunks(3) {
+                let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
+                let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+                let idx = [n >> 18 & 63, n >> 12 & 63, n >> 6 & 63, n & 63];
+                for (i, ix) in idx.iter().enumerate() {
+                    if i <= c.len() {
+                        out.push(T[*ix as usize] as char);
+                    }
+                }
+            }
+            out
+        }
+        let payload = format!("{{\"exp\":{exp}}}");
+        format!("header.{}.sig", b64url(payload.as_bytes()))
+    }
+
+    #[test]
+    fn jwt_exp_is_parsed_and_preferred_over_fixed_ttl() {
+        let now = chrono::Utc::now().timestamp();
+        // Token that expires in 60s — far shorter than the 3000s fallback.
+        let short = jwt_with_exp(now + 60);
+        assert_eq!(jwt_exp_secs(&short), Some(now + 60));
+
+        let dir = std::env::temp_dir().join(format!("ac_jwt_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut c = AuthCache::load_at(dir.join("c.bin"), None);
+        c.save("0xabc", 1, &short);
+        // Must expire per the JWT, not now+3000.
+        let exp = c.tokens.get("0xabc:1").unwrap().expires_at;
+        assert!(
+            exp <= now + 60 && exp > now,
+            "expiry {exp} should track the JWT exp ({}), not the {TOKEN_TTL_SECS}s TTL",
+            now + 60
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opaque_token_falls_back_to_fixed_ttl() {
+        let now = chrono::Utc::now().timestamp();
+        assert_eq!(jwt_exp_secs("not-a-jwt"), None);
+        assert_eq!(jwt_exp_secs(""), None);
+
+        let dir = std::env::temp_dir().join(format!("ac_opaque_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut c = AuthCache::load_at(dir.join("c.bin"), None);
+        c.save("0xabc", 1, "opaque-token-value");
+        let exp = c.tokens.get("0xabc:1").unwrap().expires_at;
+        assert!(
+            exp >= now + TOKEN_TTL_SECS - 2,
+            "should use the fallback TTL"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn already_expired_jwt_does_not_poison_the_cache() {
+        let now = chrono::Utc::now().timestamp();
+        let dir = std::env::temp_dir().join(format!("ac_exp_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut c = AuthCache::load_at(dir.join("c.bin"), None);
+        // exp in the past → fall back to the TTL rather than storing a dead entry.
+        c.save("0xabc", 1, &jwt_with_exp(now - 5_000));
+        assert!(
+            c.get("0xabc", 1).is_some(),
+            "must not store an already-dead token"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

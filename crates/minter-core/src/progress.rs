@@ -27,8 +27,12 @@ pub struct MintEvent {
 /// Redact secrets from free-form mint log strings (JWT, long hex keys).
 pub fn sanitize_log_text(s: &str) -> String {
     let mut out = s.to_string();
-    // Bearer / JWT-like
-    if let Some(idx) = out.to_lowercase().find("bearer ") {
+    // Bearer / JWT-like.
+    // ASCII-lowercase only: `to_lowercase()` applies full Unicode case mapping,
+    // which can change byte lengths (e.g. `İ` 2 bytes → `i̇` 3 bytes), so its
+    // byte index is invalid for slicing `out` — that either panics mid-char or
+    // shifts the slice so redaction silently fails and the token reaches the log.
+    if let Some(idx) = out.to_ascii_lowercase().find("bearer ") {
         let rest = &out[idx + 7..];
         let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
         if end > 12 {
@@ -236,5 +240,32 @@ impl MintReporter for StdoutReporter {
         let err = event.error.as_deref().unwrap_or("");
         let tx = event.tx_hash.as_deref().unwrap_or("");
         println!("[{}] {} {} {} {}", addr, status, detail, tx, err);
+    }
+}
+
+#[cfg(test)]
+mod sanitize_unicode_tests {
+    use super::sanitize_log_text;
+
+    #[test]
+    fn redacts_bearer_after_multibyte_chars() {
+        // `İ` (U+0130) grows from 2 to 3 bytes under full Unicode lowercasing,
+        // which used to shift the byte index and panic or skip redaction.
+        let s = "İ Bearer abcdefghijklmnopqrstuvwxyz rest";
+        let out = sanitize_log_text(s);
+        assert!(out.contains("REDACTED"), "got: {out}");
+        assert!(!out.contains("abcdefghijklmnopqrstuvwxyz"), "got: {out}");
+
+        // `ẞ` (U+1E9E) shrinks 3 -> 2 bytes when lowercased.
+        let s2 = "ẞẞẞ Bearer abcdefghijklmnopqrstuvwxyz tail";
+        let out2 = sanitize_log_text(s2);
+        assert!(!out2.contains("abcdefghijklmnopqrstuvwxyz"), "got: {out2}");
+    }
+
+    #[test]
+    fn plain_ascii_bearer_still_redacted() {
+        let out = sanitize_log_text("auth Bearer abcdefghijklmnopqrstuv done");
+        assert!(out.contains("REDACTED"));
+        assert!(out.contains("done"));
     }
 }

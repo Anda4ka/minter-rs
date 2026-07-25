@@ -114,7 +114,10 @@ pub fn write_run_metrics(m: &crate::metrics::RunMetrics) -> Result<PathBuf> {
 }
 
 fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
+    // A bare '\r' also terminates a record for most CSV readers (RFC 4180), so
+    // an error string with mixed line endings would split the row and misalign
+    // every following column.
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
@@ -266,5 +269,21 @@ mod wl_export_tests {
         assert!(ne.contains("0xdef"));
         let _ = std::fs::remove_dir_all(&out.dir);
         let _ = dir; // silence
+    }
+}
+
+#[cfg(test)]
+mod csv_escape_tests {
+    use super::csv_escape;
+
+    #[test]
+    fn quotes_fields_with_record_separators() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_escape("line\nbreak"), "\"line\nbreak\"");
+        // A bare CR also terminates a record for most CSV readers.
+        assert_eq!(csv_escape("line\rbreak"), "\"line\rbreak\"");
+        assert_eq!(csv_escape("crlf\r\nhere"), "\"crlf\r\nhere\"");
     }
 }

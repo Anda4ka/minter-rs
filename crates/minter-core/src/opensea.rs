@@ -499,10 +499,20 @@ async fn siwe_auth_once(
     }
 
     let auth_data: serde_json::Value = verify_resp.json().await?;
+    // HTTP 200 with no accessToken is a *failed* auth, not an anonymous session.
+    // Returning Ok("") here made the caller mark the wallet auth_ok and cache an
+    // empty bearer for the full TTL, so every later request silently went out
+    // unauthenticated while the log said "CACHED OK".
     let access_token = auth_data
         .get("accessToken")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Verify returned HTTP 200 without accessToken: {}",
+                crate::safe_truncate(&auth_data.to_string(), 300)
+            )
+        })?
         .to_string();
 
     Ok(AuthSession {

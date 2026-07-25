@@ -4,6 +4,14 @@ use anyhow::{Context, Result, bail};
 use crate::rpc::RpcClient;
 use crate::types::{GasMode, GasParams};
 
+/// Ceiling for a tip adopted automatically from the network (50 gwei).
+///
+/// Only applies when the operator gave no explicit `priority_fee`. The network
+/// value is a single block's 25th-percentile reward read from an untrusted RPC
+/// and is paid verbatim, so it needs a sanity bound; an explicit user value is
+/// never clamped.
+pub const MAX_AUTO_PRIORITY_FEE_WEI: u64 = 50_000_000_000;
+
 pub fn calculate_fees(
     params: &GasParams,
     base_fee: U256,
@@ -17,6 +25,12 @@ pub fn calculate_fees(
                 .context("manual mode requires priority_fee")?;
             if mf < pf {
                 bail!("max fee cannot be lower than priority fee");
+            }
+            // A zero max fee can never be mined, and it also makes the retry
+            // loop non-terminating: the 4x ceiling is 0, and bumping 0 stays 0,
+            // so the underpriced branch spins until attempts run out.
+            if mf.is_zero() {
+                bail!("max fee must be greater than zero");
             }
             Ok((mf, pf))
         }
@@ -33,7 +47,10 @@ pub fn calculate_fees(
             Ok((mf, pf))
         }
         GasMode::Auto => {
-            let pf = params.priority_fee.unwrap_or(network_priority);
+            // Bound the network-derived tip (see MAX_AUTO_PRIORITY_FEE_WEI).
+            let pf = params
+                .priority_fee
+                .unwrap_or_else(|| network_priority.min(U256::from(MAX_AUTO_PRIORITY_FEE_WEI)));
             let mf = params.max_fee.unwrap_or_else(|| {
                 mul_bps(base_fee, multiplier_to_bps(params.base_fee_multiplier)) + pf
             });
@@ -129,6 +146,62 @@ pub async fn resolve_native_transfer_gas(
     .await
 }
 
+/// OP-stack chains that charge a separate L1 data fee on top of L2 gas.
+pub fn chain_has_l1_data_fee(chain_id: u64) -> bool {
+    matches!(
+        chain_id,
+        10 |      // Optimism
+        8453 |    // Base
+        81457 |   // Blast
+        7777777 | // Zora
+        360 // Shape
+    )
+}
+
+/// OP-stack `GasPriceOracle` predeploy address (same on every OP chain).
+const OP_GAS_PRICE_ORACLE: Address = Address::new([
+    0x42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x0F,
+]);
+
+/// Conservative L1 data fee used when the oracle can't be read.
+const L1_FEE_FALLBACK_WEI: u64 = 5_000_000_000_000;
+
+/// Estimate the L1 data fee an OP-stack chain will charge for a simple native
+/// transfer, in wei. Returns zero on non-OP chains.
+///
+/// On OP-stack chains the node checks
+/// `balance >= value + gas_limit * max_fee_per_gas + l1_cost`, so a sweep that
+/// reserves only `gas_limit * max_fee` and sends the rest is rejected for
+/// insufficient funds by exactly this amount — every time.
+pub async fn estimate_l1_data_fee(rpc: &RpcClient, chain_id: u64) -> U256 {
+    if !chain_has_l1_data_fee(chain_id) {
+        return U256::ZERO;
+    }
+    // getL1Fee(bytes) with a ~120-byte placeholder: the size of a signed EIP-1559
+    // native transfer. Encoding: selector || offset(32) || len(120) || padded data.
+    let mut data = crate::abi::function_selector("getL1Fee(bytes)").to_vec();
+    data.extend_from_slice(&word_from_u64(32));
+    data.extend_from_slice(&word_from_u64(120));
+    data.extend_from_slice(&[0u8; 128]); // 120 bytes padded to a 32-byte multiple
+
+    let raw = match rpc
+        .eth_call(&Address::ZERO, &OP_GAS_PRICE_ORACLE, &Bytes::from(data))
+        .await
+    {
+        Ok(b) if b.len() >= 32 => U256::from_be_slice(&b[..32]),
+        _ => U256::from(L1_FEE_FALLBACK_WEI),
+    };
+    // 2x headroom: the L1 base fee can rise between this read and inclusion.
+    raw.saturating_mul(U256::from(2u64))
+        .max(U256::from(L1_FEE_FALLBACK_WEI))
+}
+
+fn word_from_u64(v: u64) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[24..].copy_from_slice(&v.to_be_bytes());
+    w
+}
+
 /// Bump gas after "intrinsic gas too low" (capped).
 pub fn bump_gas_after_intrinsic(current: u64) -> u64 {
     current.saturating_mul(3).max(300_000).min(2_000_000)
@@ -146,7 +219,10 @@ pub fn bump_fee_bps(fee: U256, bps: u64) -> U256 {
         return U256::ZERO;
     }
     let bumped = fee.saturating_mul(U256::from(bps)) / U256::from(10_000u64);
-    if !fee.is_zero() && bumped <= fee {
+    // Must always make progress, including from zero: `0 * bps / 10000 == 0`
+    // would otherwise leave an RBF/underpriced loop bumping forever with no
+    // change and no ceiling to break it.
+    if bumped <= fee {
         fee.saturating_add(U256::from(1u64))
     } else {
         bumped
@@ -356,5 +432,65 @@ mod tests {
         assert!(apply_gas_limit(50_000, 1.15, 8453, 21_000) >= 150_000);
         // Never below the raw base.
         assert!(apply_gas_limit(200_000, 1.0, 1, 21_000) >= 200_000);
+    }
+}
+
+#[cfg(test)]
+mod auto_priority_cap_tests {
+    use super::*;
+
+    #[test]
+    fn network_priority_is_capped_in_auto_mode() {
+        let params = GasParams {
+            mode: GasMode::Auto,
+            base_fee_multiplier: 2.0,
+            priority_fee: None, // adopt from network
+            ..Default::default()
+        };
+        // Absurd tip from a hostile / gas-war RPC: 10_000 gwei.
+        let insane = U256::from(10_000_000_000_000u64);
+        let (mf, pf) = calculate_fees(&params, U256::from(1_000_000_000u64), insane).unwrap();
+        assert_eq!(
+            pf,
+            U256::from(MAX_AUTO_PRIORITY_FEE_WEI),
+            "tip must be clamped"
+        );
+        assert!(mf >= pf, "EIP-1559 invariant must hold");
+    }
+
+    #[test]
+    fn sane_network_priority_passes_through() {
+        let params = GasParams {
+            mode: GasMode::Auto,
+            base_fee_multiplier: 2.0,
+            priority_fee: None,
+            ..Default::default()
+        };
+        let normal = U256::from(1_500_000_000u64); // 1.5 gwei
+        let (_mf, pf) = calculate_fees(&params, U256::from(1_000_000_000u64), normal).unwrap();
+        assert_eq!(pf, normal);
+    }
+
+    #[test]
+    fn explicit_priority_is_never_capped() {
+        let huge = U256::from(500_000_000_000u64); // 500 gwei, user's explicit choice
+        let params = GasParams {
+            mode: GasMode::Auto,
+            base_fee_multiplier: 2.0,
+            priority_fee: Some(huge),
+            ..Default::default()
+        };
+        let (_mf, pf) = calculate_fees(&params, U256::from(1_000_000_000u64), U256::ZERO).unwrap();
+        assert_eq!(pf, huge, "explicit user value must not be clamped");
+    }
+
+    #[test]
+    fn l1_data_fee_chains() {
+        for id in [10u64, 8453, 81457, 7777777, 360] {
+            assert!(chain_has_l1_data_fee(id), "chain {id} is OP-stack");
+        }
+        for id in [1u64, 137, 42161, 56] {
+            assert!(!chain_has_l1_data_fee(id), "chain {id} is not OP-stack");
+        }
     }
 }

@@ -32,6 +32,22 @@ pub async fn run_disperse(
 
     let from_addr = from.address();
     let chain_id = match rpc.chain_id().await {
+        // Chain id 0 is never valid; signing with it produces a tx no network
+        // will accept (and, on a broken node, an unreplayable signature).
+        Ok(0) => {
+            crate::rlog!("RPC returned invalid chain id 0 — refusing to sign");
+            return destinations
+                .iter()
+                .map(|d| MintResult {
+                    address: *d,
+                    tx_hash: None,
+                    status: WalletStatus::Failed,
+                    gas_used: None,
+                    block_number: None,
+                    error: Some("RPC returned invalid chain id 0".to_string()),
+                })
+                .collect();
+        }
         Ok(id) => id,
         Err(e) => {
             crate::rlog!("Failed to get chain ID: {}", e);
@@ -140,11 +156,27 @@ pub async fn run_disperse(
     crate::rlog!("  Need (value+gas est): {} ETH", fmt_eth(total_need));
 
     if balance < total_need {
-        crate::rlog!(
-            "  [WARN] Balance may be insufficient (need ~{} ETH, have {})",
+        // Hard stop before the first send. Warning-and-continue funded a couple
+        // of wallets and then aborted mid-way, leaving the fleet half-funded and
+        // the operator's gas spent for nothing.
+        let msg = format!(
+            "insufficient balance: need ~{} ETH for {} destination(s) + gas, have {}",
             fmt_eth(total_need),
+            destinations.len(),
             fmt_eth(balance)
         );
+        crate::rlog!("  [ABORT] {}", msg);
+        return destinations
+            .iter()
+            .map(|d| MintResult {
+                address: *d,
+                tx_hash: None,
+                status: WalletStatus::Failed,
+                gas_used: None,
+                block_number: None,
+                error: Some(msg.clone()),
+            })
+            .collect();
     }
 
     if config.amount.is_zero() {
@@ -180,6 +212,11 @@ pub async fn run_disperse(
 
     let mut gas_limit = gas_limit;
     let mut results = Vec::with_capacity(destinations.len());
+    // Dry-run must model the balance *draining* across destinations. Checking
+    // each payment against the full starting balance reported "DRY RUN OK" for
+    // all N even when the wallet could only fund one — the live run then funded
+    // a couple and aborted mid-way, leaving the fleet half-funded.
+    let mut sim_balance = balance;
 
     for dest in destinations {
         if *dest == from_addr {
@@ -204,8 +241,10 @@ pub async fn run_disperse(
         );
 
         if config.dry_run {
-            // eth_call-style balance check is enough for dry path
-            if balance < config.amount + gas_cost_one {
+            // Cumulative check: each simulated payment spends from the running
+            // balance, mirroring what the live run would actually do.
+            let per_tx_cost = config.amount.saturating_add(gas_cost_one);
+            if sim_balance < per_tx_cost {
                 results.push(MintResult {
                     address: *dest,
                     tx_hash: None,
@@ -213,11 +252,12 @@ pub async fn run_disperse(
                     gas_used: None,
                     block_number: None,
                     error: Some(format!(
-                        "insufficient balance for amount+gas (have {})",
-                        fmt_eth(balance)
+                        "insufficient balance for amount+gas (remaining {})",
+                        fmt_eth(sim_balance)
                     )),
                 });
             } else {
+                sim_balance -= per_tx_cost;
                 crate::rlog!("  DRY RUN OK");
                 results.push(MintResult {
                     address: *dest,

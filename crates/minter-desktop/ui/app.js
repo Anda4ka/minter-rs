@@ -6,6 +6,24 @@ const $ = (id) => document.getElementById(id);
 
 /** Open http(s) links in system browser (Tauri shell plugin). */
 async function openExternalUrl(url) {
+  // Enforce the http(s)-only contract this function documents, at the call site.
+  //
+  // The Rust shell plugin already applies a default validator regex that rejects
+  // file:// / javascript: / custom schemes, so this is defense in depth rather
+  // than the only guard — but it keeps the rejection explicit and local, and it
+  // still holds if that plugin scope is ever widened in tauri.conf.json.
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch {
+    console.warn("refusing to open malformed URL");
+    return;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    console.warn(`refusing to open non-http(s) URL scheme: ${parsed.protocol}`);
+    return;
+  }
+  url = parsed.href;
   try {
     const { open } = window.__TAURI__.shell || {};
     if (open) {
@@ -324,6 +342,14 @@ function openConfirmModal(opts) {
     okLabel = "Continue",
   } = opts;
   return new Promise((resolve) => {
+    // Only one modal can be open at a time. Overwriting a pending resolver left
+    // the earlier caller awaiting a promise that could never settle, stranding
+    // that flow forever — reject it (as "declined") before taking over.
+    if (modalResolve) {
+      const prev = modalResolve;
+      modalResolve = null;
+      prev(false);
+    }
     modalResolve = resolve;
     $("modal-title").textContent = title;
     $("modal-body").textContent = body;
@@ -650,7 +676,14 @@ async function saveRunsHistoryToDisk() {
   });
 }
 
+let sideListenersArmed = false;
+
 async function setupMintSideListeners() {
+  // `showMain()` runs after *every* unlock (including each idle-lock → unlock
+  // cycle) and the unlisten handles were discarded, so after N unlocks a single
+  // confirm event fired N chimes and one 401 raised N toasts.
+  if (sideListenersArmed) return;
+  sideListenersArmed = true;
   try {
     const { listen } = window.__TAURI__.event;
     await listen("mint-first-confirm", (ev) => {
@@ -2542,17 +2575,39 @@ async function attachRawSniperEvents() {
   }
 }
 
+/** ETH decimal string → wei (BigInt). Throws on malformed input. */
+function ethStrToWei(s) {
+  const t = String(s ?? "").trim().replace(",", ".");
+  if (!t || !/^\d*\.?\d*$/.test(t)) throw new Error("invalid amount");
+  const [i, f = ""] = t.split(".");
+  return BigInt(i || "0") * 10n ** 18n + BigInt(((f + "0".repeat(18)).slice(0, 18)) || "0");
+}
+
+/** wei (BigInt) → ETH decimal string, no trailing zeros. */
+function weiToEthStr(w) {
+  const s = w.toString().padStart(19, "0");
+  const out = (s.slice(0, -18) + "." + s.slice(-18)).replace(/0+$/, "").replace(/\.$/, "");
+  return out || "0";
+}
+
 function rawEffectiveValueEth() {
   const p = rawPreset();
-  const v = parseFloat(String($("raw-value")?.value || "0").replace(",", ".")) || 0;
-  if (v <= 0) return "0";
+  // Exact integer (wei) math — never floats. A wei value cannot be represented
+  // in an f64, so parseFloat + toFixed(8) silently rounded the price (and
+  // zeroed anything below 1e-8 ETH), producing a msg.value the contract's
+  // `require(msg.value == price * qty)` rejects.
+  let wei;
+  try {
+    wei = ethStrToWei($("raw-value")?.value || "0");
+  } catch (_) {
+    return "0";
+  }
+  if (wei <= 0n) return "0";
   // Simple: field is ETH per NFT → total = per × qty
   // Custom: field is total ETH sent with the call
-  if (p === "custom") {
-    return String(Number(v.toFixed(8)));
-  }
-  const qty = Math.max(1, parseInt($("raw-qty")?.value || "1", 10) || 1);
-  return String(Number((v * qty).toFixed(8)));
+  if (p === "custom") return weiToEthStr(wei);
+  const qty = BigInt(Math.max(1, parseInt($("raw-qty")?.value || "1", 10) || 1));
+  return weiToEthStr(wei * qty);
 }
 
 /** Gas fields from Raw UI (empty / auto → omit, use Settings). */
@@ -3071,7 +3126,10 @@ $("btn-disperse")?.addEventListener("click", async () => {
   const chain = ($("disp-chain")?.value || "").trim();
   const from = ($("disp-from")?.value || "").trim();
   const to = selectedDisperseTo();
-  const amountEth = ($("disp-amount")?.value || "").trim();
+  // Normalize the decimal separator once, and send the *normalized* string.
+  // Validation below already ran on a comma-normalized copy, so an RU-locale
+  // "0,5" passed the UI check and then failed in the backend parser.
+  const amountEth = ($("disp-amount")?.value || "").trim().replace(",", ".");
   const dry = $("disp-dry")?.checked ?? true;
   const out = $("disp-out");
   if (!chain) {
@@ -3207,7 +3265,9 @@ function collectMulticallSteps() {
     const fn = card.querySelector(".mc-fn")?.value?.trim() || "";
     const paramsRaw = card.querySelector(".mc-params")?.value || "";
     const calldata = card.querySelector(".mc-data")?.value?.trim() || "";
-    const valueEth = card.querySelector(".mc-value")?.value?.trim() || "0";
+    // Normalize the decimal separator — the backend amount parser rejects commas.
+    const valueEth =
+      card.querySelector(".mc-value")?.value?.trim()?.replace(",", ".") || "0";
     const allowFailure = !!card.querySelector(".mc-allow-fail")?.checked;
     if (!target) return;
     if (!fn && !calldata) return;
@@ -3292,6 +3352,16 @@ $("btn-multicall")?.addEventListener("click", async () => {
 /** @type {import('./task-types').Task[]} */
 let mintTasks = [];
 let activeTaskId = null;
+/**
+ * Synchronous single-flight latch for task start.
+ *
+ * `activeTaskId` is only assigned after several awaits (balance filter, settings
+ * fetch, confirm modal), leaving a multi-second window in which a second click
+ * entered `startMintTask` concurrently. Both would reach `run_mint`; the backend
+ * busy-guard rejected the loser, but the loser's `finally` then cleared the UI
+ * run state while the winner's LIVE mint was still going.
+ */
+let taskStartInFlight = false;
 let taskIdSeq = 1;
 /** @type {"create"|"edit"|"duplicate"} */
 let taskModalMode = "create";
@@ -4897,7 +4967,7 @@ function renderNftsPage() {
       <td class="mono">${escapeHtml(shortAddr(w.address))}</td>
       <td class="${cls}">${escapeHtml(st)}</td>
       <td>${txCell}</td>
-      <td>${w.gasUsed ?? w.gas_used ?? "—"}</td>
+      <td>${escapeHtml(String(w.gasUsed ?? w.gas_used ?? "—"))}</td>
       <td class="error">${escapeHtml(w.error || "")}</td>`;
     tb.appendChild(tr);
   }
@@ -4996,6 +5066,11 @@ function requestStartTask(taskId) {
   const task = mintTasks.find((x) => x.id === taskId);
   if (!task) return;
   if (task.status === "running" || task.status === "queued") return;
+  // A start is already being set up (pre-flight awaits) — ignore the extra click.
+  if (taskStartInFlight) {
+    showToast(t("tasks.busy") || "Mint already starting — wait or Stop first", "warn");
+    return;
+  }
   const reasons = computeBlockReasons({ ...task, status: "ready" });
   if (reasons.length) {
     appendMintLog(`Blocked «${task.name}»: ${reasons[0]}`);
@@ -5041,10 +5116,30 @@ async function processQueue() {
 }
 
 /**
+ * Single-flight wrapper around {@link startMintTaskInner}.
+ *
+ * Claims the start slot synchronously (before any await) and always releases it,
+ * so a throw in a pre-flight step can't leave the latch stuck and block every
+ * future start.
+ *
  * @param {string} taskId
  * @param {{ fromQueue?: boolean }} opts
  */
 async function startMintTask(taskId, opts = {}) {
+  if (taskStartInFlight) return;
+  taskStartInFlight = true;
+  try {
+    await startMintTaskInner(taskId, opts);
+  } finally {
+    taskStartInFlight = false;
+  }
+}
+
+/**
+ * @param {string} taskId
+ * @param {{ fromQueue?: boolean }} opts
+ */
+async function startMintTaskInner(taskId, opts = {}) {
   const fromQueue = !!opts.fromQueue;
   const task = mintTasks.find((x) => x.id === taskId);
   if (!task) return;

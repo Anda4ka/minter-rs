@@ -72,7 +72,10 @@ pub fn is_already_known(msg: &str) -> bool {
     l.contains("already known")
         // safe synonyms across providers:
         || l.contains("alreadyknown")
-        || l.contains("known transaction")
+        // NB: geth's rejection "unknown transaction" contains the substring
+        // "known transaction". Treating that as accepted marks a *rejected* tx
+        // as Sent and then blocks waiting for a receipt that never arrives.
+        || (l.contains("known transaction") && !l.contains("unknown transaction"))
         || l.contains("already imported")
 }
 
@@ -282,5 +285,17 @@ mod tests {
         );
         assert_eq!(json_rpc_code("weird code: 3 here"), Some(3));
         assert_eq!(json_rpc_code("no code present"), None);
+    }
+
+    #[test]
+    fn unknown_transaction_is_not_already_known() {
+        // geth's rejection string contains the substring "known transaction".
+        assert!(!is_already_known("unknown transaction"));
+        assert!(!is_already_known("Unknown transaction type: 3"));
+        // real "already known" variants still match
+        assert!(is_already_known("already known"));
+        assert!(is_already_known("known transaction"));
+        assert!(is_already_known("AlreadyKnown"));
+        assert!(is_already_known("already imported"));
     }
 }

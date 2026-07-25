@@ -244,11 +244,12 @@ impl Session {
     }
 
     pub fn rpc_configured(&self) -> bool {
-        let s = self.rpc_status.to_lowercase();
-        !s.is_empty()
-            && !s.contains("not set")
-            && !s.contains("not configured")
-            && !s.contains("not checked")
+        // Check the real source of truth. This used to sniff `rpc_status` for
+        // legacy sentinel strings ("not set" / "not configured" / "not checked")
+        // that the code no longer produces — the current values are "—", a URL
+        // count, "OK 42ms" or "failed", none of which match, so the gate was
+        // always true and `setup_ready` ignored a completely unconfigured RPC.
+        !collect_rpc_urls(&self.env).is_empty()
     }
 
     pub fn setup_ready(&self) -> bool {
@@ -599,9 +600,14 @@ impl Session {
                             proxy_label: proxy_label.clone(),
                             error: None,
                         };
+                        // A working endpoint always beats a failed one. Comparing
+                        // latency alone let a fast failure (connection refused,
+                        // NXDOMAIN, 401 — all quicker than a real round-trip)
+                        // outrank a slower *successful* probe, so a healthy chain
+                        // was reported as down.
                         let better = best
                             .as_ref()
-                            .map(|b| ms < b.latency_ms.unwrap_or(u64::MAX))
+                            .map(|b| !b.ok || ms < b.latency_ms.unwrap_or(u64::MAX))
                             .unwrap_or(true);
                         if better {
                             best = Some(row);
@@ -1031,12 +1037,7 @@ impl Session {
                     Ok(session) => {
                         let addr_s = format!("{:?}", addr);
                         cache.save(&addr_s, chain_id, &session.access_token);
-                        let token = &session.access_token;
-                        let masked = if token.len() > 16 {
-                            format!("{}…{}", &token[..8], &token[token.len() - 8..])
-                        } else {
-                            "••••".into()
-                        };
+                        let masked = mask_token(&session.access_token);
                         rows.push(AuthTestRow {
                             address: addr_s,
                             ok: true,
@@ -1097,14 +1098,7 @@ impl Session {
             let start = Instant::now();
             match opensea::siwe_auth(&addr, signer, chain_id, proxy.as_deref()).await {
                 Ok(session) => {
-                    let token = &session.access_token;
-                    let masked = if token.len() > 16 {
-                        format!("{}…{}", &token[..8], &token[token.len() - 8..])
-                    } else if token.is_empty() {
-                        "(empty)".into()
-                    } else {
-                        "••••".into()
-                    };
+                    let masked = mask_token(&session.access_token);
                     rows.push(AuthTestRow {
                         address: format!("{:?}", addr),
                         ok: true,
@@ -1133,7 +1127,17 @@ impl Session {
 
     /// OpenSea eligibility stages for primary wallet + slug.
     pub async fn check_eligibility(&self, slug: &str) -> Result<EligibilityResult> {
-        let report = self.check_eligibility_wallets(slug, None).await?;
+        // Scope to the primary wallet. Passing `None` means "all unlocked
+        // wallets", so a single-wallet check used to fire a full SIWE auth for
+        // every wallet in the vault — burning OpenSea rate limit (the 429s this
+        // codebase works hard to avoid) and writing a full WL export — then
+        // discarded every row but the first.
+        let primary = self
+            .primary_address()
+            .ok_or_else(|| anyhow::anyhow!("No wallets unlocked"))?;
+        let report = self
+            .check_eligibility_wallets(slug, Some(vec![format!("{:?}", primary)]))
+            .await?;
         let row = report
             .wallets
             .into_iter()
@@ -1521,8 +1525,12 @@ impl Session {
             let start = Instant::now();
             if let Ok((base, prio)) = rpc.fee_history().await {
                 row.fees_ms = Some(start.elapsed().as_millis() as u64);
-                row.base_fee_gwei = Some((base / U256::from(1_000_000_000u64)).to::<u128>() as u64);
-                row.priority_gwei = Some((prio / U256::from(1_000_000_000u64)).to::<u128>() as u64);
+                // `to::<u128>()` panics on overflow, and these values come
+                // straight from an untrusted (often public) RPC endpoint.
+                row.base_fee_gwei =
+                    Some((base / U256::from(1_000_000_000u64)).saturating_to::<u64>());
+                row.priority_gwei =
+                    Some((prio / U256::from(1_000_000_000u64)).saturating_to::<u64>());
             }
             if let Some(signer) = self.signers.first() {
                 let addr = signer.address();
@@ -2736,7 +2744,13 @@ fn stage_rows_from(stages: &[opensea::StageInfo], recommended: Option<usize>) ->
                 label: opensea::stage_label(s),
                 stage_type: s.stage_type.clone(),
                 eligible: opensea::stage_eligibility_label(s).to_string(),
-                price_eth: s.price_eth.map(|p| format!("{p}")),
+                // Prefer the exact wei value: `format!("{f64}")` can emit
+                // scientific notation (1e-7) and loses precision on small
+                // prices. Fall back to the f64 only when wei is absent.
+                price_eth: s
+                    .price_wei
+                    .map(crate::amount::wei_to_eth_string)
+                    .or_else(|| s.price_eth.map(|p| format!("{p}"))),
                 max_mintable: s.max_mintable,
                 stage_index: s.stage_index,
                 recommended: recommended == Some(i),
@@ -2892,10 +2906,31 @@ fn add_unique_url(urls: &mut Vec<String>, url: String) {
 }
 
 fn env_first<'a>(env: &'a HashMap<String, String>, names: &[&str]) -> Option<&'a str> {
-    names
-        .iter()
-        .find_map(|name| env.get(*name).map(|v| v.as_str()))
-        .filter(|v| !v.trim().is_empty())
+    // Filter *inside* find_map: a present-but-empty key (a blank `FOO=` line in
+    // .env) must not shadow a later alias that does have a value.
+    names.iter().find_map(|name| {
+        env.get(*name)
+            .map(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+    })
+}
+
+/// Mask a bearer token for display as `head…tail`, counting **chars**.
+///
+/// Byte-slicing an untrusted token panics when a multi-byte char straddles the
+/// cut point, so all token masking goes through this.
+fn mask_token(token: &str) -> String {
+    if token.trim().is_empty() {
+        return "(empty)".into();
+    }
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() > 16 {
+        let head: String = chars[..8].iter().collect();
+        let tail: String = chars[chars.len() - 8..].iter().collect();
+        format!("{head}…{tail}")
+    } else {
+        "••••".into()
+    }
 }
 
 fn rpc_env_names(chain: Option<&str>) -> Vec<String> {
@@ -3176,10 +3211,15 @@ pub fn load_env_file(path: &Path) -> HashMap<String, String> {
             map.insert(item.0, item.1);
         }
     }
+    // Second pass is a *fallback only*, never an override. `dotenvy` handles
+    // escapes (\n, \t, \\) and multi-line quoted values correctly; the simple
+    // line parser below does not, so letting it overwrite corrupted any value
+    // containing those sequences. It still runs so that lines dotenvy rejects
+    // (e.g. unusual keys) are not silently lost.
     if let Ok(content) = std::fs::read_to_string(path) {
         for line in content.lines() {
             if let Some((k, v)) = parse_env_line(line) {
-                map.insert(k, v);
+                map.entry(k).or_insert(v);
             }
         }
     }
