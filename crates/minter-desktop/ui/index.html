@@ -854,7 +854,7 @@
                 <div id="wallet-dropzone" class="wallet-dropzone">
                   <p data-i18n="wallets.drop">Drop key files here (multi) or use Browse</p>
                   <div class="row wallet-import-row">
-                    <input type="password" id="add-key" placeholder="Private key (hidden)" data-i18n-placeholder="wallets.pkPh" />
+                    <textarea id="add-key" rows="1" spellcheck="false" style="-webkit-text-security:disc" placeholder="Private key(s) — one per line" data-i18n-placeholder="wallets.pkPh"></textarea>
                     <button id="btn-add-key" class="primary" data-i18n="wallets.add">Add key</button>
                   </div>
                   <div class="row wallet-import-row">

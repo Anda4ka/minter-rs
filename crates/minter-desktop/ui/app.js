@@ -1208,15 +1208,45 @@ $("btn-wallets-to-task")?.addEventListener("click", () => {
 
 $("btn-add-key").addEventListener("click", async () => {
   try {
-    const addr = await invoke("add_key", { privateKey: $("add-key").value });
+    // Accept a single key OR many pasted one-per-line (also tolerate comma /
+    // whitespace separation). One key keeps the fast add_key path; several
+    // reuse the bulk import_keys_text command already used by drag-and-drop —
+    // so a user can paste 10 keys at once without making a file.
+    const raw = $("add-key").value || "";
+    const keys = raw
+      .split(/[\r\n,\s]+/)
+      .map((k) => k.trim())
+      .filter(Boolean);
+    if (!keys.length) {
+      $("wallet-msg").textContent = "Enter at least one private key";
+      return;
+    }
+    let msg;
+    if (keys.length === 1) {
+      const addr = await invoke("add_key", { privateKey: keys[0] });
+      msg = `Added ${addr}`;
+    } else {
+      const n = await invoke("import_keys_text", { text: keys.join("\n") });
+      msg = `Added ${n} key(s)`;
+    }
     $("add-key").value = "";
-    $("wallet-msg").textContent = `Added ${addr}`;
+    autoGrowAddKey();
+    $("wallet-msg").textContent = msg;
     await loadWallets();
     await refreshStatus();
   } catch (e) {
     $("wallet-msg").textContent = String(e);
   }
 });
+
+/** Grow the add-key textarea to fit pasted keys (1–~6 lines, then scroll). */
+function autoGrowAddKey() {
+  const el = $("add-key");
+  if (!el || el.tagName !== "TEXTAREA") return;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 150) + "px";
+}
+$("add-key")?.addEventListener("input", autoGrowAddKey);
 
 $("btn-pick-keys")?.addEventListener("click", async () => {
   try {
@@ -4132,6 +4162,7 @@ async function loadTaskModalWallets(preselect) {
     taskModalWalletCache = list || [];
     vaultAddrSet = new Set(list.map((w) => String(w.address).toLowerCase()));
     taskModalPreselect = preselect;
+    taskModalSeeded = false; // fresh modal load → allow one seed
     renderTaskModalWalletList();
   } catch (e) {
     box.textContent = String(e);
@@ -4142,6 +4173,9 @@ async function loadTaskModalWallets(preselect) {
 let taskModalFiltered = [];
 /** @type {Set<string>} lowercase addresses checked */
 let taskModalChecked = new Set();
+/** True once the modal's initial selection has been seeded, so an intentional
+ * "deselect all" is NOT re-seeded back to all on the next render. */
+let taskModalSeeded = false;
 
 function syncTaskPerWalletQtyUi() {
   const on = $("task-per-wallet-qty")?.checked;
@@ -4191,8 +4225,12 @@ function renderTaskModalWalletList() {
     box.innerHTML = `<div class="muted" style="padding:8px">${escapeHtml(t("wallets.empty"))}</div>`;
     return;
   }
-  // seed checked once
-  if (!taskModalChecked.size) {
+  // Seed the checked set exactly once per modal open. Using a flag (not
+  // "when the set is empty") is critical: otherwise clicking "Select all" a
+  // second time empties the set, this render re-seeds it to all, and the
+  // deselect appears to do nothing. See loadTaskModalWallets() which resets it.
+  if (!taskModalSeeded) {
+    taskModalSeeded = true;
     if (taskModalPreselect == null) {
       for (const w of list) taskModalChecked.add(addrKey(w.address));
     } else {

@@ -4136,3 +4136,41 @@ details.panel[open] > *:not(summary) {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================
+   Round 2 fixes — wallets table + multi-line key paste
+   ============================================================ */
+
+/* Multi-line masked add-key field: paste many private keys, one per line.
+   Reuses the same masking trick as the proxy textarea. */
+textarea#add-key {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  max-height: 150px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  padding: 9px 12px;
+  white-space: pre;
+  overflow: auto;
+}
+
+/* Virtual tables: reserve the scrollbar gutter so the last column (Balance)
+   is never hidden under the vertical scrollbar — this was the "table cut off
+   on the right" symptom. */
+.vtable-wrap {
+  scrollbar-gutter: stable;
+}
+.wallet-table-align .data-table th:last-child,
+.wallet-table-align .data-table td:last-child {
+  padding-right: 14px;
+}
+
+/* Wallets list fills the available height instead of a stubby 420px box, so a
+   201-wallet vault doesn't look truncated. (Scoped to the wallets table; the
+   mint/other virtual tables keep their compact height.) */
+#wallet-table-wrap.vtable-wrap {
+  max-height: min(62vh, 860px);
+}
