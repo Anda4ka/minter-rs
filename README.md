@@ -29,7 +29,8 @@
   <a href="#-build--run">Build &amp; run</a> ·
   <a href="#-configure">Configure</a> ·
   <a href="#-safety">Safety</a> ·
-  <a href="#-docs">Docs</a>
+  <a href="#-docs">Docs</a> ·
+  <a href="#-support">Support</a>
 </p>
 
 > [!WARNING]
@@ -243,6 +244,21 @@ By contributing you agree to dual-license your work under **MIT OR Apache-2.0**.
 <br>
 
 ---
+
+<br>
+
+<!-- Support -->
+<h2 id="-support">💜 Support</h2>
+
+If MINTER saved you gas — or landed you a drop — tips are welcome. They go toward RPCs, testing, and adding new chains.
+
+**EVM** — ETH and any EVM chain (Base, Arbitrum, Optimism, Polygon, …):
+
+```text
+0x500dc4648460d95929193AEbb4D8DB1546ac478F
+```
+
+<sub>Burner-friendly · send only what you like · thank you 🙏</sub>
 
 <p align="center">
   <sub>
