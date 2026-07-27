@@ -1363,11 +1363,25 @@ $("btn-remove-wallet").addEventListener("click", async () => {
 });
 
 // —— RPCs ——
+const RPC_CHAIN_COLORS = {
+  ethereum: "#627eea", base: "#0052ff", polygon: "#8247e5", arbitrum: "#28a0f0",
+  optimism: "#ff0420", robinhood: "#00c805", blast: "#f5c84c", zora: "#9aa3b5",
+  apechain: "#0054fa", shape: "#2ee6c7", monad: "#8b7bff", megaeth: "#5b8def",
+  bsc: "#f0b90b", avalanche: "#e84142",
+};
+function rpcChainColor(name) {
+  return RPC_CHAIN_COLORS[String(name || "").toLowerCase()] || "var(--muted-2)";
+}
+/** latency (ms) → semantic class: green < 110, amber < 200, red otherwise */
+function rpcLatClass(ms) {
+  if (ms == null) return "";
+  return ms < 110 ? "lat-good" : ms < 200 ? "lat-mid" : "lat-bad";
+}
 function renderNetworkProbeRows(rows) {
   const tb = $("rpc-net-tbody");
   if (!tb) return;
   if (!rows || !rows.length) {
-    tb.innerHTML = `<tr><td colspan="6" class="muted">${escapeHtml(
+    tb.innerHTML = `<tr><td colspan="6" class="rpc-empty-cell">${escapeHtml(
       t("rpc.empty") || "No probe yet — Ping networks."
     )}</td></tr>`;
     return;
@@ -1381,14 +1395,24 @@ function renderNetworkProbeRows(rows) {
     const path = r.viaProxy
       ? `proxy ${r.proxyLabel || r.proxy_label || ""}`.trim()
       : "direct";
-    const ping = r.ok
-      ? `<span class="ok">${lat != null ? lat + " ms" : "OK"}</span>`
-      : `<span class="fail">FAIL</span>`;
+    let ping;
+    if (r.ok) {
+      const cls = rpcLatClass(lat);
+      const barW = lat != null ? Math.max(8, Math.min(100, 100 - lat / 3)) : 100;
+      ping = `<span class="rpc-ping"><span class="ms ${cls}">${
+        lat != null ? escapeHtml(lat + " ms") : "OK"
+      }</span><span class="rpc-bar"><i class="${cls}" style="width:${barW}%"></i></span></span>`;
+    } else {
+      ping = `<span class="rpc-fail">FAIL</span>`;
+    }
     const err = r.error ? ` title="${escapeHtml(r.error)}"` : "";
-    tr.innerHTML = `<td class="mono">${escapeHtml(r.chain || "—")}</td>
+    const tagCls = r.viaProxy ? "proxy" : "direct";
+    tr.innerHTML = `<td><span class="rpc-chain-cell"><span class="rpc-dot" style="--c:${rpcChainColor(
+      r.chain
+    )}"></span>${escapeHtml(r.chain || "—")}</span></td>
       <td${err}>${ping}</td>
       <td class="mono muted">${cid != null ? escapeHtml(String(cid)) : "—"}</td>
-      <td class="muted small">${escapeHtml(path)}</td>
+      <td><span class="rpc-tag ${tagCls}">${escapeHtml(path)}</span></td>
       <td class="mono cell-clip">${escapeHtml(short)}</td>
       <td class="error cell-clip small">${r.ok ? "" : escapeHtml(r.error || "")}</td>`;
     tb.appendChild(tr);
@@ -1428,12 +1452,14 @@ $("btn-probe").addEventListener("click", async () => {
     ul.innerHTML = "";
     for (const r of rows) {
       const li = document.createElement("li");
+      li.className = "rpc-url-row " + (r.ok ? "rpc-url-ok" : "rpc-url-bad");
       const lat = r.latencyMs ?? r.latency_ms;
       const chain = r.chainId ?? r.chain_id;
       const short = r.urlShort || r.url_short;
-      li.textContent = r.ok
+      const txt = r.ok
         ? `OK ${lat}ms chainId=${chain}  ${short}`
         : `FAIL ${short} — ${r.error}`;
+      li.innerHTML = `<span class="rpc-url-st"></span><span class="rpc-url-txt">${escapeHtml(txt)}</span>`;
       ul.appendChild(li);
     }
     await refreshStatus();
@@ -5800,6 +5826,16 @@ function selectedRpcChains() {
   const on = [...document.querySelectorAll(".rpc-chain-cb:checked")].map((b) => b.value);
   return on.length ? on : null;
 }
+$("rpc-sel-all")?.addEventListener("click", () => {
+  document.querySelectorAll(".rpc-chain-cb").forEach((b) => {
+    if (!b.checked) { b.checked = true; b.dispatchEvent(new Event("change")); }
+  });
+});
+$("rpc-sel-none")?.addEventListener("click", () => {
+  document.querySelectorAll(".rpc-chain-cb").forEach((b) => {
+    if (b.checked) { b.checked = false; b.dispatchEvent(new Event("change")); }
+  });
+});
 
 // —— Command palette (Ctrl/Cmd+K) ——
 const cmdState = { items: [], filtered: [], active: 0 };
