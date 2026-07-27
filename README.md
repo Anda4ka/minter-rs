@@ -61,6 +61,14 @@ cargo run -p minter-desktop --release
 
 <br>
 
+<!-- Screenshot -->
+<p align="center">
+  <img src=".github/assets/screenshot-home.svg" width="100%" alt="MINTER desktop console — Home screen: sidebar navigation, connection status strip, OpenSea Mint and Raw / MintBay launch cards, and the last mint run panel.">
+</p>
+<p align="center"><sub><b>The operator console — Home.</b> Dark, keyboard-fast, burner-only.</sub></p>
+
+<br>
+
 <!-- 01 -->
 <h2 id="-overview"></h2>
 <img src=".github/assets/section-overview.svg" width="100%" alt="Overview — what it is">
