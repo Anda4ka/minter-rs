@@ -3744,3 +3744,395 @@ input[type="checkbox"] {
   color: var(--text);
   font-weight: 600;
 }
+
+/* ============================================================
+   transitions.dev motion + polish layer
+   Dark base preserved · additive · all motion respects
+   prefers-reduced-motion (kill switch at the bottom).
+   ============================================================ */
+:root {
+  --hair: rgba(255, 255, 255, 0.06);
+  --accent-2: #8b7bff;
+  --accent-ink: #c7bdff;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px -8px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 20px 50px -12px rgba(0, 0, 0, 0.7), 0 4px 12px rgba(0, 0, 0, 0.4);
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-fast: 140ms;
+  --t: 220ms;
+  --t-slow: 420ms;
+}
+
+/* ---- card polish: gradient surface + hairline highlight + depth ---- */
+.card,
+.panel,
+.group-card,
+.raw-card,
+.cost-card,
+.home-launch-card,
+.last-run-panel,
+.raw-probe-card {
+  background: linear-gradient(180deg, var(--card), var(--card-2));
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  border-radius: 14px;
+  position: relative;
+}
+.card::before,
+.panel::before,
+.group-card::before,
+.home-launch-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  border-radius: 14px 14px 0 0;
+  background: linear-gradient(90deg, transparent, var(--hair), transparent);
+  pointer-events: none;
+}
+.panel.nest {
+  box-shadow: var(--shadow-sm);
+}
+.unlock-card,
+.modal-card,
+.mc-panel,
+.cmd-card {
+  background: linear-gradient(180deg, var(--card), var(--card-2));
+  box-shadow: var(--shadow-lg);
+}
+
+/* ---- buttons & chips: micro-interactions ---- */
+button,
+.primary,
+.ghost-btn,
+.danger-btn,
+.spend-btn,
+.chip,
+.nav-item,
+.seg-btn,
+.raw-mode-chip,
+.filter-chip,
+.btn-group {
+  transition: transform var(--t-fast) var(--spring),
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+button:active:not(:disabled),
+.primary:active:not(:disabled),
+.spend-btn:active:not(:disabled),
+.ghost-btn:active:not(:disabled),
+.danger-btn:active:not(:disabled),
+.chip:active,
+.nav-item:active {
+  transform: scale(0.965);
+}
+.primary {
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 6px 18px -6px rgba(109, 93, 252, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+.primary:hover:not(:disabled) {
+  box-shadow: 0 10px 26px -6px rgba(109, 93, 252, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transform: translateY(-1px);
+}
+.spend-btn {
+  background: linear-gradient(180deg, #66e0a6, var(--green));
+  color: #04150c;
+  border-color: transparent;
+  box-shadow: 0 6px 18px -6px rgba(95, 211, 154, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.spend-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 26px -6px rgba(95, 211, 154, 0.65);
+}
+
+/* ---- inputs: focus ring ---- */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ---- nav item: active nudge (keeps existing left-border accent) ---- */
+.nav-item {
+  position: relative;
+}
+.nav-item.active {
+  animation: mx-navpop var(--t) var(--spring);
+}
+@keyframes mx-navpop {
+  from {
+    opacity: 0.45;
+    transform: translateX(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.nav-item:hover:not(.active) {
+  transform: translateX(2px);
+}
+
+/* ---- interactive card hover lifts ---- */
+.home-launch-card,
+.run-card {
+  transition: transform var(--t) var(--spring),
+    box-shadow var(--t) var(--ease-out), border-color var(--t) var(--ease-out);
+}
+.home-launch-card:hover,
+.run-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-lg);
+  border-color: var(--accent-border);
+}
+.home-launch-card:active {
+  transform: translateY(-1px) scale(0.995);
+}
+
+/* ---- page enter ---- */
+.page {
+  animation: mx-page var(--t-slow) var(--ease-out);
+}
+@keyframes mx-page {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- modals / overlays entrance ---- */
+.modal-overlay:not(.hidden) {
+  animation: mx-fade var(--t) var(--ease-out);
+}
+.modal-overlay:not(.hidden) .modal-card,
+.cmd-overlay:not(.hidden) .cmd-card {
+  animation: mx-modal var(--t-slow) var(--spring);
+}
+@keyframes mx-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes mx-modal {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.mc-overlay:not(.hidden) .mc-panel {
+  animation: mx-mc var(--t-slow) var(--spring);
+}
+@keyframes mx-mc {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- toast: spring in, auto fade-out just before JS removal (4200ms) ---- */
+.toast {
+  animation: mx-toast-in 0.42s var(--spring) both,
+    mx-toast-out 0.3s var(--ease-out) 3.85s both;
+  box-shadow: var(--shadow-lg);
+}
+@keyframes mx-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(30px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes mx-toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+}
+
+/* ---- status pills: smooth colour changes ---- */
+.status-pill {
+  transition: background var(--t) var(--ease-out),
+    color var(--t) var(--ease-out), border-color var(--t) var(--ease-out);
+}
+
+/* ---- mint phase banner ---- */
+.mint-phase-banner {
+  transition: border-color var(--t) var(--ease-out),
+    background var(--t) var(--ease-out), box-shadow var(--t) var(--ease-out);
+  overflow: hidden;
+}
+.mint-phase-text {
+  display: inline-block;
+  will-change: transform, filter;
+}
+.mint-phase-banner.mint-phase-done {
+  box-shadow: 0 0 0 1px rgba(95, 211, 154, 0.35),
+    0 0 32px -8px rgba(95, 211, 154, 0.45);
+}
+.mint-phase-banner.mint-phase-fire {
+  box-shadow: 0 0 0 1px var(--accent-border), 0 0 32px -8px rgba(109, 93, 252, 0.5);
+}
+.mx-shake {
+  animation: mx-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+@keyframes mx-shake {
+  10%,
+  90% {
+    transform: translateX(-1px);
+  }
+  20%,
+  80% {
+    transform: translateX(2px);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translateX(-5px);
+  }
+  40%,
+  60% {
+    transform: translateX(5px);
+  }
+}
+
+/* ---- number pop-in digits (motion.js) ---- */
+.mx-digit {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- tabs sliding underline (injected by motion.js) ---- */
+.seg-toggle,
+.raw-mode-row,
+.wallet-filters {
+  position: relative;
+}
+.mx-underline {
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 10px -1px rgba(109, 93, 252, 0.6);
+  transition: transform var(--t-slow) var(--spring),
+    width var(--t-slow) var(--spring), opacity var(--t);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ---- pulse status dots ---- */
+.nav-live-dot,
+.tool-dot,
+.group-dot {
+  animation: mx-pulse 1.9s ease-in-out infinite;
+}
+@keyframes mx-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(95, 211, 154, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(95, 211, 154, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(95, 211, 154, 0);
+  }
+}
+
+/* ---- accordion body reveal ---- */
+details.collapsible[open] > *:not(summary),
+details.settings-acc[open] > .settings-acc-body,
+details.raw-card[open] > *:not(summary),
+details.raw-wallets-acc[open] > *:not(summary),
+details.raw-advanced[open] > *:not(summary),
+details.raw-log-acc[open] > *:not(summary),
+details.panel[open] > *:not(summary) {
+  animation: mx-acc var(--t-slow) var(--ease-out);
+}
+@keyframes mx-acc {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- skeleton shimmer utility ---- */
+.mx-skel {
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--card-hover) 25%,
+    #20242f 37%,
+    var(--card-hover) 63%
+  );
+  background-size: 400% 100%;
+  animation: mx-shimmer 1.3s infinite;
+}
+@keyframes mx-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* ---- confetti + success burst (motion.js) ---- */
+.mx-confetti {
+  position: fixed;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 4000;
+}
+.mx-success {
+  position: fixed;
+  pointer-events: none;
+  z-index: 4001;
+}
+
+/* ---- reduced-motion kill switch ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
