@@ -4410,3 +4410,16 @@ textarea#add-key {
 .rpc-latency-out:empty {
   display: none;
 }
+
+/* ============================================================
+   Wide data-table pages (Wallets, RPCs)
+   The global .page cap (1120px) is right for text-heavy pages, but it left
+   the wide wallets/RPC tables pinned left with a large dead band (and a
+   stranded scrollbar) on wide monitors. Give these pages more width and
+   center them so the table fills its panel at any window size.
+   ============================================================ */
+#page-wallets.page,
+#page-rpcs.page {
+  max-width: 1500px;
+  margin-inline: auto;
+}
