@@ -4136,3 +4136,277 @@ details.panel[open] > *:not(summary) {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================
+   Round 2 fixes — wallets table + multi-line key paste
+   ============================================================ */
+
+/* Multi-line masked add-key field: paste many private keys, one per line.
+   Reuses the same masking trick as the proxy textarea. */
+textarea#add-key {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  max-height: 150px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  padding: 9px 12px;
+  white-space: pre;
+  overflow: auto;
+}
+
+/* Virtual tables: reserve the scrollbar gutter so the last column (Balance)
+   is never hidden under the vertical scrollbar — this was the "table cut off
+   on the right" symptom. */
+.vtable-wrap {
+  scrollbar-gutter: stable;
+}
+.wallet-table-align .data-table th:last-child,
+.wallet-table-align .data-table td:last-child {
+  padding-right: 14px;
+}
+
+/* Wallets list fills the available height instead of a stubby 420px box, so a
+   201-wallet vault doesn't look truncated. (Scoped to the wallets table; the
+   mint/other virtual tables keep their compact height.) */
+#wallet-table-wrap.vtable-wrap {
+  max-height: min(62vh, 860px);
+}
+
+/* ============================================================
+   RPCs page redesign — compact network pills + clean results
+   ============================================================ */
+.rpc-net-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 10px;
+}
+.rpc-net-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--muted-2);
+  font-weight: 700;
+}
+.rpc-net-mini {
+  margin-left: auto;
+  display: flex;
+  gap: 14px;
+}
+.rpc-net-mini a {
+  color: var(--accent-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.rpc-net-mini a:hover {
+  text-decoration: underline;
+}
+
+.rpc-chain-picker {
+  gap: 8px;
+  margin: 0 0 20px;
+}
+.rpc-net {
+  position: relative;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  padding: 7px 13px 7px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.14s var(--spring), background 0.16s var(--ease-out),
+    border-color 0.16s var(--ease-out), color 0.16s var(--ease-out);
+}
+.rpc-net:hover {
+  border-color: var(--accent-border);
+  color: var(--text);
+}
+.rpc-net:active {
+  transform: scale(0.96);
+}
+.rpc-net input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  pointer-events: none;
+}
+.rpc-net .rpc-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--c, var(--muted-2));
+  box-shadow: 0 0 8px -1px var(--c, transparent);
+  flex-shrink: 0;
+}
+.rpc-net .rpc-chk {
+  width: 14px;
+  height: 14px;
+  color: var(--accent-ink);
+  opacity: 0;
+  transform: scale(0.5);
+  transition: opacity 0.16s, transform 0.2s var(--spring);
+}
+.rpc-net:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: #fff;
+}
+.rpc-net:has(input:checked) .rpc-chk {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* results table cells */
+.rpc-chain-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+}
+.rpc-chain-cell .rpc-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--c, var(--muted-2));
+  box-shadow: 0 0 8px -1px var(--c);
+}
+.rpc-ping {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.rpc-ping .ms {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 54px;
+}
+.rpc-ping .rpc-bar {
+  width: 66px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--card-hover);
+  overflow: hidden;
+}
+.rpc-ping .rpc-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--muted-2);
+}
+.ms.lat-good {
+  color: var(--green);
+}
+.rpc-bar i.lat-good {
+  background: var(--green);
+}
+.ms.lat-mid {
+  color: var(--yellow);
+}
+.rpc-bar i.lat-mid {
+  background: var(--yellow);
+}
+.ms.lat-bad {
+  color: var(--red);
+}
+.rpc-bar i.lat-bad {
+  background: var(--red);
+}
+.rpc-fail {
+  color: var(--red);
+  font-weight: 700;
+  font-size: 0.75rem;
+}
+.rpc-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.rpc-tag.direct {
+  color: var(--muted);
+  background: var(--card-2);
+  border-color: var(--border);
+}
+.rpc-tag.proxy {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+.rpc-empty-cell {
+  text-align: center !important;
+  padding: 30px 16px !important;
+  color: var(--muted-2);
+}
+
+/* configured URL probe list */
+.rpc-subhead {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 22px 0 10px;
+}
+.rpc-url-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+.rpc-url-list li {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12.5px;
+}
+.rpc-url-list li:last-child {
+  border-bottom: 0;
+}
+.rpc-url-empty {
+  color: var(--muted-2);
+}
+.rpc-url-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #cfd6e6;
+}
+.rpc-url-st {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.rpc-url-ok .rpc-url-st {
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+}
+.rpc-url-bad .rpc-url-st {
+  background: var(--red);
+}
+.rpc-url-bad .rpc-url-txt {
+  color: #ffb3b3;
+}
+.rpc-latency-out:empty {
+  display: none;
+}

@@ -854,7 +854,7 @@
                 <div id="wallet-dropzone" class="wallet-dropzone">
                   <p data-i18n="wallets.drop">Drop key files here (multi) or use Browse</p>
                   <div class="row wallet-import-row">
-                    <input type="password" id="add-key" placeholder="Private key (hidden)" data-i18n-placeholder="wallets.pkPh" />
+                    <textarea id="add-key" rows="1" spellcheck="false" style="-webkit-text-security:disc" placeholder="Private key(s) — one per line" data-i18n-placeholder="wallets.pkPh"></textarea>
                     <button id="btn-add-key" class="primary" data-i18n="wallets.add">Add key</button>
                   </div>
                   <div class="row wallet-import-row">
@@ -920,18 +920,24 @@
                   <button id="btn-probe" data-i18n="rpc.probeUrls">Probe URL list</button>
                   <button id="btn-latency" data-i18n="rpc.latency">Deep latency</button>
                 </div>
+                <div class="rpc-net-head">
+                  <span class="rpc-net-title" data-i18n="rpc.pingWhich">Networks</span>
+                  <span class="rpc-net-mini">
+                    <a id="rpc-sel-all" data-i18n="rpc.selectAll">Select all</a>
+                    <a id="rpc-sel-none" data-i18n="rpc.clear">Clear</a>
+                  </span>
+                </div>
                 <div class="rpc-chain-picker" id="rpc-chain-picker" aria-label="Networks to ping">
-                  <span class="muted small" data-i18n="rpc.pingWhich">Ping:</span>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="ethereum" checked /> Ethereum</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="base" checked /> Base</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="polygon" checked /> Polygon</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="arbitrum" checked /> Arbitrum</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="optimism" checked /> Optimism</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="robinhood" checked /> Robinhood</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="blast" /> Blast</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="zora" /> Zora</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="apechain" /> ApeChain</label>
-                  <label class="chip-check"><input type="checkbox" class="rpc-chain-cb" value="monad" /> Monad</label>
+                  <label class="rpc-net" style="--c:#627eea"><input type="checkbox" class="rpc-chain-cb" value="ethereum" checked /><span class="rpc-dot"></span><span class="rpc-nm">Ethereum</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#0052ff"><input type="checkbox" class="rpc-chain-cb" value="base" checked /><span class="rpc-dot"></span><span class="rpc-nm">Base</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#8247e5"><input type="checkbox" class="rpc-chain-cb" value="polygon" checked /><span class="rpc-dot"></span><span class="rpc-nm">Polygon</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#28a0f0"><input type="checkbox" class="rpc-chain-cb" value="arbitrum" checked /><span class="rpc-dot"></span><span class="rpc-nm">Arbitrum</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#ff0420"><input type="checkbox" class="rpc-chain-cb" value="optimism" checked /><span class="rpc-dot"></span><span class="rpc-nm">Optimism</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#00c805"><input type="checkbox" class="rpc-chain-cb" value="robinhood" checked /><span class="rpc-dot"></span><span class="rpc-nm">Robinhood</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#f5c84c"><input type="checkbox" class="rpc-chain-cb" value="blast" /><span class="rpc-dot"></span><span class="rpc-nm">Blast</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#9aa3b5"><input type="checkbox" class="rpc-chain-cb" value="zora" /><span class="rpc-dot"></span><span class="rpc-nm">Zora</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#0054fa"><input type="checkbox" class="rpc-chain-cb" value="apechain" /><span class="rpc-dot"></span><span class="rpc-nm">ApeChain</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
+                  <label class="rpc-net" style="--c:#8b7bff"><input type="checkbox" class="rpc-chain-cb" value="monad" /><span class="rpc-dot"></span><span class="rpc-nm">Monad</span><svg class="rpc-chk" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg></label>
                 </div>
                 <div class="table-wrap" id="rpc-net-wrap">
                   <table class="data-table" id="rpc-net-table">
@@ -950,9 +956,11 @@
                     </tbody>
                   </table>
                 </div>
-                <h3 class="muted small" data-i18n="rpc.listTitle">Configured URL probe</h3>
-                <ul id="probe-list" class="list"></ul>
-                <pre id="latency-out" class="code"></pre>
+                <h3 class="rpc-subhead" data-i18n="rpc.listTitle">Configured URL probe</h3>
+                <ul id="probe-list" class="rpc-url-list">
+                  <li class="rpc-url-empty" data-i18n="rpc.listHint">No custom URLs probed yet — click “Probe URL list”.</li>
+                </ul>
+                <pre id="latency-out" class="code rpc-latency-out"></pre>
               </div>
             </div>
 
