@@ -4,6 +4,35 @@ const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);
 
+/**
+ * `invoke` that never produces an unhandled rejection.
+ *
+ * Every Rust command can fail (locked vault, bad RPC, cancelled native dialog),
+ * and ~half the call sites had no `.catch`, so failures surfaced only as console
+ * noise while the UI silently did nothing. Use this for fire-and-forget calls
+ * and anywhere the caller has no better recovery than telling the operator.
+ *
+ * Returns `fallback` (default `null`) on failure. `opts.quiet` suppresses the
+ * toast for calls that are expected to fail (e.g. polling while locked).
+ */
+async function invokeSafe(cmd, args, opts = {}) {
+  try {
+    return await invoke(cmd, args);
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : e);
+    if (!opts.quiet) {
+      // "Cancelled" is the operator declining a native confirm — not an error.
+      if (!/^cancelled\b/i.test(msg.trim())) {
+        showToast(msg, "warn");
+      }
+    }
+    console.warn(`invoke(${cmd}) failed:`, e);
+    return Object.prototype.hasOwnProperty.call(opts, "fallback")
+      ? opts.fallback
+      : null;
+  }
+}
+
 /** Open http(s) links in system browser (Tauri shell plugin). */
 async function openExternalUrl(url) {
   // Enforce the http(s)-only contract this function documents, at the call site.
@@ -65,20 +94,48 @@ let lastMintChain = "ethereum";
 let mintStopping = false;
 let appVersionStr = "0.1.0";
 
-/** Idle auto-lock: clear vault after N minutes (0 = off). Skips while mint runs. */
-let idleLockTimer = null;
-let idleLockMinutesCached = 30;
+/**
+ * Idle auto-lock.
+ *
+ * The timer itself now lives in Rust (`spawn_idle_lock_watchdog`): a security
+ * control implemented here could be disabled by simply not running, which left
+ * the vault password resident in RAM indefinitely. This side only
+ *   1. reports that the operator is present (`note_activity`), and
+ *   2. notices that the backend locked us out and shows the unlock screen.
+ */
+let idleLockPollTimer = null;
+let lastActivitySentMs = 0;
 
+/** Tell Rust the operator is active. Coalesced to at most once per 5s. */
 function resetIdleLockTimer() {
-  if (idleLockTimer) {
-    clearTimeout(idleLockTimer);
-    idleLockTimer = null;
-  }
-  const mins = Number(idleLockMinutesCached) || 0;
-  if (mins <= 0) return;
-  idleLockTimer = setTimeout(() => {
-    tryIdleLockVault().catch(console.warn);
-  }, mins * 60 * 1000);
+  const now = Date.now();
+  if (now - lastActivitySentMs < 5000) return;
+  lastActivitySentMs = now;
+  invoke("note_activity").catch(() => {});
+}
+
+/**
+ * Detect a backend-initiated lock (idle watchdog) and drop to the unlock view.
+ * Polls rather than listening so it also covers a lock from any other path.
+ */
+function armIdleLockPoll() {
+  if (idleLockPollTimer) clearInterval(idleLockPollTimer);
+  idleLockPollTimer = setInterval(async () => {
+    try {
+      const main = $("view-main");
+      if (!main || main.classList.contains("hidden")) return;
+      const s = await invoke("get_status");
+      if (s && s.unlocked === false) {
+        showUnlockView();
+        showToast(
+          t("vault.idleLocked") || "Vault locked (idle) — unlock to continue",
+          "warn",
+        );
+      }
+    } catch (_) {
+      /* transient — next tick retries */
+    }
+  }, 20000);
 }
 
 /** Return to password screen after vault lock (idle / manual). */
@@ -94,38 +151,6 @@ function showUnlockView() {
   }
   const err = $("unlock-error");
   if (err) err.textContent = "";
-  // Idle timer off while locked — re-armed after successful Unlock → showMain
-  if (idleLockTimer) {
-    clearTimeout(idleLockTimer);
-    idleLockTimer = null;
-  }
-}
-
-async function tryIdleLockVault() {
-  try {
-    const running = await invoke("mint_running");
-    if (running) {
-      resetIdleLockTimer();
-      return;
-    }
-    await invoke("lock_vault");
-    showUnlockView();
-    showToast(t("vault.idleLocked") || "Vault locked (idle) — unlock to continue", "warn");
-    // Status may fail while locked; still try for vault_label
-    try {
-      await refreshStatus();
-    } catch (_) {}
-  } catch (e) {
-    const s = String(e);
-    if (s.toLowerCase().includes("mint is running")) {
-      resetIdleLockTimer();
-      return;
-    }
-    // Already locked or other — ensure unlock UI is visible
-    if ($("view-main") && !$("view-main").classList.contains("hidden")) {
-      showUnlockView();
-    }
-  }
 }
 
 function armIdleLockListeners() {
@@ -133,14 +158,8 @@ function armIdleLockListeners() {
   ["pointerdown", "keydown", "click", "mousemove"].forEach((ev) => {
     document.addEventListener(ev, bump, { passive: true });
   });
-  // load settings snapshot for idle minutes
-  invoke("get_settings")
-    .then((s) => {
-      idleLockMinutesCached =
-        s.idleLockMinutes != null ? s.idleLockMinutes : 30;
-      resetIdleLockTimer();
-    })
-    .catch(() => {});
+  resetIdleLockTimer();
+  armIdleLockPoll();
 }
 
 function showToast(msg, kind = "") {
@@ -333,6 +352,67 @@ function hide(el) {
  * @param {{ title: string, body?: string, lines?: string[], requireWord?: string|null, okLabel?: string }} opts
  * @returns {Promise<boolean>}
  */
+/**
+ * Keyboard focus containment for overlays.
+ *
+ * Without this, Tab from inside a modal walked into the ~1000 background
+ * elements — including from the LIVE-confirm dialog, where a keyboard user
+ * could reach the still-live page behind the scrim. `aria-modal` tells screen
+ * readers to constrain but does nothing for sighted keyboard users.
+ *
+ * Also restores focus to whatever was focused before the overlay opened.
+ */
+const focusTraps = new WeakMap();
+
+const FOCUSABLE_SEL =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function trapFocus(overlay) {
+  if (!overlay || focusTraps.has(overlay)) return;
+  const restoreTo =
+    document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+  const onKeydown = (e) => {
+    if (e.key !== "Tab") return;
+    const items = [...overlay.querySelectorAll(FOCUSABLE_SEL)].filter(
+      (el) => el.offsetParent !== null || el === document.activeElement,
+    );
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    // Focus outside the overlay (or at an edge) wraps back inside.
+    if (!overlay.contains(document.activeElement)) {
+      e.preventDefault();
+      first.focus();
+      return;
+    }
+    if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    }
+  };
+
+  document.addEventListener("keydown", onKeydown, true);
+  focusTraps.set(overlay, { onKeydown, restoreTo });
+}
+
+function releaseFocus(overlay) {
+  const entry = overlay && focusTraps.get(overlay);
+  if (!entry) return;
+  focusTraps.delete(overlay);
+  document.removeEventListener("keydown", entry.onKeydown, true);
+  if (entry.restoreTo && document.contains(entry.restoreTo)) {
+    try {
+      entry.restoreTo.focus();
+    } catch (_) {
+      /* element may have become unfocusable */
+    }
+  }
+}
+
 function openConfirmModal(opts) {
   const {
     title,
@@ -375,6 +455,9 @@ function openConfirmModal(opts) {
     }
     $("modal-ok").textContent = okLabel;
     show($("modal-overlay"));
+    trapFocus($("modal-overlay"));
+    // No typed word → focus the primary action so Enter/Space works at once.
+    if (!requireWord) setTimeout(() => $("modal-ok")?.focus(), 50);
   });
 }
 
@@ -420,6 +503,7 @@ async function ensureLiveConfirm(opts) {
 
 function closeModal(ok) {
   hide($("modal-overlay"));
+  releaseFocus($("modal-overlay"));
   const r = modalResolve;
   modalResolve = null;
   if (r) r(!!ok);
@@ -451,7 +535,11 @@ function escapeHtml(t) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    // Also escape `'`: every attribute in this file happens to use double
+    // quotes today, so omitting it was latent rather than live — but one
+    // future `title='${escapeHtml(x)}'` would become attribute injection.
+    .replace(/'/g, "&#39;");
 }
 
 function shortAddr(a) {
@@ -515,7 +603,10 @@ function renderHomeHistory() {
 }
 
 async function refreshStatus() {
-  const s = await invoke("get_status");
+  // Called from navigate() and ~10 other places. An unguarded rejection here
+  // (e.g. vault locked) aborted the caller mid-way, leaving a half-rendered page.
+  const s = await invokeSafe("get_status", undefined, { quiet: true });
+  if (!s) return;
   lastUiStatus = s;
   const rpcCls = s.rpc_ok ? "ok" : "warn";
   // Labelled cells instead of one run-on grey line. "Vault unlocked" is dropped
@@ -657,7 +748,13 @@ async function loadRunsHistoryFromDisk() {
 function scheduleSaveRunsHistory() {
   if (runsHistorySaveTimer) clearTimeout(runsHistorySaveTimer);
   runsHistorySaveTimer = setTimeout(() => {
-    saveRunsHistoryToDisk().catch((e) => console.warn("save runs history", e));
+    // A failed save used to be console-only, so the operator believed history
+    // was persisted when it was not. The backend now reports real write errors
+    // (fsync/rename) instead of silently falling back, so surface them.
+    saveRunsHistoryToDisk().catch((e) => {
+      console.warn("save runs history", e);
+      showToast(`Could not save run history: ${e}`, "warn");
+    });
   }, 300);
 }
 
@@ -728,18 +825,22 @@ async function maybeOnboard() {
       ol.appendChild(li);
     }
     show($("onboard-overlay"));
+    trapFocus($("onboard-overlay"));
   } catch (e) {
     console.warn("onboard", e);
   }
 }
 
-$("onboard-skip")?.addEventListener("click", () => {
+/** Dismiss onboarding (Skip / Next / Escape) and mark it seen. */
+function dismissOnboarding() {
   localStorage.setItem(ONBOARD_KEY, "1");
   hide($("onboard-overlay"));
-});
+  releaseFocus($("onboard-overlay"));
+}
+
+$("onboard-skip")?.addEventListener("click", dismissOnboarding);
 $("onboard-next")?.addEventListener("click", async () => {
-  localStorage.setItem(ONBOARD_KEY, "1");
-  hide($("onboard-overlay"));
+  dismissOnboarding();
   const s = await invoke("get_status").catch(() => null);
   if (s && !s.wallet_count) navigate("wallets");
   else if (s && !s.rpc_ok) navigate("settings");
@@ -811,7 +912,12 @@ function addrKey(a) {
 function scheduleSaveWalletMeta() {
   if (walletMetaTimer) clearTimeout(walletMetaTimer);
   walletMetaTimer = setTimeout(() => {
-    saveWalletMeta().catch((e) => console.warn("wallet_meta", e));
+    // Group / proxy assignments are operator work — a lost save must not be
+    // console-only.
+    saveWalletMeta().catch((e) => {
+      console.warn("wallet_meta", e);
+      showToast(`Could not save wallet groups: ${e}`, "warn");
+    });
   }, 250);
 }
 
@@ -948,7 +1054,7 @@ async function loadWallets() {
   } catch {
     proxyListItems = [];
   }
-  const list = await invoke("list_wallets");
+  const list = await invokeSafe("list_wallets", undefined, { fallback: [] });
   const ul = $("wallet-list");
   if (ul) ul.innerHTML = "";
   // preserve balance cache by address
@@ -1248,27 +1354,43 @@ function autoGrowAddKey() {
 }
 $("add-key")?.addEventListener("input", autoGrowAddKey);
 
+/**
+ * Token for the path currently shown in #import-path, when it came from the
+ * native picker. Prefer it over the text: the backend trusts a token it minted
+ * itself, whereas a typed path must go through extra validation.
+ */
+let importPickedToken = null;
+
 $("btn-pick-keys")?.addEventListener("click", async () => {
   try {
-    const path = await invoke("pick_file", {
+    const picked = await invoke("pick_file", {
       title: "Import private keys",
       filters: ["txt", "csv", "*"],
     });
-    if (path) $("import-path").value = path;
+    if (picked?.path) {
+      $("import-path").value = picked.path;
+      importPickedToken = picked.token;
+    }
   } catch (e) {
     $("wallet-msg").textContent = String(e);
   }
 });
 
+// Editing the path by hand invalidates the picker token.
+$("import-path")?.addEventListener("input", () => {
+  importPickedToken = null;
+});
+
 $("btn-pick-keys-multi")?.addEventListener("click", async () => {
   try {
-    const paths = await invoke("pick_files", {
+    const picked = await invoke("pick_files", {
       title: "Import private key files",
       filters: ["txt", "csv", "*"],
     });
-    if (!paths?.length) return;
-    const n = await invoke("import_files", { paths });
-    $("wallet-msg").textContent = `Imported ${n} key(s) from ${paths.length} file(s)`;
+    if (!picked?.length) return;
+    const tokens = picked.map((p) => p.token);
+    const n = await invoke("import_files", { tokens });
+    $("wallet-msg").textContent = `Imported ${n} key(s) from ${tokens.length} file(s)`;
     await loadWallets();
     await refreshStatus();
   } catch (e) {
@@ -1279,15 +1401,21 @@ $("btn-pick-keys-multi")?.addEventListener("click", async () => {
 $("btn-import").addEventListener("click", async () => {
   try {
     let path = $("import-path").value.trim();
+    let token = importPickedToken;
     if (!path) {
-      path = await invoke("pick_file", {
+      const picked = await invoke("pick_file", {
         title: "Import private keys",
         filters: ["txt", "csv", "*"],
       });
-      if (!path) return;
+      if (!picked?.path) return;
+      path = picked.path;
+      token = picked.token;
+      importPickedToken = token;
       $("import-path").value = path;
     }
-    const n = await invoke("import_file", { path });
+    // Token when the picker supplied it, otherwise the typed path (validated
+    // in Rust: no UNC, canonicalized, regular file, size-capped).
+    const n = await invoke("import_file", token ? { token } : { path });
     $("wallet-msg").textContent = `Imported ${n} key(s)`;
     await loadWallets();
     await refreshStatus();
@@ -1413,8 +1541,8 @@ function renderNetworkProbeRows(rows) {
       <td${err}>${ping}</td>
       <td class="mono muted">${cid != null ? escapeHtml(String(cid)) : "—"}</td>
       <td><span class="rpc-tag ${tagCls}">${escapeHtml(path)}</span></td>
-      <td class="mono cell-clip">${escapeHtml(short)}</td>
-      <td class="error cell-clip small">${r.ok ? "" : escapeHtml(r.error || "")}</td>`;
+      <td class="mono cell-clip" title="${escapeHtml(short)}">${escapeHtml(short)}</td>
+      <td class="error cell-clip small" title="${escapeHtml(r.error || "")}">${r.ok ? "" : escapeHtml(r.error || "")}</td>`;
     tb.appendChild(tr);
   }
 }
@@ -1516,7 +1644,10 @@ $("btn-latency").addEventListener("click", async () => {
 
 // —— Proxies page ——
 async function loadProxiesPage() {
-  const s = await invoke("get_settings");
+  // Was an unguarded `invoke` awaited straight from navigate(): a failure here
+  // rejected navigation with nobody listening and the page rendered blank.
+  const s = await invokeSafe("get_settings");
+  if (!s) return;
   $("set-proxy").value = s.proxyUrl || "";
   // Proxy credentials are masked by default; wire the reveal toggle once (audit L4).
   const proxyRevealTgl = document.getElementById("proxy-reveal-tgl");
@@ -1538,12 +1669,14 @@ async function loadProxiesPage() {
 
 $("btn-pick-proxies")?.addEventListener("click", async () => {
   try {
-    const path = await invoke("pick_file", {
+    const picked = await invoke("pick_file", {
       title: "Import proxies list",
       filters: ["txt", "*"],
     });
-    if (!path) return;
-    const text = await invoke("read_text_file", { path });
+    if (!picked?.token) return;
+    // Opaque token, not a path: the backend only reads files the operator
+    // actually chose in the native dialog.
+    const text = await invoke("read_text_file", { token: picked.token });
     const cur = $("set-proxy").value.trim();
     $("set-proxy").value = cur ? cur + "\n" + text : text;
     $("proxy-msg").textContent = "Loaded into editor — click Save proxies";
@@ -1585,7 +1718,8 @@ $("btn-proxy-health")?.addEventListener("click", async () => {
 
 // —— Settings ——
 async function loadSettings() {
-  const s = await invoke("get_settings");
+  const s = await invokeSafe("get_settings");
+  if (!s) return;
   $("settings-path").textContent = s.configPath ? `File: ${s.configPath}` : "";
   $("set-alchemy").value = "";
   $("set-alchemy").placeholder = s.alchemyMasked
@@ -1625,8 +1759,8 @@ async function loadSettings() {
     $("set-idle-lock").value =
       s.idleLockMinutes != null ? s.idleLockMinutes : 30;
   }
-  idleLockMinutesCached =
-    s.idleLockMinutes != null ? s.idleLockMinutes : 30;
+  // No local copy of idleLockMinutes: Rust owns the timer and reads the value
+  // straight from settings, so a stale JS cache can no longer disagree with it.
   if ($("set-fee-refresh")) {
     $("set-fee-refresh").value = s.feeRefreshAtFire || "mainnetOnly";
   }
@@ -1634,16 +1768,13 @@ async function loadSettings() {
   $("set-skip").checked = s.skipPreflight;
   $("set-beep").checked = s.beep;
   $("set-export").checked = s.exportResults !== false;
-  // Re-arm idle timer after loading settings
-  if (typeof resetIdleLockTimer === "function") resetIdleLockTimer();
+  resetIdleLockTimer();
 }
 
 // Sniper preset removed — LIVE OpenSea mint is always fixed-gas / fast.
-$("btn-sniper")?.addEventListener("click", async () => {
-  await invoke("apply_sniper");
-  await loadSettings();
-  $("settings-msg").textContent = "Fast mint defaults applied (click Save to persist)";
-});
+// The #btn-sniper element is gone from index.html, so the handler that used to
+// live here was dead code. Its unguarded `invoke("apply_sniper")` would also
+// have failed silently: no error shown and gas defaults never applied.
 
 $("btn-save-settings").addEventListener("click", async () => {
   $("settings-msg").textContent = "Saving…";
@@ -1691,7 +1822,8 @@ $("btn-save-settings").addEventListener("click", async () => {
 
 // —— Advanced (under Tasks) ——
 $("btn-security").addEventListener("click", async () => {
-  const s = await invoke("security_status");
+  const s = await invokeSafe("security_status");
+  if (!s) return;
   $("security-out").textContent = JSON.stringify(s, null, 2);
 });
 
@@ -2852,6 +2984,25 @@ function appendRawLog(line) {
 
 let rawSniperUnlisten = null;
 
+/**
+ * Detach the raw-sniper `mint-event` subscriber.
+ *
+ * The handle used to be captured and never called, so after one raw-sniper run
+ * this listener stayed attached for the process lifetime — every later Tasks
+ * mint then also appended its events into `#raw-out` on a different page.
+ */
+async function detachRawSniperEvents() {
+  const un = rawSniperUnlisten;
+  rawSniperUnlisten = null;
+  if (typeof un === "function") {
+    try {
+      await un();
+    } catch (_) {
+      /* already gone */
+    }
+  }
+}
+
 async function attachRawSniperEvents() {
   if (rawSniperUnlisten) return;
   try {
@@ -2945,6 +3096,20 @@ function rawGasInput() {
 }
 
 $("btn-raw-mint")?.addEventListener("click", async () => {
+  // Claim the button before ANY await. The disable used to happen only after
+  // the LIVE-confirm round-trip, so two fast clicks could fire two `raw_mint`
+  // calls with the same wallet set — duplicate live transactions.
+  const btn = $("btn-raw-mint");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    await runRawMintOnce();
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function runRawMintOnce() {
   const chain = rawSelectedChain();
   const contract = $("raw-contract").value.trim();
   const preset = rawPreset();
@@ -3006,7 +3171,6 @@ $("btn-raw-mint")?.addEventListener("click", async () => {
     "is-run"
   );
   appendRawLog(dry ? "Dry-run once…" : "LIVE once…");
-  $("btn-raw-mint").disabled = true;
   try {
     const rows = await invoke("raw_mint", {
       input: {
@@ -3030,12 +3194,31 @@ $("btn-raw-mint")?.addEventListener("click", async () => {
   } catch (e) {
     appendRawLog(String(e));
     setRawStatus(String(e), "is-error");
+  }
+}
+
+$("btn-raw-sniper")?.addEventListener("click", async () => {
+  // Claim before any await: this handler awaits a balance filter AND a network
+  // probe AND the LIVE gate before it used to disable the button, leaving a
+  // wide window in which a second click armed a second pre-sign race.
+  const btn = $("btn-raw-sniper");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  if ($("btn-raw-mint")) $("btn-raw-mint").disabled = true;
+  try {
+    await runRawSniperOnce();
   } finally {
-    $("btn-raw-mint").disabled = false;
+    // Release the mint-event subscription with the run, so a later Tasks mint
+    // does not also stream into the Raw page.
+    await detachRawSniperEvents();
+    btn.disabled = false;
+    if ($("btn-raw-mint")) $("btn-raw-mint").disabled = false;
+    if ($("btn-raw-stop")) $("btn-raw-stop").disabled = true;
+    setRawNavLive(false);
   }
 });
 
-$("btn-raw-sniper")?.addEventListener("click", async () => {
+async function runRawSniperOnce() {
   const chain = rawSelectedChain();
   const contract = ($("raw-contract")?.value || "").trim();
   const preset = rawPreset();
@@ -3143,8 +3326,6 @@ $("btn-raw-sniper")?.addEventListener("click", async () => {
     `PRE-SIGN RACE · ${chain} · ${preset} · qty=${qty} · wallets=${wallets.length} · gas=${gasLimit}` +
       (atTime ? ` · fire ${atTime}` : " · fire NOW")
   );
-  $("btn-raw-sniper").disabled = true;
-  if ($("btn-raw-mint")) $("btn-raw-mint").disabled = true;
   if ($("btn-raw-stop")) $("btn-raw-stop").disabled = false;
   setRawNavLive(true);
 
@@ -3210,13 +3391,8 @@ $("btn-raw-sniper")?.addEventListener("click", async () => {
   } catch (e) {
     appendRawLog("\nERROR: " + String(e));
     setRawStatus(String(e), "is-error");
-  } finally {
-    $("btn-raw-sniper").disabled = false;
-    if ($("btn-raw-mint")) $("btn-raw-mint").disabled = false;
-    if ($("btn-raw-stop")) $("btn-raw-stop").disabled = true;
-    setRawNavLive(false);
   }
-});
+}
 
 $("btn-raw-stop")?.addEventListener("click", async () => {
   try {
@@ -3518,8 +3694,18 @@ $("btn-disperse")?.addEventListener("click", async () => {
     if (out) out.textContent = t("disperse.needTo") || "Select at least one destination";
     return;
   }
-  const amt = parseFloat(amountEth.replace(",", "."));
-  if (!(amt > 0)) {
+  // Validate with the SAME exact parser the cost preview and Rust use.
+  // `parseFloat` was lenient enough to accept "0.5abc", "0.1.2", "1e18" and
+  // "1e-19": the gate passed, the preview card stayed blank because
+  // `ethStrToWei` threw, and the malformed string was still sent to Rust.
+  let amtWei;
+  try {
+    amtWei = ethStrToWei(amountEth);
+  } catch {
+    if (out) out.textContent = t("disperse.needAmount") || "Enter amount > 0";
+    return;
+  }
+  if (amtWei <= 0n) {
     if (out) out.textContent = t("disperse.needAmount") || "Enter amount > 0";
     return;
   }
@@ -3876,6 +4062,10 @@ function taskToPersist(task) {
     atTime: task.atTime || "",
     walletQuantities: task.walletQuantities || null,
     skipEstimateOnOpen: !!task.skipEstimateOnOpen,
+    // `normalizeTask` reads this back, but it was never written — so a task
+    // configured for Flashbots silently reverted to the public (frontrunnable)
+    // mempool after a restart, with no UI indication the setting was lost.
+    useFlashbots: !!task.useFlashbots,
     // runtime statuses not persisted as running/queued
     status:
       task.status === "running" || task.status === "queued"
@@ -3891,7 +4081,12 @@ function taskToPersist(task) {
 function schedulePersistTasks() {
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
-    persistTasks().catch((e) => console.warn("persist tasks", e));
+    // Tasks are the operator's configured drops; a silent loss here is the
+    // worst of the three, since it is only noticed after a restart.
+    persistTasks().catch((e) => {
+      console.warn("persist tasks", e);
+      showToast(`Could not save tasks: ${e}`, "warn");
+    });
   }, 300);
 }
 
@@ -4169,6 +4364,7 @@ async function openTaskModal(opts = {}) {
   if ($("phase-hint")) $("phase-hint").textContent = "";
   syncTaskGasUi();
   show($("task-modal"));
+  trapFocus($("task-modal"));
   if (!walletMetaLoaded) await loadWalletMeta();
   taskModalChecked = new Set();
   await loadTaskModalWallets(pref.wallets);
@@ -4176,6 +4372,7 @@ async function openTaskModal(opts = {}) {
 
 function closeTaskModal() {
   hide($("task-modal"));
+  releaseFocus($("task-modal"));
   taskModalMode = "create";
   taskModalEditId = null;
 }
@@ -4739,9 +4936,9 @@ function paintMintRow(i) {
   }
   tr.innerHTML = `<td class="mono">${escapeHtml(shortAddr(row.address))}</td>
     <td><span class="status-pill status-${badge.kind}">${escapeHtml(badge.label)}</span></td>
-    <td class="muted cell-clip">${escapeHtml(row.detail || "")}</td>
+    <td class="muted cell-clip" title="${escapeHtml(row.detail || "")}">${escapeHtml(row.detail || "")}</td>
     <td>${txCell}</td>
-    <td class="error cell-clip">${escapeHtml(row.error || "")}</td>`;
+    <td class="error cell-clip" title="${escapeHtml(row.error || "")}">${escapeHtml(row.error || "")}</td>`;
   return tr;
 }
 
@@ -5128,7 +5325,7 @@ function renderMcTable() {
     parts.push(
       `<tr><td class="mono">${escapeHtml(shortAddr(row.address))}</td>` +
         `<td><span class="status-pill status-${badge.kind}">${escapeHtml(badge.label)}</span></td>` +
-        `<td class="muted cell-clip">${escapeHtml(detail)}</td>` +
+        `<td class="muted cell-clip" title="${escapeHtml(detail)}">${escapeHtml(detail)}</td>` +
         `<td>${txCell}</td></tr>`
     );
   }
@@ -5930,12 +6127,16 @@ function openCmdPalette() {
   input.value = "";
   filterCmd("");
   show(p);
+  trapFocus(p);
   input.focus();
 }
 
 function closeCmdPalette() {
   const p = $("cmd-palette");
-  if (p) hide(p);
+  if (p) {
+    hide(p);
+    releaseFocus(p);
+  }
 }
 
 function runCmd(i) {
@@ -6022,14 +6223,17 @@ document.addEventListener("keydown", (e) => {
     const taskModal = $("task-modal");
     if (taskModal && !taskModal.classList.contains("hidden")) {
       e.preventDefault();
-      taskModal.classList.add("hidden");
+      closeTaskModal();
       return;
     }
-    const modalOpen = ["onboard-overlay"].some((id) => {
-      const el = $(id);
-      return el && !el.classList.contains("hidden");
-    });
-    if (modalOpen) return;
+    // Onboarding used to be explicitly exempt from Escape, so the first screen
+    // a new user sees could only be dismissed with the mouse.
+    const onboard = $("onboard-overlay");
+    if (onboard && !onboard.classList.contains("hidden")) {
+      e.preventDefault();
+      dismissOnboarding();
+      return;
+    }
     const mc = $("mission-control");
     if (mc && !mc.classList.contains("hidden") && !mc.classList.contains("mc-collapsed")) {
       toggleMcMinimize();

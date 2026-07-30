@@ -37,3 +37,28 @@ jobs:
 
       - name: test (minter-core)
         run: cargo test -p minter-core --lib
+
+  desktop:
+    name: clippy · test (minter-desktop)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # The Tauri crate was never built in CI, so warnings and breakage in the
+      # entire IPC layer went unnoticed. It needs the Windows runner for WebView2.
+      - name: clippy (minter-desktop)
+        run: cargo clippy -p minter-desktop --all-targets -- -D warnings
+
+      - name: test (minter-desktop)
+        run: cargo test -p minter-desktop --lib

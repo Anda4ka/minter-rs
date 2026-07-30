@@ -785,7 +785,7 @@
 
                 <div id="wallet-search-bar" class="search-bar hidden">
                   <span class="search-ico" aria-hidden="true">⌕</span>
-                  <input type="text" id="wallet-search" placeholder="" data-i18n-placeholder="wallets.searchPh" autocomplete="off" spellcheck="false" />
+                  <input type="text" id="wallet-search" placeholder="" data-i18n-placeholder="wallets.searchPh" aria-label="Search wallets" autocomplete="off" spellcheck="false" />
                   <span id="wallet-search-count" class="search-count muted"></span>
                   <button type="button" id="wallet-search-close" class="search-close" aria-label="Close search">Esc</button>
                 </div>
@@ -804,7 +804,7 @@
                     <button type="button" class="btn-group" data-group="A" title="Set group A">A</button>
                     <button type="button" class="btn-group" data-group="B" title="Set group B">B</button>
                     <button type="button" class="btn-group" data-group="C" title="Set group C">C</button>
-                    <button type="button" class="btn-group" data-group="" title="Clear group">∅</button>
+                    <button type="button" class="btn-group" data-group="" title="Clear group" aria-label="Clear group assignment">∅</button>
                   </div>
                   <div class="wallet-toolbar-actions">
                     <label class="inline-field tight">
@@ -831,7 +831,7 @@
                   <table class="data-table">
                     <thead>
                       <tr>
-                        <th style="width:34px"><input type="checkbox" id="wallets-select-all" title="Select all" /></th>
+                        <th style="width:34px"><input type="checkbox" id="wallets-select-all" title="Select all" aria-label="Select all wallets" /></th>
                         <th style="width:46px">#</th>
                         <th style="width:38%" data-i18n="col.address">Address</th>
                         <th style="width:52px" data-i18n="wallets.col.group">Grp</th>
@@ -854,18 +854,18 @@
                 <div id="wallet-dropzone" class="wallet-dropzone">
                   <p data-i18n="wallets.drop">Drop key files here (multi) or use Browse</p>
                   <div class="row wallet-import-row">
-                    <textarea id="add-key" rows="1" spellcheck="false" style="-webkit-text-security:disc" placeholder="Private key(s) — one per line" data-i18n-placeholder="wallets.pkPh"></textarea>
+                    <textarea id="add-key" rows="1" aria-label="Private keys, one per line" spellcheck="false" style="-webkit-text-security:disc" placeholder="Private key(s) — one per line" data-i18n-placeholder="wallets.pkPh"></textarea>
                     <button id="btn-add-key" class="primary" data-i18n="wallets.add">Add key</button>
                   </div>
                   <div class="row wallet-import-row">
                     <button id="btn-pick-keys" type="button" data-i18n="wallets.browse">Browse…</button>
                     <button id="btn-pick-keys-multi" type="button" data-i18n="wallets.browseMulti">Multi-file…</button>
                     <button id="btn-import" data-i18n="wallets.import">Import path</button>
-                    <input type="text" id="import-path" placeholder="privkeys.txt path" />
+                    <input type="text" id="import-path" placeholder="privkeys.txt path" aria-label="Path to private key file" />
                   </div>
                 </div>
                 <div class="row wallet-import-row">
-                  <input type="text" id="remove-addr" placeholder="0x… to remove" />
+                  <input type="text" id="remove-addr" aria-label="Wallet address to remove" placeholder="0x… to remove" />
                   <button id="btn-remove-wallet" class="danger-btn" data-i18n="wallets.remove">Remove</button>
                 </div>
                 <p id="wallet-msg" class="msg"></p>
@@ -1186,7 +1186,7 @@
 
     <!-- Confirm modal (LIVE / CONFIRM / generic) -->
     <!-- Mission Control — live mint / sniper run overlay -->
-    <div id="mission-control" class="mc-overlay hidden" aria-live="polite">
+    <div id="mission-control" role="dialog" aria-label="Mission control" class="mc-overlay hidden" aria-live="polite">
       <div class="mc-panel">
         <div class="mc-top">
           <div class="mc-brand">
@@ -1194,9 +1194,9 @@
             <span class="mc-title" id="mc-title">MISSION CONTROL</span>
           </div>
           <div class="mc-actions">
-            <button type="button" id="mc-minimize" class="ghost-btn mc-btn" title="Collapse">▾</button>
+            <button type="button" id="mc-minimize" class="ghost-btn mc-btn" title="Collapse" aria-label="Collapse mission control">▾</button>
             <button type="button" id="mc-stop" class="danger-btn mc-btn" data-i18n="tasks.stop">Stop</button>
-            <button type="button" id="mc-close" class="ghost-btn mc-btn" title="Close">✕</button>
+            <button type="button" id="mc-close" class="ghost-btn mc-btn" title="Close" aria-label="Close mission control">✕</button>
           </div>
         </div>
         <div class="mc-phase" id="mc-phase">
@@ -1229,7 +1229,7 @@
 
     <div id="cmd-palette" class="cmd-overlay hidden" role="dialog" aria-modal="true" aria-label="Command palette">
       <div class="cmd-card">
-        <input type="text" id="cmd-input" class="cmd-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="cmd.placeholder" placeholder="Jump to a page or action…" />
+        <input type="text" id="cmd-input" aria-label="Command search" class="cmd-input" autocomplete="off" spellcheck="false" data-i18n-placeholder="cmd.placeholder" placeholder="Jump to a page or action…" />
         <ul id="cmd-list" class="cmd-list" role="listbox"></ul>
         <div class="cmd-foot muted small"><span>↑↓</span> select · <span>↵</span> open · <span>Esc</span> close</div>
       </div>

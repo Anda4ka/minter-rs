@@ -5,6 +5,93 @@ pub struct ProxyManager {
     proxies: Vec<String>,
 }
 
+/// Sentinel a UI sends back in place of a masked proxy line to mean
+/// "keep the stored line unchanged".
+pub const PROXY_MASK: &str = "••••";
+
+/// Mask the `user:pass@` userinfo of one proxy line, keeping `scheme://host:port`
+/// intact so the operator can still recognise and reorder entries.
+///
+/// Blank/comment lines are returned unchanged.
+pub fn mask_proxy_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return line.to_string();
+    }
+    // Split scheme off first so an '@' inside the scheme cannot confuse us.
+    let (scheme, rest) = match trimmed.find("://") {
+        Some(i) => (&trimmed[..i + 3], &trimmed[i + 3..]),
+        None => ("", trimmed),
+    };
+    // Userinfo ends at the LAST '@' before the host: a password may contain '@'.
+    match rest.rfind('@') {
+        Some(at) => format!("{scheme}{PROXY_MASK}@{}", &rest[at + 1..]),
+        None => trimmed.to_string(),
+    }
+}
+
+/// Mask credentials in a multi-line proxy list for display in the UI.
+///
+/// Proxy credentials are paid, reusable and often shared across an operator's
+/// tooling, so the full `user:pass@host` list must not be shipped to the
+/// webview on every settings load. Line count and order are preserved so the
+/// editor round-trips: see [`merge_masked_proxy_list`].
+pub fn mask_proxy_list(list: &str) -> String {
+    list.lines()
+        .map(mask_proxy_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Merge an edited, partly-masked proxy list back over the stored one.
+///
+/// Any line still carrying [`PROXY_MASK`] is restored from `stored` by matching
+/// `host:port`, so an operator can reorder or delete entries without the UI
+/// ever having seen the credentials. Lines the user typed in full are kept
+/// verbatim, which is how new proxies get added.
+pub fn merge_masked_proxy_list(edited: &str, stored: &str) -> String {
+    fn host_key(line: &str) -> String {
+        let t = line.trim();
+        let rest = match t.find("://") {
+            Some(i) => &t[i + 3..],
+            None => t,
+        };
+        match rest.rfind('@') {
+            Some(at) => rest[at + 1..].to_ascii_lowercase(),
+            None => rest.to_ascii_lowercase(),
+        }
+    }
+
+    let mut by_host: std::collections::HashMap<String, Vec<&str>> =
+        std::collections::HashMap::new();
+    for line in stored.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        by_host.entry(host_key(t)).or_default().push(t);
+    }
+
+    edited
+        .lines()
+        .map(|line| {
+            if !line.contains(PROXY_MASK) {
+                return line.to_string();
+            }
+            // Masked line: restore the original (with credentials) by host.
+            let key = host_key(line);
+            match by_host.get_mut(&key) {
+                Some(v) if !v.is_empty() => v.remove(0).to_string(),
+                // Unknown host with a mask means the UI invented it — drop the
+                // unusable placeholder rather than saving a broken proxy.
+                _ => String::new(),
+            }
+        })
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Short label for logs/UI (hides credentials when possible).
 pub fn short_proxy(url: &str) -> String {
     // Char-based shortening: byte slicing panics on non-ASCII input.
@@ -410,6 +497,74 @@ async fn probe_proxy_url(proxy_url: &str) -> ProbeResult {
             latency_ms: None,
             error: Some(e.to_string()),
         },
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+
+    #[test]
+    fn mask_hides_credentials_keeps_host() {
+        let masked = mask_proxy_line("http://user:pa55@1.2.3.4:8080");
+        assert!(!masked.contains("user"), "{masked}");
+        assert!(!masked.contains("pa55"), "{masked}");
+        assert!(masked.contains("1.2.3.4:8080"), "{masked}");
+        assert!(masked.starts_with("http://"), "{masked}");
+    }
+
+    #[test]
+    fn mask_password_containing_at_sign() {
+        // Userinfo must be split on the LAST '@', not the first.
+        let masked = mask_proxy_line("http://u:p@ss@host:1080");
+        assert!(!masked.contains("p@ss"), "{masked}");
+        assert!(masked.ends_with("host:1080"), "{masked}");
+    }
+
+    #[test]
+    fn mask_leaves_credential_free_and_comment_lines() {
+        assert_eq!(mask_proxy_line("socks5://host:1080"), "socks5://host:1080");
+        assert_eq!(mask_proxy_line("# note"), "# note");
+        assert_eq!(mask_proxy_line(""), "");
+    }
+
+    #[test]
+    fn masked_list_roundtrips_unchanged() {
+        let stored = "http://u1:p1@a.example:1\nhttp://u2:p2@b.example:2";
+        let masked = mask_proxy_list(stored);
+        assert!(!masked.contains("p1") && !masked.contains("p2"), "{masked}");
+        // Saving the untouched masked list must restore the real credentials.
+        assert_eq!(merge_masked_proxy_list(&masked, stored), stored);
+    }
+
+    #[test]
+    fn merge_preserves_reorder_and_delete() {
+        let stored = "http://u1:p1@a.example:1\nhttp://u2:p2@b.example:2";
+        let masked: Vec<&str> = ["http://••••@b.example:2", "http://••••@a.example:1"].to_vec();
+        let out = merge_masked_proxy_list(&masked.join("\n"), stored);
+        assert_eq!(
+            out, "http://u2:p2@b.example:2\nhttp://u1:p1@a.example:1",
+            "reorder must keep credentials with their host"
+        );
+        // Deleting a line drops only that entry.
+        let out = merge_masked_proxy_list("http://••••@a.example:1", stored);
+        assert_eq!(out, "http://u1:p1@a.example:1");
+    }
+
+    #[test]
+    fn merge_keeps_newly_typed_line_verbatim() {
+        let stored = "http://u1:p1@a.example:1";
+        let out =
+            merge_masked_proxy_list("http://••••@a.example:1\nhttp://new:pw@c.example:3", stored);
+        assert_eq!(out, "http://u1:p1@a.example:1\nhttp://new:pw@c.example:3");
+    }
+
+    #[test]
+    fn merge_drops_masked_line_for_unknown_host() {
+        // A mask the UI invented has no credentials to restore — saving it would
+        // persist a literally unusable proxy.
+        let out = merge_masked_proxy_list("http://••••@ghost.example:9", "");
+        assert_eq!(out, "");
     }
 }
 

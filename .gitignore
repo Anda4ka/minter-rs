@@ -3,6 +3,12 @@
 **/src-tauri/target/
 *.pdb
 *.zip
+*.exe
+
+# Local Python tooling
+venv/
+.venv/
+__pycache__/
 
 # Secrets & local runtime (never commit)
 .env

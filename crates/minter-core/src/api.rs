@@ -289,6 +289,21 @@ impl Session {
         self.signers.clear();
     }
 
+    /// Move unlocked key material out of `src` into `self`.
+    ///
+    /// `unlock` is expensive (600k PBKDF2 rounds), so callers run it on a
+    /// detached clone with no lock held, then install the result here. Only the
+    /// password + signers are adopted — settings, env and connection state stay
+    /// as they are, so a settings save that landed during the derivation is not
+    /// clobbered by the stale snapshot.
+    ///
+    /// `src` is left locked, so the surrendered clone keeps no usable copy of
+    /// the password or the private keys.
+    pub fn adopt_unlocked(&mut self, src: &mut Session) {
+        self.password = src.password.take();
+        self.signers = std::mem::take(&mut src.signers);
+    }
+
     fn rebuild_signers_from_keys(&mut self, keys: &[Zeroizing<String>]) {
         self.signers = keys
             .iter()
@@ -2518,6 +2533,51 @@ fn export_wl_report(
 #[cfg(test)]
 mod session_debug_tests {
     use super::*;
+
+    #[test]
+    fn adopt_unlocked_moves_password_and_leaves_source_locked() {
+        let mut target = Session::default_paths();
+        let mut src = Session::default_paths();
+        src.password = Some(Zeroizing::new("pw".into()));
+        assert!(src.is_unlocked());
+        assert!(!target.is_unlocked());
+
+        target.adopt_unlocked(&mut src);
+
+        assert!(target.is_unlocked(), "target must receive the password");
+        // The surrendered clone must not keep a usable copy of the secret.
+        assert!(
+            !src.is_unlocked(),
+            "source clone must be left locked, not holding a second copy"
+        );
+        assert!(src.signers.is_empty());
+    }
+
+    #[test]
+    fn adopt_unlocked_does_not_clobber_target_settings() {
+        // The snapshot used for the (slow) derivation is stale by the time it
+        // returns, so adopting must touch only the key material.
+        let mut target = Session::default_paths();
+        target.settings.require_live_confirm = true;
+        target.dry_run = true;
+
+        let mut src = Session::default_paths();
+        src.password = Some(Zeroizing::new("pw".into()));
+        src.settings.require_live_confirm = false;
+        src.dry_run = false;
+
+        target.adopt_unlocked(&mut src);
+
+        assert!(target.is_unlocked());
+        assert!(
+            target.settings.require_live_confirm,
+            "a settings save during unlock must survive"
+        );
+        assert!(
+            target.dry_run,
+            "dry_run must not be reverted by the snapshot"
+        );
+    }
 
     #[test]
     fn debug_never_prints_password_or_env_secrets() {
